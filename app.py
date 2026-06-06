@@ -1098,7 +1098,7 @@ def post_kids_profile():
         profile.last_name = data['last_name']
     if 'social_security_number' in data:
         try:
-            profile.social_security_number = int(data['social_security_number'])
+            profile.social_security_number = str(data['social_security_number'])
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid social_security_number'}), 400
     if 'date_of_birth' in data:
@@ -1109,7 +1109,7 @@ def post_kids_profile():
             return jsonify({'error': 'Invalid date_of_birth, expected YYYY-MM-DD'}), 400
     if 'gender' in data:
         gender_map = {e.value: e for e in ChildEnum}
-        val = data['gender'].lower()
+        val = data['gender']  # no .lower()
         if val not in gender_map:
             return jsonify({'error': f'Invalid gender: {val}'}), 400
         profile.gender = gender_map[val]
