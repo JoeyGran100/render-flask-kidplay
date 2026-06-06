@@ -1,11 +1,10 @@
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 import re, os
 from flask import Flask, jsonify, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, join_room, disconnect, emit
 from werkzeug.utils import secure_filename
-from datetime import datetime, timedelta
 from flask import request, jsonify
 import traceback
 import jwt
@@ -975,7 +974,6 @@ def post_parents_profile():
     if 'last_name' in data:
         profile.last_name = data['last_name']
     if 'date_of_birth' in data:
-        from datetime import date
         try:
             profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
         except (ValueError, TypeError):
@@ -1057,24 +1055,28 @@ def get_kids_profile():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
-    profile = user.kids_profile
-    if not profile:
-        return jsonify({'error': 'Kids profile not found'}), 404
- 
-    return jsonify({
-        'id':                   profile.id,
-        'first_name':           profile.first_name,
-        'last_name':            profile.last_name,
-        'date_of_birth':        profile.date_of_birth.isoformat() if profile.date_of_birth else None,
-        'gender':               profile.gender.value if profile.gender else None,
-        'grade_level':          profile.grade_level,
-        'hobbies':              profile.hobbies or [],
-        'allergies':            profile.allergies or [],
-        'individual_needs':     profile.individual_needs or [],
-        'created_at':           profile.created_at.isoformat() if profile.created_at else None,
-        'updated_at':           profile.updated_at.isoformat() if profile.updated_at else None,
-    }), 200
+
+    profiles = user.kids_profile
+    if not profiles:
+        return jsonify({'error': 'No kids profiles found'}), 404
+
+    return jsonify([
+        {
+            'id':               p.id,
+            'first_name':       p.first_name,
+            'last_name':        p.last_name,
+            'date_of_birth':    p.date_of_birth.isoformat() if p.date_of_birth else None,
+            'gender':           p.gender.value if p.gender else None,
+            'grade_level':      p.grade_level,
+            'hobbies':          p.hobbies or [],
+            'allergies':        p.allergies or [],
+            'individual_needs': p.individual_needs or [],
+            'created_at':       p.created_at.isoformat() if p.created_at else None,
+            'updated_at':       p.updated_at.isoformat() if p.updated_at else None,
+        }
+        for p in profiles
+    ]), 200
+    
  
  
 @app.route('/kids/profile', methods=['POST'])
@@ -1102,7 +1104,6 @@ def post_kids_profile():
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid social_security_number'}), 400
     if 'date_of_birth' in data:
-        from datetime import date
         try:
             profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
         except (ValueError, TypeError):
@@ -1137,6 +1138,61 @@ def post_kids_profile():
  
     return jsonify({'message': 'Kids profile saved'}), 201
  
+ 
+@app.route('/kids/profile/<int:kid_id>', methods=['PUT'])
+def update_kids_profile(kid_id):
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    profile = KidsProfile.query.filter_by(id=kid_id, user_auth_id=user.id).first()
+    if not profile:
+        return jsonify({'error': 'Kid profile not found'}), 404
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    if 'first_name' in data:
+        profile.first_name = data['first_name']
+    if 'last_name' in data:
+        profile.last_name = data['last_name']
+    if 'social_security_number' in data:
+        profile.social_security_number = str(data['social_security_number'])
+    if 'date_of_birth' in data:
+        try:
+            profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid date_of_birth, expected YYYY-MM-DD'}), 400
+    if 'gender' in data:
+        gender_map = {e.value: e for e in ChildEnum}
+        val = data['gender']
+        if val not in gender_map:
+            return jsonify({'error': f'Invalid gender: {val}'}), 400
+        profile.gender = gender_map[val]
+    if 'grade_level' in data:
+        profile.grade_level = data['grade_level']
+    if 'hobbies' in data:
+        if not isinstance(data['hobbies'], list):
+            return jsonify({'error': 'hobbies must be a list'}), 400
+        profile.hobbies = data['hobbies']
+    if 'allergies' in data:
+        if not isinstance(data['allergies'], list):
+            return jsonify({'error': 'allergies must be a list'}), 400
+        profile.allergies = data['allergies']
+    if 'individual_needs' in data:
+        if not isinstance(data['individual_needs'], list):
+            return jsonify({'error': 'individual_needs must be a list'}), 400
+        profile.individual_needs = data['individual_needs']
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to update kids profile'}), 500
+
+    return jsonify({'message': 'Kid profile updated'}), 200
  
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT HOST
@@ -1412,7 +1468,6 @@ def post_event():
     if missing:
         return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
  
-    from datetime import datetime, timezone
     try:
         start_time = datetime.fromisoformat(data['start_time'])
         end_time   = datetime.fromisoformat(data['end_time'])
@@ -1634,7 +1689,6 @@ def post_ticket():
     if 'payment_ref' in data:
         ticket.payment_ref = data['payment_ref']
     if 'paid_at' in data:
-        from datetime import datetime
         try:
             ticket.paid_at = datetime.fromisoformat(data['paid_at'])
         except (ValueError, TypeError):
