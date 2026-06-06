@@ -85,7 +85,7 @@ class ParentsProfile(db.Model):
 
 
 class ParentsProfileImages(db.Model):
-    __tablename__ = 'user_images'
+    __tablename__ = 'parents_profile_images'
 
     id = db.Column(db.Integer, primary_key=True)
     user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,index=True)
@@ -115,7 +115,7 @@ class KidsProfile(db.Model):
 
 
 class KidsProfileImages(db.Model):
-    __tablename__ = 'user_images'
+    __tablename__ = 'kids_profile_images'
 
     id = db.Column(db.Integer, primary_key=True)
     user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,index=True)
