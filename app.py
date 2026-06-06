@@ -55,16 +55,16 @@ class ChildEnum(enum.Enum):
 class User(db.Model):
     __tablename__ = 'user_credentials'
 
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(200),unique=True,nullable=False,index=True)
+    id            = db.Column(db.Integer, primary_key=True)
+    email         = db.Column(db.String(200), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+    created_at    = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
-    # 1-to-1 Profile
-    profile = db.relationship('ParentsProfile',back_populates='user',uselist=False,cascade='all, delete-orphan')
-    # 1-to-1 Preferences
-    preferences = db.relationship('UserPreferences',back_populates='user',uselist=False,cascade='all, delete-orphan')
-    images = db.relationship('UserImage',back_populates='user',cascade='all, delete-orphan',lazy=True)
+    profile               = db.relationship('ParentsProfile',      back_populates='user', uselist=False, cascade='all, delete-orphan')
+    parent_profile_images = db.relationship('ParentsProfileImages', back_populates='user', cascade='all, delete-orphan', lazy=True)
+    kids_profile          = db.relationship('KidsProfile',          back_populates='user', cascade='all, delete-orphan', lazy=True)  # list now
+    attendances           = db.relationship('Attendance', back_populates='user')
+    checkins              = db.relationship('CheckIn',    back_populates='user')
 
 
 class ParentsProfile(db.Model):
@@ -87,42 +87,45 @@ class ParentsProfile(db.Model):
 class ParentsProfileImages(db.Model):
     __tablename__ = 'parents_profile_images'
 
-    id = db.Column(db.Integer, primary_key=True)
-    user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,index=True)
-    image_url = db.Column(db.String(500), nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    user = db.relationship('User',back_populates='images')
+    id           = db.Column(db.Integer, primary_key=True)
+    user_auth_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)
+    image_url    = db.Column(db.String(500), nullable=False)
+    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = db.relationship('User', back_populates='parent_profile_images')
 
 
 class KidsProfile(db.Model):
-    __tablename__ = "kids_profile" # snake_case is better
+    __tablename__ = 'kids_profile'
 
-    id = db.Column(db.Integer, primary_key=True)
-    user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,unique=True)
-    first_name = db.Column(db.String(100))
-    last_name = db.Column(db.String(100))
-    social_security_number = db.Column(db.Integer)
-    date_of_birth = db.Column(db.Date)
-    gender = db.Column(db.Enum(ChildEnum))
-    grade_level      = db.Column(db.String(100), nullable=True)
-    hobbies          = db.Column(db.ARRAY(db.String), nullable=True)
-    allergies        = db.Column(db.ARRAY(db.String), nullable=True)
-    individual_needs = db.Column(db.ARRAY(db.String), nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
+    id                     = db.Column(db.Integer, primary_key=True)
+    user_auth_id           = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)  # no unique=True
+    first_name             = db.Column(db.String(100))
+    last_name              = db.Column(db.String(100))
+    social_security_number = db.Column(db.String(13), unique=True, nullable=True)
+    date_of_birth          = db.Column(db.Date)
+    gender                 = db.Column(db.Enum(ChildEnum))
+    grade_level            = db.Column(db.String(100), nullable=True)
+    hobbies                = db.Column(db.ARRAY(db.String), nullable=True)
+    allergies              = db.Column(db.ARRAY(db.String), nullable=True)
+    individual_needs       = db.Column(db.ARRAY(db.String), nullable=True)
+    created_at             = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at             = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
 
-    user = db.relationship('User', back_populates='kids_profile')
+    user   = db.relationship('User', back_populates='kids_profile')
+    images = db.relationship('KidsProfileImages', back_populates='kid', cascade='all, delete-orphan')
 
 
 class KidsProfileImages(db.Model):
     __tablename__ = 'kids_profile_images'
 
-    id = db.Column(db.Integer, primary_key=True)
-    user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,index=True)
-    image_url = db.Column(db.String(500), nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    user = db.relationship('User',back_populates='images')
-    
+    id              = db.Column(db.Integer, primary_key=True)
+    kids_profile_id = db.Column(db.Integer, db.ForeignKey('kids_profile.id', ondelete='CASCADE'), nullable=False, index=True)
+    image_url       = db.Column(db.String(500), nullable=False)
+    created_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    kid = db.relationship('KidsProfile', back_populates='images')
+
 
 class HostVerificationStatus(enum.Enum):
     pending  = 'pending'   # applied, waiting for review
@@ -150,12 +153,11 @@ class EventHost(db.Model):
     )
 
     # Relationships
-    owner   = db.relationship('User', backref=db.backref('event_host', uselist=False))
-    profile = db.relationship('EventHostProfile', back_populates='host', uselist=False, cascade='all, delete-orphan')
-    images  = db.relationship('EventHostImage', back_populates='host', cascade='all, delete-orphan', order_by='EventHostImage.display_order')
-    events  = db.relationship('EventLocation', back_populates='event_host')
+    owner  = db.relationship('User', backref=db.backref('event_host', uselist=False))
+    images = db.relationship('EventHostImage', back_populates='host', cascade='all, delete-orphan', order_by='EventHostImage.display_order')
+    events = db.relationship('EventLocation', back_populates='event_host')
 
-    # ── Derived from ParentsProfile via owner ──────────────────────────────
+    # ── Derived from ParentsProfile via owner ─────────────────────────────
 
     @property
     def _user_profile(self):
@@ -184,6 +186,10 @@ class EventHost(db.Model):
     # ── Derived from related tables ────────────────────────────────────────
 
     @property
+    def follower_count(self) -> int:
+        return Follow.query.filter_by(following_id=self.user_id).count()
+
+    @property
     def total_events_created(self):
         return len(self.events)
 
@@ -199,20 +205,6 @@ class EventHost(db.Model):
     @property
     def is_approved(self):
         return self.verification_status == HostVerificationStatus.approved
-
-
-class EventHostProfile(db.Model):
-    """
-    Optional extended profile — only exists once the host fills it in.
-    If every host always has one, move these columns onto EventHost instead.
-    """
-    __tablename__ = 'event_host_profiles'
-
-    id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    host_id = db.Column(db.Integer, db.ForeignKey('event_hosts.id', ondelete='CASCADE'), nullable=False, unique=True)
-    followers = db.Column(db.Integer, default=0)
-
-    host = db.relationship('EventHost', back_populates='profile')
 
 
 class EventHostImage(db.Model):
@@ -332,12 +324,12 @@ class EventLocation(db.Model):
         total = Attendance.query.filter_by(location_id=self.id).count()
         if total >= self.max_attendees:
             return False, "Event is fully booked"
-        if gender == GenderEnum.male and self.girls_attendees is not None:
-            if self._count_by_gender(GenderEnum.male) >= self.girls_attendees:
-                return False, f"No male spots remaining ({self.girls_attendees} max)"
-        if gender == GenderEnum.female and self.boys_attendees is not None:
-            if self._count_by_gender(GenderEnum.female) >= self.boys_attendees:
-                return False, f"No female spots remaining ({self.boys_attendees} max)"
+        if gender == GenderEnum.Male and self.boys_attendees is not None:
+            if self._count_by_gender(GenderEnum.Male) >= self.boys_attendees:
+                return False, f"No male spots remaining ({self.boys_attendees} max)"
+        if gender == GenderEnum.Female and self.girls_attendees is not None:
+            if self._count_by_gender(GenderEnum.Female) >= self.girls_attendees:
+                return False, f"No female spots remaining ({self.girls_attendees} max)"
         return True, ""
 
 
@@ -372,7 +364,9 @@ class Ticket(db.Model):
 
     @property
     def is_expired(self) -> bool:
-        event_time = self.attendance.location.start_time.replace(tzinfo=timezone.utc)
+        event_time = self.attendance.location.start_time
+        if event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) > event_time
 
     @property
@@ -512,7 +506,6 @@ class TransactionStatus(enum.Enum):
 
 
 class EventTransaction(db.Model):
-    """One row per attendee payment."""
     __tablename__ = 'event_transactions'
 
     id               = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -521,9 +514,8 @@ class EventTransaction(db.Model):
     amount           = db.Column(db.Numeric(10, 2), nullable=False)
     currency         = db.Column(db.String(10), default='SEK', nullable=False)
     swish_reference  = db.Column(db.String(100), unique=True, nullable=False)
-    status           = db.Column(db.String(20), default=TransactionStatus.pending.value, nullable=False)
-
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    status           = db.Column(db.Enum(TransactionStatus), default=TransactionStatus.pending, nullable=False)
+    created_at       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     event    = db.relationship('EventLocation')
     attendee = db.relationship('User')
@@ -536,23 +528,22 @@ class PayoutStatus(enum.Enum):
 
 
 class EventPayout(db.Model):
-    """One row per host payout after event ends."""
     __tablename__ = 'event_payouts'
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     event_id      = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='RESTRICT'), nullable=False)
     event_host_id = db.Column(db.Integer, db.ForeignKey('event_hosts.id',     ondelete='RESTRICT'), nullable=False)
 
-    gross_amount  = db.Column(db.Numeric(10, 2), nullable=False)  # total collected from attendees
-    platform_fee  = db.Column(db.Numeric(10, 2), nullable=False)  # your cut
-    payout_amount = db.Column(db.Numeric(10, 2), nullable=False)  # gross - fee, what host receives
+    gross_amount  = db.Column(db.Numeric(10, 2), nullable=False)
+    platform_fee  = db.Column(db.Numeric(10, 2), nullable=False)
+    payout_amount = db.Column(db.Numeric(10, 2), nullable=False)
 
     currency        = db.Column(db.String(10), default='SEK', nullable=False)
     swish_reference = db.Column(db.String(100), unique=True, nullable=False)
-    status          = db.Column(db.String(20), default=PayoutStatus.processing.value, nullable=False)
+    status          = db.Column(db.Enum(PayoutStatus), default=PayoutStatus.processing, nullable=False)
 
     initiated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    completed_at = db.Column(db.DateTime, nullable=True)  # set when status → completed
+    completed_at = db.Column(db.DateTime, nullable=True)
 
     event      = db.relationship('EventLocation')
     event_host = db.relationship('EventHost')
@@ -617,7 +608,7 @@ class Report(db.Model):
     target_user_id  = db.Column(db.Integer, db.ForeignKey('user_credentials.id',  ondelete='SET NULL'), nullable=True)
     target_event_id = db.Column(db.Integer, db.ForeignKey('event_locations.id',   ondelete='SET NULL'), nullable=True)
 
-    reason = db.Column(db.String(100), nullable=False)
+    reason = db.Column(db.String(100), nullable=False)  # keep as string, validate at service layer
     details    = db.Column(db.Text, nullable=True)   # optional free-text from reporter
     status     = db.Column(db.Enum(ReportStatus), default=ReportStatus.pending, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
@@ -1275,65 +1266,6 @@ def post_host_image():
         return jsonify({'error': 'Failed to save image'}), 500
  
     return jsonify({'message': 'Host image added', 'id': image.id}), 201
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# EVENT HOST PROFILE (followers, etc.)
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@app.route('/host/extended-profile', methods=['GET'])
-def get_host_extended_profile():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host not found'}), 404
- 
-    profile = host.profile
-    if not profile:
-        return jsonify({'error': 'Extended profile not found'}), 404
- 
-    return jsonify({
-        'id':        profile.id,
-        'followers': profile.followers,
-    }), 200
- 
- 
-@app.route('/host/extended-profile', methods=['POST'])
-def post_host_extended_profile():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host not found. Register as a host first.'}), 404
- 
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
- 
-    profile = host.profile
-    if not profile:
-        profile = EventHostProfile(host_id=host.id)
-        db.session.add(profile)
- 
-    if 'followers' in data:
-        try:
-            profile.followers = int(data['followers'])
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid followers value'}), 400
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to save extended profile'}), 500
- 
-    return jsonify({'message': 'Extended profile saved'}), 201
  
  
 # ─────────────────────────────────────────────────────────────────────────────
