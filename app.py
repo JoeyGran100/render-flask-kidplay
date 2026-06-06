@@ -981,8 +981,8 @@ def post_parents_profile():
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid date_of_birth, expected YYYY-MM-DD'}), 400
     if 'gender' in data:
-        gender_map = {'male': GenderEnum.male, 'female': GenderEnum.female}
-        val = data['gender'].lower()
+        gender_map = {'Male': GenderEnum.Male, 'Female': GenderEnum.Female}
+        val = data['gender']  # no .lower()
         if val not in gender_map:
             return jsonify({'error': f'Invalid gender: {val}'}), 400
         profile.gender = gender_map[val]
