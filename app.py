@@ -1271,9 +1271,6 @@ def approve_event_host(host_id):
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    if not user.is_admin:
-        return jsonify({'error': 'Forbidden'}), 403
-
     host = EventHost.query.get(host_id)
     if not host:
         return jsonify({'error': 'Host not found'}), 404
