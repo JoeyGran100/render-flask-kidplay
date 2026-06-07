@@ -866,7 +866,7 @@ def delete_user(user_id):
     return jsonify({"message": "User and all related data deleted successfully"}), 200
 
 
-# POST USER CREDENTIALS TO DATABASE
+# POST USER CREDENTIALS TO DATABASE ✅
 @app.route('/userCredentials', methods=['POST'])
 def postData():
     try:
@@ -928,7 +928,7 @@ def home():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PARENTS PROFILE
+# PARENTS PROFILE✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/parents/profile', methods=['GET'])
@@ -1047,7 +1047,7 @@ def post_parents_image():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# KIDS PROFILE
+# KIDS PROFILE✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/kids/profile', methods=['GET'])
@@ -1195,7 +1195,7 @@ def update_kids_profile(kid_id):
     return jsonify({'message': 'Kid profile updated'}), 200
  
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT HOST
+# EVENT HOST ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/host', methods=['GET'])
@@ -1264,8 +1264,37 @@ def post_event_host():
     return jsonify({'message': 'Host profile saved', 'id': host.id}), 201
  
  
+ # Only an admin can approve a host. This is a separate endpoint to keep the workflow clear and auditable.
+@app.route('/host/<int:host_id>/approve', methods=['POST'])
+def approve_event_host(host_id):
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if not user.is_admin:
+        return jsonify({'error': 'Forbidden'}), 403
+
+    host = EventHost.query.get(host_id)
+    if not host:
+        return jsonify({'error': 'Host not found'}), 404
+
+    if host.is_approved:
+        return jsonify({'error': 'Host is already approved'}), 409
+
+    host.verification_status = HostVerificationStatus.approved
+    host.verified_at = datetime.utcnow()
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to approve host'}), 500
+
+    return jsonify({'message': 'Host approved', 'id': host.id}), 200
+ 
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT HOST IMAGES
+# EVENT HOST IMAGES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/host/images', methods=['GET'])
@@ -1325,7 +1354,7 @@ def post_host_image():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT CATEGORIES
+# EVENT CATEGORIES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/event-categories', methods=['GET'])
@@ -1365,7 +1394,7 @@ def post_event_category():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# VENUES
+# VENUES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/venues', methods=['GET'])
