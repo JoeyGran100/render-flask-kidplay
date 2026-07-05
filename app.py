@@ -10,7 +10,7 @@ import traceback
 import jwt
 from flask_migrate import Migrate
 import enum
-from sqlalchemy.orm import validates
+from sqlalchemy.orm import validates, joinedload
 from PIL import Image                    # ✅ NEW: For image resizing
 from functools import lru_cache
 from xml.etree.ElementTree import Comment
@@ -98,12 +98,12 @@ class KidsProfile(db.Model):
     __tablename__ = 'kids_profile'
 
     id                     = db.Column(db.Integer, primary_key=True)
-    user_auth_id           = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)  # no unique=True
+    user_auth_id           = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)
     first_name             = db.Column(db.String(100))
     last_name              = db.Column(db.String(100))
-    social_security_number = db.Column(db.String(13), unique=True, nullable=True)
     date_of_birth          = db.Column(db.Date)
     gender                 = db.Column(db.Enum(ChildEnum))
+    bio                    = db.Column(db.Text)
     grade_level            = db.Column(db.String(100), nullable=True)
     hobbies                = db.Column(db.ARRAY(db.String), nullable=True)
     allergies              = db.Column(db.ARRAY(db.String), nullable=True)
@@ -111,19 +111,19 @@ class KidsProfile(db.Model):
     created_at             = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at             = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
 
-    user   = db.relationship('User', back_populates='kids_profile')
-    images = db.relationship('KidsProfileImages', back_populates='kid', cascade='all, delete-orphan')
+    user  = db.relationship('User', back_populates='kids_profile')
+    image = db.relationship('KidsProfileImages', back_populates='kid', uselist=False, cascade='all, delete-orphan')
 
 
 class KidsProfileImages(db.Model):
     __tablename__ = 'kids_profile_images'
 
     id              = db.Column(db.Integer, primary_key=True)
-    kids_profile_id = db.Column(db.Integer, db.ForeignKey('kids_profile.id', ondelete='CASCADE'), nullable=False, index=True)
+    kids_profile_id = db.Column(db.Integer, db.ForeignKey('kids_profile.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
     image_url       = db.Column(db.String(500), nullable=False)
     created_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    kid = db.relationship('KidsProfile', back_populates='images')
+    kid = db.relationship('KidsProfile', back_populates='image', uselist=False)
 
 
 class HostVerificationStatus(enum.Enum):
@@ -1050,35 +1050,6 @@ def post_parents_image():
 # KIDS PROFILE✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/kids/profile', methods=['GET'])
-def get_kids_profile():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    profiles = user.kids_profile
-    if not profiles:
-        return jsonify({'error': 'No kids profiles found'}), 404
-
-    return jsonify([
-        {
-            'id':               p.id,
-            'first_name':       p.first_name,
-            'last_name':        p.last_name,
-            'date_of_birth':    p.date_of_birth.isoformat() if p.date_of_birth else None,
-            'gender':           p.gender.value if p.gender else None,
-            'grade_level':      p.grade_level,
-            'hobbies':          p.hobbies or [],
-            'allergies':        p.allergies or [],
-            'individual_needs': p.individual_needs or [],
-            'created_at':       p.created_at.isoformat() if p.created_at else None,
-            'updated_at':       p.updated_at.isoformat() if p.updated_at else None,
-        }
-        for p in profiles
-    ]), 200
-    
- 
- 
 @app.route('/kids/profile', methods=['POST'])
 def post_kids_profile():
     user = get_current_user_from_token()
@@ -1098,11 +1069,6 @@ def post_kids_profile():
         profile.first_name = data['first_name']
     if 'last_name' in data:
         profile.last_name = data['last_name']
-    if 'social_security_number' in data:
-        try:
-            profile.social_security_number = str(data['social_security_number'])
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid social_security_number'}), 400
     if 'date_of_birth' in data:
         try:
             profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
@@ -1128,6 +1094,10 @@ def post_kids_profile():
         if not isinstance(data['individual_needs'], list):
             return jsonify({'error': 'individual_needs must be a list'}), 400
         profile.individual_needs = data['individual_needs']
+    if 'bio' in data:
+        if not isinstance(data['bio'], str):
+            return jsonify({'error': 'bio must be a string'}), 400
+        profile.bio = data['bio']
  
     try:
         db.session.commit()
@@ -1137,7 +1107,66 @@ def post_kids_profile():
         return jsonify({'error': 'Failed to save kids profile'}), 500
  
     return jsonify({'message': 'Kids profile saved'}), 201
- 
+
+
+@app.route('/kids/profile', methods=['GET'])
+def get_kids_profile():
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    profiles = (
+        KidsProfile.query
+        .filter_by(user_auth_id=user.id)
+        .options(joinedload(KidsProfile.image))
+        .order_by(KidsProfile.created_at.asc())
+        .all()
+    )
+    if not profiles:
+        return jsonify({'error': 'No kids profiles found'}), 404
+
+    return jsonify([
+        {
+            'id':         p.id,
+            'first_name': p.first_name,
+            'last_name':  p.last_name,
+            'photo_url':  p.image.image_url if p.image else None,
+        }
+        for p in profiles
+    ]), 200
+
+
+@app.route('/kids/profile/<int:kid_id>', methods=['GET'])
+def get_kid_profile(kid_id):
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    profile = (
+        KidsProfile.query
+        .filter_by(id=kid_id, user_auth_id=user.id)
+        .options(joinedload(KidsProfile.image))
+        .first()
+    )
+    if not profile:
+        return jsonify({'error': 'Kid profile not found'}), 404
+
+    return jsonify({
+        'id':               profile.id,
+        'first_name':       profile.first_name,
+        'last_name':        profile.last_name,
+        'date_of_birth':    profile.date_of_birth.isoformat() if profile.date_of_birth else None,
+        'gender':           profile.gender.value if profile.gender else None,
+        'bio':              profile.bio,
+        'grade_level':      profile.grade_level,
+        'photo_url':        profile.image.image_url if profile.image else None,
+        'hobbies':          profile.hobbies or [],
+        'allergies':        profile.allergies or [],
+        'individual_needs': profile.individual_needs or [],
+        'created_at':       profile.created_at.isoformat() if profile.created_at else None,
+        'updated_at':       profile.updated_at.isoformat() if profile.updated_at else None,
+    }), 200
+
  
 @app.route('/kids/profile/<int:kid_id>', methods=['PUT'])
 def update_kids_profile(kid_id):
