@@ -76,7 +76,6 @@ class ParentsProfile(db.Model):
     date_of_birth = db.Column(db.Date)
     gender = db.Column(db.Enum(GenderEnum))
     phone_number = db.Column(db.String(20))
-    bio = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
 
@@ -948,7 +947,6 @@ def get_parents_profile():
         'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
         'gender':       profile.gender.value if profile.gender else None,
         'phone_number': profile.phone_number,
-        'bio':          profile.bio,
         'created_at':   profile.created_at.isoformat() if profile.created_at else None,
         'updated_at':   profile.updated_at.isoformat() if profile.updated_at else None,
     }), 200
@@ -986,8 +984,6 @@ def post_parents_profile():
         profile.gender = gender_map[val]
     if 'phone_number' in data:
         profile.phone_number = data['phone_number']
-    if 'bio' in data:
-        profile.bio = data['bio']
  
     try:
         db.session.commit()
