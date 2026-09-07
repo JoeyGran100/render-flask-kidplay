@@ -2550,3 +2550,5 @@ def get_payout_status(event_id: int):
         "completed_at":     payout.completed_at.isoformat() if payout.completed_at else None,
     }), 200
 
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=True)
