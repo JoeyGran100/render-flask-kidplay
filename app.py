@@ -843,6 +843,22 @@ def get_signin_data():
     return jsonify(data)
 
 
+@app.route('/logout', methods=['POST'])
+def logout():
+    """
+    Logout endpoint.
+    Verifies the user's token is valid.
+    With stateless JWT, logout is complete once client deletes the token.
+    """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    print(f"User {current_user.id} ({current_user.email}) logged out")
+    
+    return jsonify({"message": "Logged out successfully"}), 200
+
+
 # Delete users from the app
 @app.route('/delete_user/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
