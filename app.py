@@ -1778,44 +1778,51 @@ def post_ticket():
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/messages/<int:other_user_id>', methods=['GET'])
-def get_messages(other_user_id):
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
+def get_two_users_from_tokens():
+    """Extract current user from Authorization header and other user from query token."""
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return None, None, jsonify({'error': 'Unauthorized'}), 401
+    
+    other_user_token = request.args.get('token')
+    if not other_user_token:
+        return None, None, jsonify({'error': 'Other user token required'}), 400
+    
+    try:
+        payload = jwt.decode(other_user_token, SECRET_KEY, algorithms=['HS256'])
+        other_user = User.query.get(payload.get('user_id'))
+        if not other_user:
+            return None, None, jsonify({'error': 'User not found'}), 404
+        return current_user, other_user, None, None
+    except jwt.InvalidTokenError:
+        return None, None, jsonify({'error': 'Invalid token'}), 401
+
+
+@app.route('/messages', methods=['GET'])
+def get_messages():
+    current_user, other_user, error, status = get_two_users_from_tokens()
+    if error:
+        return error, status
+    
     messages = (
         Message.query
         .filter(
             db.or_(
-                db.and_(Message.sender_id == user.id,       Message.receiver_id == other_user_id),
-                db.and_(Message.sender_id == other_user_id, Message.receiver_id == user.id),
+                db.and_(Message.sender_id == current_user.id,    Message.receiver_id == other_user.id),
+                db.and_(Message.sender_id == other_user.id, Message.receiver_id == current_user.id),
             )
         )
         .order_by(Message.timestamp.asc())
         .all()
     )
- 
-    # Mark incoming messages as read
+    
+    # Mark as read
     for m in messages:
-        if m.receiver_id == user.id and not m.is_read:
+        if m.receiver_id == current_user.id and not m.is_read:
             m.is_read = True
     db.session.commit()
- 
-    return jsonify([
-        {
-            'id':          m.id,
-            'sender_id':   m.sender_id,
-            'receiver_id': m.receiver_id,
-            'message':     m.message,
-            'reply_to_id': m.reply_to_id,
-            'timestamp':   m.timestamp.isoformat() if m.timestamp else None,
-            'image_url':   m.image_url,
-            'is_read':     m.is_read,
-            'time_ago':    m.time_ago,
-        }
-        for m in messages
-    ]), 200
+    
+    return jsonify([m.to_dict() for m in messages]), 200
  
  
 @app.route('/messages', methods=['POST'])
