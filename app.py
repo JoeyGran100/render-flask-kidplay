@@ -958,6 +958,7 @@ def get_parents_profile():
  
     return jsonify({
         'id':           profile.id,
+        'email':        user.email,
         'first_name':   profile.first_name,
         'last_name':    profile.last_name,
         'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
