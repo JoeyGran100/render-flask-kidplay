@@ -1880,16 +1880,16 @@ def get_conversations():
                     other_image = other_user.parent_profile_images[0].image_url or ""
                 
                 thread = {
-                    'conversationId': conv.id,
-                    'otherUserId': other_user.id,
-                    'otherUserName': other_name or other_user.email,  # Fallback to email
-                    'otherUserImage': other_image,
-                    'eventId': conv.event_id,
-                    'eventName': conv.event.event_name if conv.event else None,
+                    'conversation_id': conv.id,
+                    'other_user': other_user.id,
+                    'other_name': other_name or other_user.email,  # Fallback to email
+                    'other_image': other_image,
+                    'event_id': conv.event_id,
+                    'event_name': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
-                    'unreadCount': unread,
-                    'lastMessageTime': latest_msg.timestamp.isoformat(),
+                    'unread_Count': unread,
+                    'last_Message_Time': latest_msg.timestamp.isoformat(),
                 }
                 threads.append(thread)
         
@@ -1952,7 +1952,7 @@ def start_conversation():
         ).first()
         
         if existing:
-            return jsonify({'conversationId': existing.id}), 200
+            return jsonify({'conversation_id': existing.id}), 200
         
         # Create new conversation
         conversation = Conversation(
@@ -1964,7 +1964,7 @@ def start_conversation():
         db.session.add(conversation)
         db.session.commit()
         
-        return jsonify({'conversationId': conversation.id}), 201
+        return jsonify({'conversation_id': conversation.id}), 201
     
     except Exception as e:
         db.session.rollback()
