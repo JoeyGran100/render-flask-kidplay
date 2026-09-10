@@ -19,7 +19,7 @@ from flask_bcrypt import Bcrypt
 import uuid
 import os
 import requests
-
+from typing import Optional
 
 app = Flask(__name__)
 app.config[
@@ -125,35 +125,35 @@ class KidsProfileImages(db.Model):
     kid = db.relationship('KidsProfile', back_populates='image', uselist=False)
 
 
-class HostVerificationStatus(enum.Enum):
+class OrganizerVerificationStatus(enum.Enum):
     pending  = 'pending'   # applied, waiting for review
     approved = 'approved'  # verified, can create events
     rejected = 'rejected'  # denied, cannot create events    
 
 
 # Observe!! total events and participants are calculated properties, not stored in DB. This is to avoid denormalization issues and ensure real-time accuracy.
-class EventHost(db.Model):
-    """Created when a user chooses to become a host. One-to-one with User."""
-    __tablename__ = 'event_hosts'
+class EventOrganizer(db.Model):
+    """Created when a user chooses to become an organizer/Host. One-to-one with User."""
+    __tablename__ = 'event_organizers'
 
     id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='SET NULL'), nullable=True, unique=True)
     verified_at = db.Column(db.DateTime, nullable=True)  # set only when status → approved
     name    = db.Column(db.String(100), unique=True, nullable=False)
 
-    host_bio           = db.Column(db.Text, nullable=True)
+    organizer_bio           = db.Column(db.Text, nullable=True)
     top_event_hashtags = db.Column(db.ARRAY(db.String), nullable=True)
 
     verification_status = db.Column(
-        db.Enum(HostVerificationStatus),
-        default=HostVerificationStatus.pending,
+        db.Enum(OrganizerVerificationStatus),
+        default=OrganizerVerificationStatus.pending,
         nullable=False
     )
 
     # Relationships
-    owner  = db.relationship('User', backref=db.backref('event_host', uselist=False))
-    images = db.relationship('EventHostImage', back_populates='host', cascade='all, delete-orphan', order_by='EventHostImage.display_order')
-    events = db.relationship('EventLocation', back_populates='event_host')
+    owner  = db.relationship('User', backref=db.backref('event_organizer', uselist=False))
+    images = db.relationship('EventOrganizerImage', back_populates='organizer', cascade='all, delete-orphan', order_by='EventOrganizerImage.display_order')
+    events = db.relationship('EventLocation', back_populates='event_organizer')
 
     # ── Derived from ParentsProfile via owner ─────────────────────────────
 
@@ -196,32 +196,32 @@ class EventHost(db.Model):
         return (
             Attendance.query
             .join(EventLocation, EventLocation.id == Attendance.location_id)
-            .filter(EventLocation.event_host_id == self.id)
+            .filter(EventLocation.event_organizer_id == self.id)
             .count()
         )
 
     @property
     def is_approved(self):
-        return self.verification_status == HostVerificationStatus.approved
+        return self.verification_status == OrganizerVerificationStatus.approved
 
 
-class EventHostImage(db.Model):
+class EventOrganizerImage(db.Model):
     """
-    Portfolio images the host chooses to display (max 3).
-    FK points at event_hosts, not event_host_profiles.
+    Portfolio images the organizer chooses to display (max 3).
+    FK points at event_organizers, not event_organizer_profiles.
     Enforce the max-3 rule at the service layer before inserting.
     """
-    __tablename__ = 'event_host_images'
+    __tablename__ = 'event_organizer_images'
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    host_id       = db.Column(db.Integer, db.ForeignKey('event_hosts.id', ondelete='CASCADE'), nullable=False)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='CASCADE'), nullable=False)
     
     cover_image_url = db.Column(db.String(500), nullable=True)  # one image per event, no separate table needed
 
     display_order = db.Column(db.Integer, default=0)
     uploaded_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    host = db.relationship('EventHost', back_populates='images')
+    organizer = db.relationship('EventOrganizer', back_populates='images')
 
 
 class EventCategory(db.Model):
@@ -278,7 +278,7 @@ class EventLocation(db.Model):
     id                = db.Column(db.Integer, primary_key=True, autoincrement=True)
     venue_id          = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
     event_category_id = db.Column(db.Integer, db.ForeignKey('event_categories.id'), nullable=False)
-    event_host_id     = db.Column(db.Integer, db.ForeignKey('event_hosts.id'), nullable=False)
+    event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id'), nullable=False)
 
     # Event config
     start_time    = db.Column(db.DateTime(timezone=True), nullable=False)
@@ -298,11 +298,11 @@ class EventLocation(db.Model):
     # Relationships
     venue               = db.relationship('Venue', back_populates='events')
     event_category      = db.relationship('EventCategory', lazy='selectin')
-    event_host          = db.relationship('EventHost', back_populates='events', lazy='selectin')
+    event_organizer     = db.relationship('EventOrganizer', back_populates='events', lazy='selectin')
     attendances         = db.relationship('Attendance', back_populates='location', lazy=True, cascade='all, delete-orphan')
     checkins            = db.relationship('CheckIn', back_populates='location', lazy=True, cascade='all, delete-orphan')
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
-    messages            = db.relationship('Message', back_populates='event', lazy=True, cascade='all, delete-orphan')
+    conversations   = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True)  # ← NEW (optional, for querying)
     # ── Validators ─────────────────────────────────────────────────────────────
 
     @validates('end_time')
@@ -453,7 +453,7 @@ class Conversation(db.Model):
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id         = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     other_user_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
-    event_id        = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=True)  # ← OPTIONAL
+    event_id        = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=True)
     created_at      = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at      = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
     
@@ -481,7 +481,7 @@ class Message(db.Model):
     __tablename__ = 'chat_messages'
 
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)  # ← NEW
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
     sender_id       = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     receiver_id     = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     message         = db.Column(db.Text, nullable=False)
@@ -491,7 +491,7 @@ class Message(db.Model):
     is_read         = db.Column(db.Boolean, default=False, nullable=False)
 
     # Relationships
-    conversation    = db.relationship('Conversation', back_populates='messages')  # ← NEW
+    conversation    = db.relationship('Conversation', back_populates='messages')
     sender          = db.relationship('User', foreign_keys=[sender_id], backref=db.backref('sent_messages', lazy=True))
     receiver        = db.relationship('User', foreign_keys=[receiver_id], backref=db.backref('received_messages', lazy=True))
     reply_to        = db.relationship('Message', remote_side=[id], backref=db.backref('replies', lazy=True))
@@ -518,7 +518,7 @@ class Message(db.Model):
         """Serialize message for API responses"""
         data = {
             'id': self.id,
-            'conversationId': self.conversation_id,  # ← NEW
+            'conversationId': self.conversation_id,
             'senderId': self.sender_id,
             'receiverId': self.receiver_id,
             'message': self.message,
@@ -537,11 +537,11 @@ class Message(db.Model):
         return data
 
 
-class EventHostPaymentDetails(db.Model):
-    __tablename__ = 'event_host_payment_details'
+class EventOrganizerPaymentDetails(db.Model):
+    __tablename__ = 'event_organizer_payment_details'
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_host_id = db.Column(db.Integer, db.ForeignKey('event_hosts.id', ondelete='CASCADE'), nullable=False, unique=True)
+    event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='CASCADE'), nullable=False, unique=True)
 
     organisation_number = db.Column(db.String(11), nullable=True)   # XXXXXX-XXXX Swedish format
     swish_number        = db.Column(db.String(11), nullable=False)   # 10 digits for Swish för företag
@@ -551,7 +551,7 @@ class EventHostPaymentDetails(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    event_host = db.relationship('EventHost', backref=db.backref('payment_details', uselist=False))
+    event_organizer = db.relationship('EventOrganizer', backref=db.backref('payment_details', uselist=False))
 
 
 class TransactionStatus(enum.Enum):
@@ -588,7 +588,7 @@ class EventPayout(db.Model):
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
     event_id      = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='RESTRICT'), nullable=False)
-    event_host_id = db.Column(db.Integer, db.ForeignKey('event_hosts.id',     ondelete='RESTRICT'), nullable=False)
+    event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='RESTRICT'), nullable=False)
 
     gross_amount  = db.Column(db.Numeric(10, 2), nullable=False)
     platform_fee  = db.Column(db.Numeric(10, 2), nullable=False)
@@ -602,7 +602,7 @@ class EventPayout(db.Model):
     completed_at = db.Column(db.DateTime, nullable=True)
 
     event      = db.relationship('EventLocation')
-    event_host = db.relationship('EventHost')
+    event_organizer = db.relationship('EventOrganizer')
     
 
 class Follow(db.Model):
@@ -721,14 +721,14 @@ def get_current_user_from_token():
         return None
 
 
-def initiate_payout(event_id, host_id):
-    payment_details = EventHostPaymentDetails.query.filter_by(event_host_id=host_id).first()
+def initiate_payout(event_id, organizer_id):
+    payment_details = EventOrganizerPaymentDetails.query.filter_by(event_organizer_id=organizer_id).first()
 
     if not payment_details:
-        raise ValueError("Host has no payment details on file.")
+        raise ValueError("Organizer has no payment details on file.")
 
     if not payment_details.swish_verified:
-        raise ValueError("Host Swish number is not verified. Cannot initiate payout.")
+        raise ValueError("Organizer Swish number is not verified. Cannot initiate payout.")
 
     # safe to proceed
 
@@ -1295,38 +1295,38 @@ def update_kids_profile(kid_id):
     return jsonify({'message': 'Kid profile updated'}), 200
  
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT HOST ✅
+# EVENT ORGANIZER ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/host', methods=['GET'])
-def get_event_host():
+@app.route('/organizer', methods=['GET'])
+def get_event_organizer():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host profile not found'}), 404
+    organizer = user.event_organizer
+    if not organizer:
+        return jsonify({'error': 'Organizer profile not found'}), 404
  
     return jsonify({
-        'id':                   host.id,
-        'name':                 host.name,
-        'host_bio':             host.host_bio,
-        'top_event_hashtags':   host.top_event_hashtags or [],
-        'verification_status':  host.verification_status.value,
-        'verified_at':          host.verified_at.isoformat() if host.verified_at else None,
-        'first_name':           host.first_name,
-        'last_name':            host.last_name,
-        'phone_number':         host.phone_number,
-        'gender':               host.gender.value if host.gender else None,
-        'total_events_created': host.total_events_created,
-        'total_participants':   host.total_participants,
-        'is_approved':          host.is_approved,
+        'id':                   organizer.id,
+        'name':                 organizer.name,
+        'organizer_bio':        organizer.organizer_bio,
+        'top_event_hashtags':   organizer.top_event_hashtags or [],
+        'verification_status':  organizer.verification_status.value,
+        'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
+        'first_name':           organizer.first_name,
+        'last_name':            organizer.last_name,
+        'phone_number':         organizer.phone_number,
+        'gender':               organizer.gender.value if organizer.gender else None,
+        'total_events_created': organizer.total_events_created,
+        'total_participants':   organizer.total_participants,
+        'is_approved':          organizer.is_approved,
     }), 200
  
  
-@app.route('/host', methods=['POST'])
-def post_event_host():
+@app.route('/organizer', methods=['POST'])
+def post_event_organizer():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -1335,76 +1335,76 @@ def post_event_host():
     if not data:
         return jsonify({'error': 'No data provided'}), 400
  
-    host = user.event_host
+    organizer = user.event_organizer
  
-    if not host:
-        # Creating a new host — name is required
+    if not organizer:
+        # Creating a new organizer — name is required
         if 'name' not in data:
-            return jsonify({'error': 'name is required to register as a host'}), 400
-        host = EventHost(user_id=user.id, name=data['name'])
-        db.session.add(host)
+            return jsonify({'error': 'name is required to register as an organizer'}), 400
+        organizer = EventOrganizer(user_id=user.id, name=data['name'])
+        db.session.add(organizer)
     else:
         if 'name' in data:
-            host.name = data['name']
+            organizer.name = data['name']
  
-    if 'host_bio' in data:
-        host.host_bio = data['host_bio']
+    if 'organizer_bio' in data:
+        organizer.organizer_bio = data['organizer_bio']
     if 'top_event_hashtags' in data:
         if not isinstance(data['top_event_hashtags'], list):
             return jsonify({'error': 'top_event_hashtags must be a list'}), 400
-        host.top_event_hashtags = data['top_event_hashtags']
+        organizer.top_event_hashtags = data['top_event_hashtags']
  
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         traceback.print_exc()
-        return jsonify({'error': 'Failed to save host profile'}), 500
+        return jsonify({'error': 'Failed to save organizer profile'}), 500
  
-    return jsonify({'message': 'Host profile saved', 'id': host.id}), 201
+    return jsonify({'message': 'Organizer profile saved', 'id': organizer.id}), 201
  
  
- # Only an admin can approve a host. This is a separate endpoint to keep the workflow clear and auditable.
+ # Only an admin can approve a host/Organizer. This is a separate endpoint to keep the workflow clear and auditable.
 
 
-@app.route('/host/<int:host_id>/approve', methods=['POST'])
-def approve_event_host(host_id):
+@app.route('/organizer/<int:organizer_id>/approve', methods=['POST'])
+def approve_event_organizer(organizer_id):
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    host = EventHost.query.get(host_id)
-    if not host:
-        return jsonify({'error': 'Host not found'}), 404
+    organizer = EventOrganizer.query.get(organizer_id)
+    if not organizer:
+        return jsonify({'error': 'Organizer not found'}), 404
 
-    if host.is_approved:
-        return jsonify({'error': 'Host is already approved'}), 409
+    if organizer.is_approved:
+        return jsonify({'error': 'Organizer is already approved'}), 409
 
-    host.verification_status = HostVerificationStatus.approved
-    host.verified_at = datetime.utcnow()
+    organizer.verification_status = OrganizerVerificationStatus.approved
+    organizer.verified_at = datetime.utcnow()
 
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         traceback.print_exc()
-        return jsonify({'error': 'Failed to approve host'}), 500
+        return jsonify({'error': 'Failed to approve organizer'}), 500
 
-    return jsonify({'message': 'Host approved', 'id': host.id}), 200
+    return jsonify({'message': 'Organizer approved', 'id': organizer.id}), 200
  
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT HOST IMAGES ✅
+# EVENT ORGANIZER IMAGES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/host/images', methods=['GET'])
-def get_host_images():
+@app.route('/organizer/images', methods=['GET'])
+def get_organizer_images():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host profile not found'}), 404
+    organizer = user.event_organizer
+    if not organizer:
+        return jsonify({'error': 'Organizer profile not found'}), 404
  
     return jsonify([
         {
@@ -1413,32 +1413,32 @@ def get_host_images():
             'display_order':   img.display_order,
             'uploaded_at':     img.uploaded_at.isoformat() if img.uploaded_at else None,
         }
-        for img in host.images
+        for img in organizer.images
     ]), 200
  
  
-@app.route('/host/images', methods=['POST'])
-def post_host_image():
+@app.route('/organizer/images', methods=['POST'])
+def post_organizer_image():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host profile not found'}), 404
+    organizer = user.event_organizer
+    if not organizer:
+        return jsonify({'error': 'Organizer profile not found'}), 404
  
     # Enforce max-3 rule
-    if len(host.images) >= 3:
+    if len(organizer.images) >= 3:
         return jsonify({'error': 'Maximum of 3 images allowed'}), 400
  
     data = request.get_json()
     if not data or 'cover_image_url' not in data:
         return jsonify({'error': 'cover_image_url is required'}), 400
  
-    image = EventHostImage(
-        host_id=host.id,
+    image = EventOrganizerImage(
+        organizer_id=organizer.id,
         cover_image_url=data['cover_image_url'],
-        display_order=data.get('display_order', len(host.images)),
+        display_order=data.get('display_order', len(organizer.images)),
     )
     db.session.add(image)
  
@@ -1449,7 +1449,7 @@ def post_host_image():
         traceback.print_exc()
         return jsonify({'error': 'Failed to save image'}), 500
  
-    return jsonify({'message': 'Host image added', 'id': image.id}), 201
+    return jsonify({'message': 'Organizer image added', 'id': image.id}), 201
  
  
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1556,7 +1556,7 @@ def get_events():
                 'id':               e.id,
                 'venue_id':         e.venue_id,
                 'event_category_id':e.event_category_id,
-                'event_host_id':    e.event_host_id,
+                'event_organizer_id':e.event_organizer_id,
                 'start_time':       e.start_time.isoformat(),
                 'end_time':         e.end_time.isoformat(),
                 'event_description':e.event_description,
@@ -1583,9 +1583,9 @@ def post_event():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host or not host.is_approved:
-        return jsonify({'error': 'Only approved hosts can create events'}), 403
+    organizer = user.event_organizer
+    if not organizer or not organizer.is_approved:
+        return jsonify({'error': 'Only approved organizers can create events'}), 403
  
     data = request.get_json()
     if not data:
@@ -1605,7 +1605,7 @@ def post_event():
     event = EventLocation(
         venue_id=data['venue_id'],
         event_category_id=data['event_category_id'],
-        event_host_id=host.id,
+        event_organizer_id=organizer.id,
         start_time=start_time,
         end_time=end_time,
         event_description=data.get('event_description'),
@@ -2060,17 +2060,17 @@ def send_message(current_user, conversation_id):
 # EVENT HOST PAYMENT DETAILS ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/host/payment-details', methods=['GET'])
-def get_host_payment_details():
+@app.route('/organizer/payment-details', methods=['GET'])
+def get_organizer_payment_details():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host profile not found'}), 404
+    organizer = user.event_organizer
+    if not organizer:
+        return jsonify({'error': 'Organizer profile not found'}), 404
  
-    details = host.payment_details
+    details = organizer.payment_details
     if not details:
         return jsonify({'error': 'Payment details not found'}), 404
  
@@ -2084,25 +2084,25 @@ def get_host_payment_details():
     }), 200
  
  
-@app.route('/host/payment-details', methods=['POST'])
-def post_host_payment_details():
+@app.route('/organizer/payment-details', methods=['POST'])
+def post_organizer_payment_details():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
-    host = user.event_host
-    if not host:
-        return jsonify({'error': 'Host profile not found'}), 404
+    organizer = user.event_organizer
+    if not organizer:
+        return jsonify({'error': 'Organizer profile not found'}), 404
  
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
  
-    details = host.payment_details
+    details = organizer.payment_details
     if not details:
         if 'swish_number' not in data:
             return jsonify({'error': 'swish_number is required'}), 400
-        details = EventHostPaymentDetails(event_host_id=host.id, swish_number=data['swish_number'])
+        details = EventOrganizerPaymentDetails(event_organizer_id=organizer.id, swish_number=data['swish_number'])
         db.session.add(details)
     else:
         if 'swish_number' in data:
@@ -2373,11 +2373,11 @@ def post_report():
 # @app.route("/event/<int:event_id>/payout", methods=["POST"])
 # def trigger_payout(event_id):
 #     event = EventLocation.query.get_or_404(event_id)
-#     host = event.event_host
-#     payment_details = host.payment_details
+#     organizer = event.event_organizer
+#     payment_details = organizer.payment_details
 
 #     if not payment_details or not payment_details.swish_verified:
-#         return jsonify({"error": "Host has no verified Swish number"}), 400
+#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
 
 #     # Sum all paid transactions for this event
 #     paid_transactions = EventTransaction.query.filter_by(
@@ -2398,7 +2398,7 @@ def post_report():
 #         "payoutInstructionUUID": payout_ref,
 #         "payerPaymentReference":  payout_ref,
 #         "payerAlias":  YOUR_SWISH_NUMBER,      # your platform
-#         "payeeAlias":  payment_details.swish_number,  # host's number
+#         "payeeAlias":  payment_details.swish_number,  # organizer's number
 #         "amount":      str(payout_amount),
 #         "currency":    "SEK",
 #         "message":     f"Payout: {event.name}"[:50],
@@ -2414,7 +2414,7 @@ def post_report():
 #     if response.status_code in (200, 201):
 #         payout = EventPayout(
 #             event_id=event_id,
-#             event_host_id=host.id,
+#             event_organizer_id=organizer.id,
 #             gross_amount=gross,
 #             platform_fee=fee,
 #             payout_amount=payout_amount,
@@ -2626,19 +2626,19 @@ def get_payment_status(payment_ref: str):
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /event/<event_id>/payout  —  trigger host payout after event ends
+# POST /event/<event_id>/payout  —  trigger organizer payout after event ends
 # ─────────────────────────────────────────────────────────────────────────────
  
 # @app.route("/event/<int:event_id>/payout", methods=["POST"])
 # def trigger_payout(event_id: int):
 #     """
-#     Calculates the host's payout from all paid transactions for the event,
+#     Calculates the organizer's payout from all paid transactions for the event,
 #     deducts the platform fee, and initiates a Swish payout.
  
 #     Guard rails:
-#         - Caller must be the event's host (or an admin — extend as needed).
+#         - Caller must be the event's organizer (or an admin — extend as needed).
 #         - Event must have ended before a payout is allowed.
-#         - Host must have a verified Swish number.
+#         - Organizer must have a verified Swish number.
 #         - A payout can only be triggered once per event.
 #     """
 #     user = get_current_user_from_token()
@@ -2646,18 +2646,18 @@ def get_payment_status(payment_ref: str):
 #         return jsonify({"error": "Unauthorized"}), 401
  
 #     event = EventLocation.query.get_or_404(event_id)
-#     host  = event.event_host
+#     organizer = event.event_organizer
  
-#     # Only the owning host may trigger their own payout
-#     if not host or host.user_id != user.id:
-#         return jsonify({"error": "Forbidden — you are not the host of this event"}), 403
+#     # Only the owning organizer may trigger their own payout
+#     if not organizer or organizer.user_id != user.id:
+#         return jsonify({"error": "Forbidden — you are not the organizer of this event"}), 403
  
 #     if not event.is_past:
 #         return jsonify({"error": "Payout can only be triggered after the event has ended"}), 400
  
-#     payment_details = host.payment_details
+#     payment_details = organizer.payment_details
 #     if not payment_details or not payment_details.swish_verified:
-#         return jsonify({"error": "Host has no verified Swish number"}), 400
+#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
  
 #     # Idempotency — one payout per event
 #     existing_payout = EventPayout.query.filter_by(event_id=event_id).first()
@@ -2711,7 +2711,7 @@ def get_payment_status(payment_ref: str):
  
 #     payout = EventPayout(
 #         event_id=event_id,
-#         event_host_id=host.id,
+#         event_organizer_id=organizer.id,
 #         gross_amount=gross,
 #         platform_fee=platform_fee,
 #         payout_amount=payout_amount,
@@ -2742,15 +2742,15 @@ def get_payment_status(payment_ref: str):
  
 @app.route("/event/<int:event_id>/payout", methods=["GET"])
 def get_payout_status(event_id: int):
-    """Returns the current payout record for an event (host-only)."""
+    """Returns the current payout record for an event (organizer-only)."""
     user = get_current_user_from_token()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
  
     event = EventLocation.query.get_or_404(event_id)
-    host  = event.event_host
+    organizer = event.event_organizer
  
-    if not host or host.user_id != user.id:
+    if not organizer or organizer.user_id != user.id:
         return jsonify({"error": "Forbidden"}), 403
  
     payout = EventPayout.query.filter_by(event_id=event_id).first()
