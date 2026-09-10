@@ -23,7 +23,7 @@ from typing import Optional
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_4_user:HTgIpW6nyhGQg8bnxK3h4LNrSXlk2YR1@dpg-dahcom15efls73dhu2tg-a.frankfurt-postgres.render.com/kidplay_render_database_4"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_5_user:c4h2DHZNgNuuvmWHAGkmHiwfeLIcAGLw@dpg-dahctrfqj5pc73a77aj0-a.frankfurt-postgres.render.com/kidplay_render_database_5"
 socketio = SocketIO(app)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
@@ -270,18 +270,15 @@ class VenueImage(db.Model):
 class EventCoverImage(db.Model):
     """
     Cover/hero image for a specific event.
-    One image per event - displayed prominently when viewing event details.
+    One image per event.
     """
     __tablename__ = 'event_cover_images'
- 
-    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id    = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False, unique=True)
-    
-    image_url   = db.Column(db.String(500), nullable=False)
-    uploaded_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
- 
-    # Relationship
-    event = db.relationship('EventLocation', backref=db.backref('cover_image', uselist=False))
+
+    id = db.Column(db.Integer,primary_key=True,autoincrement=True)
+    event_id = db.Column(db.Integer,db.ForeignKey('event_locations.id', ondelete='CASCADE'),nullable=False,unique=True)
+    image_url = db.Column(db.String(500),nullable=False)
+    uploaded_at = db.Column(db.DateTime(timezone=True),default=lambda: datetime.now(timezone.utc))
+    event = db.relationship('EventLocation',back_populates='cover_image')
 
 
 class EventLocationImage(db.Model):
