@@ -2070,16 +2070,16 @@ def get_conversations():
                 
                 # Get user's display name from profile
                 other_name = ""
-                if other_user.profile:
-                    first_name = other_user.profile.first_name or ""
-                    last_name = other_user.profile.last_name or ""
+                if other_user.parent_profile:  # ✅ Changed: profile → parent_profile
+                    first_name = other_user.parent_profile.first_name or ""
+                    last_name = other_user.parent_profile.last_name or ""
                     other_name = f"{first_name} {last_name}".strip()
                 
                 # Get user's profile image (first image from parent_profile_images)
                 other_image = ""
-                if other_user.profile and other_user.parent_profile_images:
-                    if len(other_user.parent_profile_images) > 0:
-                        other_image = other_user.parent_profile_images[0].image_url or ""
+                if other_user.parent_profile and other_user.parent_profile.images:  # ✅ Changed: parent_profile_images → parent_profile.images
+                    if len(other_user.parent_profile.images) > 0:
+                        other_image = other_user.parent_profile.images[0].image_url or ""
                 
                 thread = {
                     'conversationId': conv.id,
