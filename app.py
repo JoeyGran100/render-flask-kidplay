@@ -1869,11 +1869,21 @@ def get_conversations():
                     Message.is_read == False
                 ).count()
                 
+                # Get user's display name from profile
+                other_name = ""
+                if other_user.profile:
+                    other_name = f"{other_user.profile.first_name or ''} {other_user.profile.last_name or ''}".strip()
+                
+                # Get user's profile image (first image from parent_profile_images)
+                other_image = ""
+                if other_user.profile and other_user.parent_profile_images:
+                    other_image = other_user.parent_profile_images[0].image_url or ""
+                
                 thread = {
                     'conversationId': conv.id,
                     'otherUserId': other_user.id,
-                    'otherUserName': other_user.name,
-                    'otherUserImage': other_user.profile_image_url or '',
+                    'otherUserName': other_name or other_user.email,  # Fallback to email
+                    'otherUserImage': other_image,
                     'eventId': conv.event_id,
                     'eventName': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
