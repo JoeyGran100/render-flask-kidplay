@@ -23,7 +23,7 @@ import requests
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_1_y71b_user:r9qStahWOrVLn2p9CwgmAtvLIz7A7Zpv@dpg-dafckptg1s2s73e0e0fg-a.frankfurt-postgres.render.com/kidplay_render_database_1_y71b"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_2_pje4_user:alSRqeUzpGCExMGrUR1osUSiwkXr0Qok@dpg-dah87hm1egvs73d0v360-a.frankfurt-postgres.render.com/kidplay_render_database_2_pje4"
 socketio = SocketIO(app)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
@@ -71,10 +71,10 @@ class ParentsProfile(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,unique=True)
+    gender = db.Column(db.Enum(GenderEnum))
     first_name = db.Column(db.String(100))
     last_name = db.Column(db.String(100))
     date_of_birth = db.Column(db.Date)
-    gender = db.Column(db.Enum(GenderEnum))
     phone_number = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
@@ -241,7 +241,34 @@ class Venue(db.Model):
     latitude  = db.Column(db.Float)
     longitude = db.Column(db.Float)
 
+    # Relationships
     events = db.relationship('EventLocation', back_populates='venue')
+    images = db.relationship('VenueImage', back_populates='venue', lazy=True, cascade='all, delete-orphan')  # Delete images when venue is deleted
+
+
+class VenueImage(db.Model):
+    """Images for a venue (max 10 per venue)."""
+    __tablename__ = 'venue_images'
+
+    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    venue_id    = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
+    
+    # Store the image path/URL or base64 data
+    image_url   = db.Column(db.String(500), nullable=False)  # URL or file path
+    display_order = db.Column(db.Integer, default=0)  # For ordering images
+    created_at  = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    # Relationship
+    venue = db.relationship('Venue', back_populates='images')
+    
+    @validates('image_url')
+    def validate_image_count(self, key, value):
+        # Check if venue already has 10 images
+        if self.venue_id:
+            count = VenueImage.query.filter_by(venue_id=self.venue_id).count()
+            if count >= 10:
+                raise ValueError("Maximum 10 images per venue")
+        return value
 
 
 class EventLocation(db.Model):
@@ -275,6 +302,7 @@ class EventLocation(db.Model):
     attendances         = db.relationship('Attendance', back_populates='location', lazy=True, cascade='all, delete-orphan')
     checkins            = db.relationship('CheckIn', back_populates='location', lazy=True, cascade='all, delete-orphan')
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
+    messages            = db.relationship('Message', back_populates='event', lazy=True, cascade='all, delete-orphan')
     # ── Validators ─────────────────────────────────────────────────────────────
 
     @validates('end_time')
@@ -418,28 +446,60 @@ class Attendance(db.Model):
     )
 
 
+class Conversation(db.Model):
+    """Groups messages between two users, optionally for a specific event."""
+    __tablename__ = 'conversations'
+    
+    id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id         = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
+    other_user_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
+    event_id        = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=True)  # ← OPTIONAL
+    created_at      = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at      = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    messages        = db.relationship('Message', back_populates='conversation', cascade='all, delete-orphan')
+    event           = db.relationship('EventLocation', foreign_keys=[event_id])
+    user            = db.relationship('User', foreign_keys=[user_id])
+    other_user      = db.relationship('User', foreign_keys=[other_user_id])
+    
+    @property
+    def latest_message(self) -> Optional['Message']:
+        return Message.query.filter_by(conversation_id=self.id).order_by(Message.timestamp.desc()).first()
+    
+    @property
+    def unread_count(self) -> int:
+        return Message.query.filter(
+            Message.conversation_id == self.id,
+            Message.receiver_id == self.user_id,
+            Message.is_read == False
+        ).count()
+
+
 class Message(db.Model):
+    """Individual messages within a conversation."""
     __tablename__ = 'chat_messages'
 
-    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    sender_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
-    receiver_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
-    message     = db.Column(db.Text, nullable=False)
-    reply_to_id = db.Column(db.Integer, db.ForeignKey('chat_messages.id'), nullable=True)
-    timestamp   = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    image_url   = db.Column(db.String(), nullable=True)
-    is_read     = db.Column(db.Boolean, default=False, nullable=False)
+    id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)  # ← NEW
+    sender_id       = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
+    receiver_id     = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
+    message         = db.Column(db.Text, nullable=False)
+    reply_to_id     = db.Column(db.Integer, db.ForeignKey('chat_messages.id'), nullable=True)
+    timestamp       = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    image_url       = db.Column(db.String(), nullable=True)
+    is_read         = db.Column(db.Boolean, default=False, nullable=False)
 
-    sender   = db.relationship('User', foreign_keys=[sender_id],   backref=db.backref('sent_messages',     lazy=True))
-    receiver = db.relationship('User', foreign_keys=[receiver_id], backref=db.backref('received_messages', lazy=True))
-    reply_to = db.relationship('Message', remote_side=[id],        backref=db.backref('replies', lazy=True))
-
-    # ── Derived properties ─────────────────────────────────────────────────────
+    # Relationships
+    conversation    = db.relationship('Conversation', back_populates='messages')  # ← NEW
+    sender          = db.relationship('User', foreign_keys=[sender_id], backref=db.backref('sent_messages', lazy=True))
+    receiver        = db.relationship('User', foreign_keys=[receiver_id], backref=db.backref('received_messages', lazy=True))
+    reply_to        = db.relationship('Message', remote_side=[id], backref=db.backref('replies', lazy=True))
 
     @property
     def time_ago(self) -> str:
         """Returns human-readable string like '32 min ago', '2 hrs ago', 'just now'."""
-        now  = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
         diff = now - self.timestamp.replace(tzinfo=timezone.utc)
         seconds = int(diff.total_seconds())
 
@@ -447,36 +507,34 @@ class Message(db.Model):
             return "just now"
         if seconds < 3600:
             mins = seconds // 60
-            return f"{mins} min ago"
+            return f"{mins} min ago" if mins == 1 else f"{mins} mins ago"
         if seconds < 86400:
             hrs = seconds // 3600
-            return f"{hrs} hr ago"
+            return f"{hrs} hr ago" if hrs == 1 else f"{hrs} hrs ago"
         days = seconds // 86400
-        return f"{days} days ago"
+        return f"{days} day ago" if days == 1 else f"{days} days ago"
 
-    @staticmethod
-    def unread_count(user_id: int, other_user_id: int) -> int:
-        """Returns number of unread messages from other_user_id to user_id."""
-        return (
-            Message.query
-            .filter_by(sender_id=other_user_id, receiver_id=user_id, is_read=False)
-            .count()
-        )
-
-    @staticmethod
-    def latest_message(user_id: int, other_user_id: int) -> 'Message | None':
-        """Returns the most recent message in a conversation between two users."""
-        return (
-            Message.query
-            .filter(
-                db.or_(
-                    db.and_(Message.sender_id == user_id,       Message.receiver_id == other_user_id),
-                    db.and_(Message.sender_id == other_user_id, Message.receiver_id == user_id)
-                )
-            )
-            .order_by(Message.timestamp.desc())
-            .first()
-        )
+    def to_dict(self, include_sender=False, include_receiver=False):
+        """Serialize message for API responses"""
+        data = {
+            'id': self.id,
+            'conversationId': self.conversation_id,  # ← NEW
+            'senderId': self.sender_id,
+            'receiverId': self.receiver_id,
+            'message': self.message,
+            'replyToId': self.reply_to_id,
+            'timestamp': self.timestamp.isoformat(),
+            'imageUrl': self.image_url,
+            'isRead': self.is_read,
+            'timeAgo': self.time_ago,
+        }
+        
+        if include_sender:
+            data['sender'] = self.sender.to_dict()
+        if include_receiver:
+            data['receiver'] = self.receiver.to_dict()
+        
+        return data
 
 
 class EventHostPaymentDetails(db.Model):
@@ -1778,89 +1836,226 @@ def post_ticket():
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
  
-def get_two_users_from_tokens():
-    """Extract current user from Authorization header and other user from query token."""
-    current_user = get_current_user_from_token()
-    if not current_user:
-        return None, None, jsonify({'error': 'Unauthorized'}), 401
-    
-    other_user_token = request.args.get('token')
-    if not other_user_token:
-        return None, None, jsonify({'error': 'Other user token required'}), 400
-    
+@app.route('/conversations', methods=['GET'])
+def get_conversations(current_user):
+    """
+    Get all active conversations for current user.
+    Shows both event-specific and general chats.
+    """
     try:
-        payload = jwt.decode(other_user_token, SECRET_KEY, algorithms=['HS256'])
-        other_user = User.query.get(payload.get('user_id'))
-        if not other_user:
-            return None, None, jsonify({'error': 'User not found'}), 404
-        return current_user, other_user, None, None
-    except jwt.InvalidTokenError:
-        return None, None, jsonify({'error': 'Invalid token'}), 401
-
-
-@app.route('/messages', methods=['GET'])
-def get_messages():
-    current_user, other_user, error, status = get_two_users_from_tokens()
-    if error:
-        return error, status
-    
-    messages = (
-        Message.query
-        .filter(
+        # Get all conversations where user is involved
+        conversations = Conversation.query.filter(
             db.or_(
-                db.and_(Message.sender_id == current_user.id,    Message.receiver_id == other_user.id),
-                db.and_(Message.sender_id == other_user.id, Message.receiver_id == current_user.id),
+                Conversation.user_id == current_user.id,
+                Conversation.other_user_id == current_user.id
             )
-        )
-        .order_by(Message.timestamp.asc())
-        .all()
-    )
+        ).order_by(Conversation.updated_at.desc()).all()
+        
+        threads = []
+        for conv in conversations:
+            # Determine who the "other" person is
+            other_user = conv.other_user if conv.user_id == current_user.id else conv.user
+            latest_msg = conv.latest_message
+            
+            if latest_msg:
+                # Count unread from other user's perspective
+                unread = Message.query.filter(
+                    Message.conversation_id == conv.id,
+                    Message.receiver_id == current_user.id,
+                    Message.is_read == False
+                ).count()
+                
+                thread = {
+                    'conversationId': conv.id,  # ← NEW (click this to open chat)
+                    'otherUserId': other_user.id,
+                    'otherUserName': other_user.name,
+                    'otherUserImage': other_user.profile_image_url or '',
+                    'eventId': conv.event_id,  # ← Can be None
+                    'eventName': conv.event.event_name if conv.event else None,
+                    'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
+                    'time': latest_msg.time_ago,
+                    'unreadCount': unread,
+                    'lastMessageTime': latest_msg.timestamp.isoformat(),
+                }
+                threads.append(thread)
+        
+        return jsonify(threads), 200
     
-    # Mark as read
-    for m in messages:
-        if m.receiver_id == current_user.id and not m.is_read:
-            m.is_read = True
-    db.session.commit()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/conversations', methods=['POST'])
+def start_conversation(current_user):
+    """
+    Start or get existing conversation.
+    If conversation exists, return it. Otherwise create.
     
-    return jsonify([m.to_dict() for m in messages]), 200
- 
- 
-@app.route('/messages', methods=['POST'])
-def post_message():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    if 'receiver_id' not in data:
-        return jsonify({'error': 'receiver_id is required'}), 400
-    if 'message' not in data:
-        return jsonify({'error': 'message is required'}), 400
- 
-    if data['receiver_id'] == user.id:
-        return jsonify({'error': 'Cannot message yourself'}), 400
- 
-    message = Message(
-        sender_id=user.id,
-        receiver_id=data['receiver_id'],
-        message=data['message'],
-        reply_to_id=data.get('reply_to_id'),
-        image_url=data.get('image_url'),
-    )
-    db.session.add(message)
- 
+    Request body:
+    {
+        "otherUserId": 5,
+        "eventId": 42  // Optional - set when messaging from event screen
+    }
+    """
     try:
+        data = request.get_json()
+        other_user_id = data.get('otherUserId')
+        event_id = data.get('eventId')  # ← OPTIONAL
+        
+        if not other_user_id:
+            return jsonify({'error': 'otherUserId is required'}), 400
+        
+        if other_user_id == current_user.id:
+            return jsonify({'error': 'Cannot start conversation with yourself'}), 400
+        
+        other_user = User.query.get(other_user_id)
+        if not other_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        if event_id:
+            event = EventLocation.query.get(event_id)
+            if not event:
+                return jsonify({'error': 'Event not found'}), 404
+        
+        # Check if conversation already exists
+        existing = Conversation.query.filter(
+            db.or_(
+                db.and_(
+                    Conversation.user_id == current_user.id,
+                    Conversation.other_user_id == other_user_id,
+                    Conversation.event_id == event_id  # ← Match event if provided
+                ),
+                db.and_(
+                    Conversation.user_id == other_user_id,
+                    Conversation.other_user_id == current_user.id,
+                    Conversation.event_id == event_id
+                )
+            )
+        ).first()
+        
+        if existing:
+            return jsonify({'conversationId': existing.id}), 200
+        
+        # Create new conversation
+        conversation = Conversation(
+            user_id=current_user.id,
+            other_user_id=other_user_id,
+            event_id=event_id  # ← Can be None
+        )
+        
+        db.session.add(conversation)
         db.session.commit()
-    except Exception:
+        
+        return jsonify({'conversationId': conversation.id}), 201
+    
+    except Exception as e:
         db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to send message'}), 500
- 
-    return jsonify({'message': 'Message sent', 'id': message.id}), 201
- 
- 
+        return jsonify({'error': str(e)}), 500
+    
+
+@app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
+def get_messages(current_user, conversation_id):
+    """
+    Get message history for a conversation.
+    """
+    try:
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            return jsonify({'error': 'Conversation not found'}), 404
+        
+        # Verify user is part of this conversation
+        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 50, type=int), 100)
+        
+        if page < 1:
+            page = 1
+        
+        query = Message.query.filter_by(conversation_id=conversation_id)
+        total_count = query.count()
+        
+        messages_page = query.order_by(Message.timestamp.desc()).paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False
+        )
+        
+        # Mark received messages as read
+        for msg in messages_page.items:
+            if msg.receiver_id == current_user.id and not msg.is_read:
+                msg.is_read = True
+        
+        db.session.commit()
+        
+        messages_data = [m.to_dict() for m in reversed(messages_page.items)]
+        
+        return jsonify({
+            'messages': messages_data,
+            'total': total_count,
+            'pages': messages_page.pages,
+            'currentPage': page,
+            'perPage': per_page
+        }), 200
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+    
+    
+@app.route('/conversations/<int:conversation_id>/messages', methods=['POST'])
+def send_message(current_user, conversation_id):
+    """
+    Send a message in a conversation.
+    """
+    try:
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            return jsonify({'error': 'Conversation not found'}), 404
+        
+        # Verify user is part of conversation
+        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        
+        message_text = data.get('message', '').strip()
+        reply_to_id = data.get('replyToId')
+        image_url = data.get('imageUrl')
+        
+        if not message_text and not image_url:
+            return jsonify({'error': 'message or imageUrl required'}), 400
+        
+        if len(message_text) > 10000:
+            return jsonify({'error': 'Message too long'}), 400
+        
+        # Determine receiver (the other person in conversation)
+        receiver_id = conversation.other_user_id if conversation.user_id == current_user.id else conversation.user_id
+        
+        new_message = Message(
+            conversation_id=conversation_id,
+            sender_id=current_user.id,
+            receiver_id=receiver_id,
+            message=message_text,
+            reply_to_id=reply_to_id,
+            image_url=image_url
+        )
+        
+        db.session.add(new_message)
+        conversation.updated_at = datetime.now(timezone.utc)  # Update conversation timestamp
+        db.session.commit()
+        
+        return jsonify(new_message.to_dict()), 201
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+    
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT HOST PAYMENT DETAILS ✅
 # ─────────────────────────────────────────────────────────────────────────────
