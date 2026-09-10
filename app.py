@@ -1848,7 +1848,7 @@ def get_conversations():
     
     try:
         # Get all conversations where user is involved
-        conversations = Conversation.query.filter(
+        conversations = db.session.query(Conversation).filter(
             db.or_(
                 Conversation.user_id == current_user.id,
                 Conversation.other_user_id == current_user.id
@@ -1862,8 +1862,8 @@ def get_conversations():
             latest_msg = conv.latest_message
             
             if latest_msg:
-                # Count unread from other user's perspective
-                unread = Message.query.filter(
+                # Count unread messages from other user to current user
+                unread = db.session.query(Message).filter(
                     Message.conversation_id == conv.id,
                     Message.receiver_id == current_user.id,
                     Message.is_read == False
@@ -1872,33 +1872,36 @@ def get_conversations():
                 # Get user's display name from profile
                 other_name = ""
                 if other_user.profile:
-                    other_name = f"{other_user.profile.first_name or ''} {other_user.profile.last_name or ''}".strip()
+                    first_name = other_user.profile.first_name or ""
+                    last_name = other_user.profile.last_name or ""
+                    other_name = f"{first_name} {last_name}".strip()
                 
                 # Get user's profile image (first image from parent_profile_images)
                 other_image = ""
                 if other_user.profile and other_user.parent_profile_images:
-                    other_image = other_user.parent_profile_images[0].image_url or ""
+                    if len(other_user.parent_profile_images) > 0:
+                        other_image = other_user.parent_profile_images[0].image_url or ""
                 
                 thread = {
-                    'conversationId': conv.id,          # ← camelCase
-                    'otherUserId': other_user.id,       # ← camelCase
-                    'otherUserName': other_name or other_user.email,
+                    'conversationId': conv.id,
+                    'otherUserId': other_user.id,
+                    'otherUserName': other_name or other_user.email,  # Fallback to email
                     'otherUserImage': other_image,
                     'eventId': conv.event_id,
                     'eventName': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
-                    'unreadCount': unread,              # ← camelCase
-                    'lastMessageTime': latest_msg.timestamp.isoformat(),  # ← camelCase
-                            }
+                    'unreadCount': unread,
+                    'lastMessageTime': latest_msg.timestamp.isoformat(),
+                }
                 threads.append(thread)
         
         return jsonify(threads), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
+ 
+ 
 @app.route('/conversations', methods=['POST'])
 def start_conversation():
     """
@@ -1926,17 +1929,17 @@ def start_conversation():
         if other_user_id == current_user.id:
             return jsonify({'error': 'Cannot start conversation with yourself'}), 400
         
-        other_user = User.query.get(other_user_id)
+        other_user = db.session.get(User, other_user_id)
         if not other_user:
             return jsonify({'error': 'User not found'}), 404
         
         if event_id:
-            event = EventLocation.query.get(event_id)
+            event = db.session.get(EventLocation, event_id)
             if not event:
                 return jsonify({'error': 'Event not found'}), 404
         
         # Check if conversation already exists
-        existing = Conversation.query.filter(
+        existing = db.session.query(Conversation).filter(
             db.or_(
                 db.and_(
                     Conversation.user_id == current_user.id,
@@ -1952,7 +1955,7 @@ def start_conversation():
         ).first()
         
         if existing:
-            return jsonify({'conversation_id': existing.id}), 200
+            return jsonify({'conversationId': existing.id}), 200
         
         # Create new conversation
         conversation = Conversation(
@@ -1964,11 +1967,12 @@ def start_conversation():
         db.session.add(conversation)
         db.session.commit()
         
-        return jsonify({'conversation_id': conversation.id}), 201
+        return jsonify({'conversationId': conversation.id}), 201
     
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+ 
     
 
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
