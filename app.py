@@ -2046,7 +2046,6 @@ def get_conversations():
         return jsonify({'error': 'Unauthorized'}), 401
     
     try:
-        # Get all conversations where user is involved
         conversations = db.session.query(Conversation).filter(
             db.or_(
                 Conversation.user_id == current_user.id,
@@ -2054,37 +2053,37 @@ def get_conversations():
             )
         ).order_by(Conversation.updated_at.desc()).all()
         
+        print(f"DEBUG: Found {len(conversations)} conversations")
+        
         threads = []
         for conv in conversations:
-            # Determine who the "other" person is
             other_user = conv.other_user if conv.user_id == current_user.id else conv.user
             latest_msg = conv.latest_message
             
+            print(f"DEBUG: Processing conv {conv.id}, latest_msg={latest_msg}")
+            
             if latest_msg:
-                # Count unread messages from other user to current user
                 unread = db.session.query(Message).filter(
                     Message.conversation_id == conv.id,
                     Message.receiver_id == current_user.id,
                     Message.is_read == False
                 ).count()
                 
-                # Get user's display name from profile
                 other_name = ""
-                if other_user.parent_profile:  # ✅ Changed: profile → parent_profile
+                if other_user.parent_profile:
                     first_name = other_user.parent_profile.first_name or ""
                     last_name = other_user.parent_profile.last_name or ""
                     other_name = f"{first_name} {last_name}".strip()
                 
-                # Get user's profile image (first image from parent_profile_images)
                 other_image = ""
-                if other_user.parent_profile and other_user.parent_profile.images:  # ✅ Changed: parent_profile_images → parent_profile.images
+                if other_user.parent_profile and other_user.parent_profile.images:
                     if len(other_user.parent_profile.images) > 0:
                         other_image = other_user.parent_profile.images[0].image_url or ""
                 
                 thread = {
                     'conversationId': conv.id,
                     'otherUserId': other_user.id,
-                    'otherUserName': other_name or other_user.email,  # Fallback to email
+                    'otherUserName': other_name or other_user.email,
                     'otherUserImage': other_image,
                     'eventId': conv.event_id,
                     'eventName': conv.event.event_name if conv.event else None,
@@ -2093,11 +2092,20 @@ def get_conversations():
                     'unreadCount': unread,
                     'lastMessageTime': latest_msg.timestamp.isoformat(),
                 }
+                
+                print(f"DEBUG: thread data = {thread}")
                 threads.append(thread)
+        
+        print(f"DEBUG: Returning {len(threads)} threads")
+        print(f"DEBUG: Final response = {threads}")
         
         return jsonify(threads), 200
     
     except Exception as e:
+        print(f"ERROR in get_conversations: {e}")
+        import traceback
+        traceback.print_exc()
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500
  
  
