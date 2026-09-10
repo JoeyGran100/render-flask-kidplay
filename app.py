@@ -23,7 +23,7 @@ from typing import Optional
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_2_pje4_user:alSRqeUzpGCExMGrUR1osUSiwkXr0Qok@dpg-dah87hm1egvs73d0v360-a.frankfurt-postgres.render.com/kidplay_render_database_2_pje4"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_3_user:QTaJnhEf31mDzAyHDTi4K0fUwn4Qyb1o@dpg-dah8k0ajnfac738pcn8g-a.frankfurt-postgres.render.com/kidplay_render_database_3"
 socketio = SocketIO(app)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
