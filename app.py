@@ -23,7 +23,7 @@ from typing import Optional
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_3_user:QTaJnhEf31mDzAyHDTi4K0fUwn4Qyb1o@dpg-dah8k0ajnfac738pcn8g-a.frankfurt-postgres.render.com/kidplay_render_database_3"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_4_user:HTgIpW6nyhGQg8bnxK3h4LNrSXlk2YR1@dpg-dahcom15efls73dhu2tg-a.frankfurt-postgres.render.com/kidplay_render_database_4"
 socketio = SocketIO(app)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
@@ -53,24 +53,23 @@ class ChildEnum(enum.Enum):
 
 class User(db.Model):
     __tablename__ = 'user_credentials'
-
+ 
     id            = db.Column(db.Integer, primary_key=True)
     email         = db.Column(db.String(200), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     created_at    = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
-
+ 
     profile               = db.relationship('ParentsProfile',      back_populates='user', uselist=False, cascade='all, delete-orphan')
-    parent_profile_images = db.relationship('ParentsProfileImages', back_populates='user', cascade='all, delete-orphan', lazy=True)
-    kids_profile          = db.relationship('KidsProfile',          back_populates='user', cascade='all, delete-orphan', lazy=True)  # list now
+    kids_profile          = db.relationship('KidsProfile',          back_populates='user', cascade='all, delete-orphan', lazy=True)
     attendances           = db.relationship('Attendance', back_populates='user')
     checkins              = db.relationship('CheckIn',    back_populates='user')
 
 
 class ParentsProfile(db.Model):
     __tablename__ = 'parents_profile'
-
+ 
     id = db.Column(db.Integer, primary_key=True)
-    user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id', ondelete='CASCADE'),nullable=False,unique=True)
+    user_auth_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, unique=True)
     gender = db.Column(db.Enum(GenderEnum))
     first_name = db.Column(db.String(100))
     last_name = db.Column(db.String(100))
@@ -78,19 +77,20 @@ class ParentsProfile(db.Model):
     phone_number = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, onupdate=lambda: datetime.now(timezone.utc))
-
-    user = db.relationship('User', back_populates='profile') 
+ 
+    user = db.relationship('User', back_populates='profile')
+    images = db.relationship('ParentsProfileImages', back_populates='parent_profile', cascade='all, delete-orphan', lazy=True)
 
 
 class ParentsProfileImages(db.Model):
     __tablename__ = 'parents_profile_images'
-
-    id           = db.Column(db.Integer, primary_key=True)
-    user_auth_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)
-    image_url    = db.Column(db.String(500), nullable=False)
-    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-    user = db.relationship('User', back_populates='parent_profile_images')
+ 
+    id                = db.Column(db.Integer, primary_key=True)
+    parent_profile_id = db.Column(db.Integer, db.ForeignKey('parents_profile.id', ondelete='CASCADE'), nullable=False, index=True)
+    image_url         = db.Column(db.String(500), nullable=False)
+    created_at        = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+ 
+    parent_profile = db.relationship('ParentsProfile', back_populates='images')
 
 
 class KidsProfile(db.Model):
@@ -98,10 +98,10 @@ class KidsProfile(db.Model):
 
     id                     = db.Column(db.Integer, primary_key=True)
     user_auth_id           = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False, index=True)
+    gender                 = db.Column(db.Enum(ChildEnum))
     first_name             = db.Column(db.String(100))
     last_name              = db.Column(db.String(100))
     date_of_birth          = db.Column(db.Date)
-    gender                 = db.Column(db.Enum(ChildEnum))
     bio                    = db.Column(db.Text)
     grade_level            = db.Column(db.String(100), nullable=True)
     hobbies                = db.Column(db.ARRAY(db.String), nullable=True)
@@ -144,11 +144,7 @@ class EventOrganizer(db.Model):
     organizer_bio           = db.Column(db.Text, nullable=True)
     top_event_hashtags = db.Column(db.ARRAY(db.String), nullable=True)
 
-    verification_status = db.Column(
-        db.Enum(OrganizerVerificationStatus),
-        default=OrganizerVerificationStatus.pending,
-        nullable=False
-    )
+    verification_status = db.Column(db.Enum(OrganizerVerificationStatus),default=OrganizerVerificationStatus.pending,nullable=False)
 
     # Relationships
     owner  = db.relationship('User', backref=db.backref('event_organizer', uselist=False))
@@ -207,20 +203,18 @@ class EventOrganizer(db.Model):
 
 class EventOrganizerImage(db.Model):
     """
-    Portfolio images the organizer chooses to display (max 3).
-    FK points at event_organizers, not event_organizer_profiles.
-    Enforce the max-3 rule at the service layer before inserting.
+    Portfolio images the organizer chooses to display on their profile (max 3).
+    General portfolio images not tied to a specific event.
     """
     __tablename__ = 'event_organizer_images'
-
+ 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='CASCADE'), nullable=False)
+    organizer_id  = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='CASCADE'), nullable=False)
     
-    cover_image_url = db.Column(db.String(500), nullable=True)  # one image per event, no separate table needed
-
+    image_url     = db.Column(db.String(500), nullable=False)
     display_order = db.Column(db.Integer, default=0)
     uploaded_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
+ 
     organizer = db.relationship('EventOrganizer', back_populates='images')
 
 
@@ -271,18 +265,63 @@ class VenueImage(db.Model):
         return value
 
 
+
+# ✅ NEW: EventCoverImage (if you want event-specific cover images)
+class EventCoverImage(db.Model):
+    """
+    Cover/hero image for a specific event.
+    One image per event - displayed prominently when viewing event details.
+    """
+    __tablename__ = 'event_cover_images'
+ 
+    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id    = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False, unique=True)
+    
+    image_url   = db.Column(db.String(500), nullable=False)
+    uploaded_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+ 
+    # Relationship
+    event = db.relationship('EventLocation', backref=db.backref('cover_image', uselist=False))
+
+
+class EventLocationImage(db.Model):
+    """
+    Portfolio/gallery images for a specific event (max 10 per event).
+    These are displayed in the event gallery when viewing event details.
+    """
+    __tablename__ = 'event_location_images'
+ 
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id      = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False)
+    
+    image_url     = db.Column(db.String(500), nullable=False)
+    display_order = db.Column(db.Integer, default=0)  # For ordering images in gallery
+    uploaded_at   = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+ 
+    # Relationship
+    event = db.relationship('EventLocation', back_populates='images')
+    
+    @validates('image_url')
+    def validate_image_count(self, key, value):
+        """Check if event already has 10 images"""
+        if self.event_id:
+            count = EventLocationImage.query.filter_by(event_id=self.event_id).count()
+            if count >= 10:
+                raise ValueError("Maximum 10 images per event")
+
+
 class EventLocation(db.Model):
     """One specific event instance at a venue."""
     __tablename__ = 'event_locations'
-
+ 
     id                = db.Column(db.Integer, primary_key=True, autoincrement=True)
     venue_id          = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
     event_category_id = db.Column(db.Integer, db.ForeignKey('event_categories.id'), nullable=False)
     event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id'), nullable=False)
-
+ 
     # Event config
     start_time    = db.Column(db.DateTime(timezone=True), nullable=False)
-    end_time      = db.Column(db.DateTime(timezone=True), nullable=False)
+    duration_minutes = db.Column(db.Integer, nullable=True)  # Duration in minutes (e.g., 60 for 1h, 80 for 1h 20min). NULL = undecided/open-ended
     event_description   = db.Column(db.String(500))
     max_attendees = db.Column(db.Integer, nullable=False)
     girls_attendees = db.Column(db.Integer, nullable=True)
@@ -291,52 +330,74 @@ class EventLocation(db.Model):
     currency      = db.Column(db.String(10), default='SEK', nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
-
+ 
     # Operational state
     is_checkin_closed = db.Column(db.Boolean, default=False, nullable=False)
-
-    # Relationships
+ 
+    # ── Relationships ──────────────────────────────────────────────────────────
+    
     venue               = db.relationship('Venue', back_populates='events')
     event_category      = db.relationship('EventCategory', lazy='selectin')
     event_organizer     = db.relationship('EventOrganizer', back_populates='events', lazy='selectin')
+    
+    # Images
+    cover_image         = db.relationship('EventCoverImage', uselist=False, back_populates='event', cascade='all, delete-orphan')
+    images              = db.relationship('EventLocationImage', back_populates='event', lazy=True, cascade='all, delete-orphan', order_by='EventLocationImage.display_order')
+    
+    # Event data
     attendances         = db.relationship('Attendance', back_populates='location', lazy=True, cascade='all, delete-orphan')
     checkins            = db.relationship('CheckIn', back_populates='location', lazy=True, cascade='all, delete-orphan')
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
-    conversations   = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True)  # ← NEW (optional, for querying)
+    conversations       = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True, overlaps="event")
+    
     # ── Validators ─────────────────────────────────────────────────────────────
-
-    @validates('end_time')
-    def validate_end_time(self, key, value):
-        if self.start_time and value <= self.start_time:
-            raise ValueError("end_time must be after start_time")
+ 
+    @validates('duration_minutes')
+    def validate_duration(self, key, value):
+        if value is not None and value <= 0:
+            raise ValueError("duration_minutes must be positive (or NULL for undecided)")
         return value
-
+ 
     @validates('girls_attendees', 'boys_attendees')
     def validate_gender_limits(self, key, value):
         if value is not None and value < 0:
             raise ValueError(f"{key} cannot be negative")
         return value
-
+ 
     def validate_attendee_totals(self):
         validate_attendee_totals(self.max_attendees, self.girls_attendees, self.boys_attendees)
-
+ 
     # ── State properties ───────────────────────────────────────────────────────
-
+ 
+    @property
+    def end_time(self):
+        """Calculate end time from start_time and duration_minutes. Returns None if duration is undecided."""
+        if self.duration_minutes is None:
+            return None
+        from datetime import timedelta
+        return self.start_time + timedelta(minutes=self.duration_minutes)
+ 
     @property
     def is_ongoing(self):
         now = datetime.now(timezone.utc)
+        if self.end_time is None:
+            # Undecided duration: event is ongoing if it has started
+            return self.start_time <= now
         return self.start_time <= now <= self.end_time
-
+ 
     @property
     def is_past(self):
+        if self.end_time is None:
+            # Undecided duration: treat as never truly "past" (people can still be there)
+            return False
         return datetime.now(timezone.utc) > self.end_time
-
+ 
     @property
     def is_upcoming(self):
         return datetime.now(timezone.utc) < self.start_time
-
+ 
     # ── Gender counting ────────────────────────────────────────────────────────
-
+ 
     def _count_by_gender(self, gender: GenderEnum) -> int:
         return (
             Attendance.query
@@ -345,7 +406,7 @@ class EventLocation(db.Model):
             .filter(Attendance.location_id == self.id, ParentsProfile.gender == gender)
             .count()
         )
-
+ 
     def can_register(self, gender: GenderEnum) -> tuple[bool, str]:
         total = Attendance.query.filter_by(location_id=self.id).count()
         if total >= self.max_attendees:
@@ -447,7 +508,12 @@ class Attendance(db.Model):
 
 
 class Conversation(db.Model):
-    """Groups messages between two users, optionally for a specific event."""
+    """
+    Groups messages between two users, optionally for a specific event.
+    
+    'user_id' is the primary perspective holder.
+    'other_user_id' is the conversation partner.
+    """
     __tablename__ = 'conversations'
     
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -465,13 +531,34 @@ class Conversation(db.Model):
     
     @property
     def latest_message(self) -> Optional['Message']:
+        """Get the most recent message in this conversation."""
         return Message.query.filter_by(conversation_id=self.id).order_by(Message.timestamp.desc()).first()
     
     @property
     def unread_count(self) -> int:
+        """
+        Count unread messages from OTHER user's perspective.
+        Returns count of messages where user_id is the receiver and is_read=False.
+        """
         return Message.query.filter(
             Message.conversation_id == self.id,
-            Message.receiver_id == self.user_id,
+            Message.receiver_id == self.user_id,  # Messages received BY user_id
+            Message.is_read == False
+        ).count()
+    
+    def get_unread_count_for_user(self, user_id: int) -> int:
+        """
+        Get unread message count for a specific user in this conversation.
+        
+        Args:
+            user_id: The user to get unread count for
+            
+        Returns:
+            Number of unread messages where user_id is the receiver
+        """
+        return Message.query.filter(
+            Message.conversation_id == self.id,
+            Message.receiver_id == user_id,
             Message.is_read == False
         ).count()
 
@@ -555,10 +642,11 @@ class EventOrganizerPaymentDetails(db.Model):
 
 
 class TransactionStatus(enum.Enum):
-    pending   = 'pending'
-    paid      = 'paid'
-    declined  = 'declined'
-    refunded  = 'refunded'
+    pending      = 'pending'      # awaiting payment processing
+    completed    = 'completed'    # payment successful
+    failed       = 'failed'       # payment declined/failed
+    refunded     = 'refunded'     # refund processed
+    cancelled    = 'cancelled'    # user or admin cancelled
 
 
 class EventTransaction(db.Model):
