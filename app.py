@@ -1837,11 +1837,15 @@ def post_ticket():
 # ─────────────────────────────────────────────────────────────────────────────
  
 @app.route('/conversations', methods=['GET'])
-def get_conversations(current_user):
+def get_conversations():
     """
     Get all active conversations for current user.
     Shows both event-specific and general chats.
     """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     try:
         # Get all conversations where user is involved
         conversations = Conversation.query.filter(
@@ -1866,11 +1870,11 @@ def get_conversations(current_user):
                 ).count()
                 
                 thread = {
-                    'conversationId': conv.id,  # ← NEW (click this to open chat)
+                    'conversationId': conv.id,
                     'otherUserId': other_user.id,
                     'otherUserName': other_user.name,
                     'otherUserImage': other_user.profile_image_url or '',
-                    'eventId': conv.event_id,  # ← Can be None
+                    'eventId': conv.event_id,
                     'eventName': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
@@ -1886,7 +1890,7 @@ def get_conversations(current_user):
 
 
 @app.route('/conversations', methods=['POST'])
-def start_conversation(current_user):
+def start_conversation():
     """
     Start or get existing conversation.
     If conversation exists, return it. Otherwise create.
@@ -1897,6 +1901,10 @@ def start_conversation(current_user):
         "eventId": 42  // Optional - set when messaging from event screen
     }
     """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     try:
         data = request.get_json()
         other_user_id = data.get('otherUserId')
@@ -1954,10 +1962,14 @@ def start_conversation(current_user):
     
 
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
-def get_messages(current_user, conversation_id):
+def get_messages(conversation_id):
     """
     Get message history for a conversation.
     """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     try:
         conversation = Conversation.query.get(conversation_id)
         if not conversation:
@@ -2005,10 +2017,14 @@ def get_messages(current_user, conversation_id):
     
     
 @app.route('/conversations/<int:conversation_id>/messages', methods=['POST'])
-def send_message(current_user, conversation_id):
+def send_message(conversation_id):
     """
     Send a message in a conversation.
     """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     try:
         conversation = Conversation.query.get(conversation_id)
         if not conversation:
@@ -2053,8 +2069,6 @@ def send_message(current_user, conversation_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
-    
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT HOST PAYMENT DETAILS ✅
