@@ -1880,17 +1880,17 @@ def get_conversations():
                     other_image = other_user.parent_profile_images[0].image_url or ""
                 
                 thread = {
-                    'conversation_id': conv.id,
-                    'other_user': other_user.id,
-                    'other_name': other_name or other_user.email,  # Fallback to email
-                    'other_image': other_image,
-                    'event_id': conv.event_id,
-                    'event_name': conv.event.event_name if conv.event else None,
+                    'conversationId': conv.id,          # ← camelCase
+                    'otherUserId': other_user.id,       # ← camelCase
+                    'otherUserName': other_name or other_user.email,
+                    'otherUserImage': other_image,
+                    'eventId': conv.event_id,
+                    'eventName': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
-                    'unread_Count': unread,
-                    'last_Message_Time': latest_msg.timestamp.isoformat(),
-                }
+                    'unreadCount': unread,              # ← camelCase
+                    'lastMessageTime': latest_msg.timestamp.isoformat(),  # ← camelCase
+                            }
                 threads.append(thread)
         
         return jsonify(threads), 200
