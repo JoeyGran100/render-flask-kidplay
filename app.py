@@ -965,12 +965,41 @@ def has_liked_event(user_id: int, event_id: int) -> bool:
 # ALL ENDPOINTS 
 
 # USER SIGNIN METHOD
+# @app.route('/sign-in', methods=['POST'])
+# def sign_in():
+#     try:
+#         data = request.get_json()
+#         email = data.get('email')
+#         password = data.get('password')  # ← Plaintext password from client
+
+#         if not email or not password:
+#             return jsonify({'error': 'Email and password are required'}), 400
+
+#         user = User.query.filter_by(email=email).first()
+#         if not user or not bcrypt.check_password_hash(user.password_hash, password):
+#             return jsonify({'message': 'Invalid credentials'}), 401
+
+#         payload = {
+#             'user_id': user.id,
+#             'exp': datetime.utcnow() + timedelta(days=7)
+#         }
+#         token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+#         if isinstance(token, bytes):
+#             token = token.decode('utf-8')
+
+#         return jsonify({'message': 'Sign in successful', 'token': token}), 200
+
+#     except Exception as e:
+#         print("Sign-in error:", e)
+#         return jsonify({'error': str(e)}), 500
+    
+    
 @app.route('/sign-in', methods=['POST'])
 def sign_in():
     try:
         data = request.get_json()
         email = data.get('email')
-        password = data.get('password')  # ← Plaintext password from client
+        password = data.get('password')
 
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
