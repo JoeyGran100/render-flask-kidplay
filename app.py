@@ -2040,6 +2040,7 @@ def get_conversations():
     """
     Get all active conversations for current user.
     Shows both event-specific and general chats.
+    Deduplicates bidirectional conversations.
     """
     current_user = get_current_user_from_token()
     if not current_user:
@@ -2053,22 +2054,54 @@ def get_conversations():
             )
         ).order_by(Conversation.updated_at.desc()).all()
         
-        print(f"DEBUG: Found {len(conversations)} conversations")
+        print(f"\n{'='*60}")
+        print(f"GET /conversations for user {current_user.id}")
+        print(f"Found {len(conversations)} conversations (before dedup)")
+        print(f"{'='*60}\n")
+        
+        # Deduplicate bidirectional conversations
+        # Key = (user1, user2, event_id) - sorted so order doesn't matter
+        seen = {}
+        unique_conversations = []
+        
+        for conv in conversations:
+            # Create a unique key for this conversation pair
+            user_pair = tuple(sorted([conv.user_id, conv.other_user_id]))
+            key = (user_pair[0], user_pair[1], conv.event_id)
+            
+            if key not in seen:
+                seen[key] = conv
+                unique_conversations.append(conv)
+            else:
+                print(f"DEBUG: Skipping duplicate conversation {conv.id} (already have {seen[key].id})")
+        
+        print(f"Found {len(unique_conversations)} unique conversations (after dedup)\n")
         
         threads = []
-        for conv in conversations:
+        for conv in unique_conversations:
             other_user = conv.other_user if conv.user_id == current_user.id else conv.user
             latest_msg = conv.latest_message
             
-            print(f"DEBUG: Processing conv {conv.id}, latest_msg={latest_msg}")
+            # DEBUG: Check all messages in this conversation
+            all_msgs = Message.query.filter_by(conversation_id=conv.id).all()
+            print(f"\n=== CONV {conv.id} ===")
+            print(f"  Structure: user_id={conv.user_id}, other_user_id={conv.other_user_id}")
+            print(f"  Current user: {current_user.id}")
+            print(f"  Other user: {other_user.id}")
+            print(f"  Total messages in conv: {len(all_msgs)}")
+            
+            for msg in all_msgs:
+                print(f"    - Msg {msg.id}: sender={msg.sender_id} → receiver={msg.receiver_id}, is_read={msg.is_read}, text='{msg.message[:30]}...'")
+            
+            # Calculate unread count
+            unread = db.session.query(Message).filter(
+                Message.conversation_id == conv.id,
+                Message.receiver_id == current_user.id,
+                Message.is_read == False
+            ).count()
+            print(f"  Unread count for user {current_user.id}: {unread}")
             
             if latest_msg:
-                unread = db.session.query(Message).filter(
-                    Message.conversation_id == conv.id,
-                    Message.receiver_id == current_user.id,
-                    Message.is_read == False
-                ).count()
-                
                 other_name = ""
                 if other_user.parent_profile:
                     first_name = other_user.parent_profile.first_name or ""
@@ -2092,11 +2125,15 @@ def get_conversations():
                     'lastMessageTime': latest_msg.timestamp.isoformat(),
                 }
                 
-                print(f"DEBUG: thread data = {thread}")
+                print(f"  ✓ Added thread with unreadCount={thread['unreadCount']}")
                 threads.append(thread)
+            else:
+                print(f"  ✗ Skipped - no latest_msg")
         
-        print(f"DEBUG: Returning {len(threads)} threads")
-        print(f"DEBUG: Final response = {threads}")
+        print(f"\n{'='*60}")
+        print(f"Returning {len(threads)} threads")
+        print(f"Final response = {threads}")
+        print(f"{'='*60}\n")
         
         return jsonify(threads), 200
     
@@ -2106,6 +2143,7 @@ def get_conversations():
         traceback.print_exc()
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+ 
  
  
 @app.route('/conversations', methods=['POST'])
