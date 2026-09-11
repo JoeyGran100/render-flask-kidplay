@@ -3114,63 +3114,64 @@ def send_message(conversation_id):
 
 
 
-@socketio.on('connect')
-def handle_connect(auth):
-    """
-    User connects to socket.
-    Auth should contain: {"token": "jwt_token_here"}
-    """
-    try:
-        # Get user_id from JWT token in auth
-        token = auth.get('token') if auth else None
-        if not token:
-            logger.warning("Connection attempt without token")
-            return False  # Reject connection
+# @socketio.on('connect')
+# def handle_connect(auth):
+#     """
+#     User connects to socket.
+#     Auth should contain: {"token": "jwt_token_here"}
+#     """
+#     try:
+#         # Get user_id from JWT token in auth
+#         token = auth.get('token') if auth else None
+#         if not token:
+#             logger.warning("Connection attempt without token")
+#             return False  # Reject connection
         
-        # Decode JWT and get user_id
-        user_id = decode_token(token)
-        if not user_id:
-            logger.warning("Failed to decode token or extract user_id")
-            return False
+#         # Decode JWT and get user_id
+#         user_id = decode_token(token)
+#         if not user_id:
+#             logger.warning("Failed to decode token or extract user_id")
+#             return False
         
-        # Store connection
-        active_connections[user_id] = request.sid
-        logger.info(f"✅ User {user_id} connected (SID: {request.sid}). Active connections: {len(active_connections)}")
+#         # Store connection
+#         active_connections[user_id] = request.sid
+#         logger.info(f"✅ User {user_id} connected (SID: {request.sid}). Active connections: {len(active_connections)}")
         
-        emit('connection_response', {
-            'status': 'connected',
-            'userId': user_id,
-            'message': f'Connected as user {user_id}'
-        })
+#         emit('connection_response', {
+#             'status': 'connected',
+#             'userId': user_id,
+#             'message': f'Connected as user {user_id}'
+#         })
         
-    except Exception as e:
-        logger.error(f"❌ Connection error: {e}")
-        return False
+#     except Exception as e:
+#         logger.error(f"❌ Connection error: {e}")
+#         return False
  
  
-@socketio.on('disconnect')
-def handle_disconnect():
-    """User disconnects from socket"""
-    try:
-        user_id = None
-        for uid, sid in list(active_connections.items()):
-            if sid == request.sid:
-                user_id = uid
-                del active_connections[uid]
-                break
+# @socketio.on('disconnect')
+# def handle_disconnect():
+#     """User disconnects from socket"""
+#     try:
+#         user_id = None
+#         for uid, sid in list(active_connections.items()):
+#             if sid == request.sid:
+#                 user_id = uid
+#                 del active_connections[uid]
+#                 break
         
-        if user_id:
-            logger.info(f"❌ User {user_id} disconnected. Active connections: {len(active_connections)}")
-    except Exception as e:
-        logger.error(f"Error in disconnect handler: {e}")
+#         if user_id:
+#             logger.info(f"❌ User {user_id} disconnected. Active connections: {len(active_connections)}")
+#     except Exception as e:
+#         logger.error(f"Error in disconnect handler: {e}")
 
 
-@socketio.on_error_default
-def default_error_handler(e):
-    """Handle socket errors"""
-    logger.error(f"Socket error: {e}")
+# @socketio.on_error_default
+# def default_error_handler(e):
+#     """Handle socket errors"""
+#     logger.error(f"Socket error: {e}")
 
 
 
-if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+if __name__ == '__main__':
+    # ✅ use socketio.run instead of app.run for local dev WebSocket support
+    socketio.run(app, host='0.0.0.0', port=8000, debug=True)
