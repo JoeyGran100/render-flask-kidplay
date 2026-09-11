@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config[
     'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_6_user:Q3tI1aYGdingQWskiw3MyD6YCyGKkcfr@dpg-daheocafngtc7396qm10-a.frankfurt-postgres.render.com/kidplay_render_database_6"
-socketio = SocketIO(app, cors_allowed_origins="*")  # ← Configure CORS
-CORS(app)  # ← Add this line
+
+# ✅ FIX: Add CORS configuration
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
 bcrypt = Bcrypt()
