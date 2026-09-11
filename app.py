@@ -2035,95 +2035,87 @@ def post_ticket():
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/conversations', methods=['GET'])
-def get_conversations():
+@app.route('/conversations', methods=['POST'])
+def start_conversation():
     """
-    Get all active conversations for current user.
-    Shows both event-specific and general chats.
+    Start or get existing conversation.
+    If conversation exists, return it. Otherwise create.
+    
+    Request body:
+    {
+        "otherUserId": 5,
+        "eventId": 42  // Optional - set when messaging from event screen
+    }
     """
     current_user = get_current_user_from_token()
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
     
     try:
-        conversations = db.session.query(Conversation).filter(
+        data = request.get_json()
+        other_user_id = data.get('otherUserId')
+        event_id = data.get('eventId')  # ← OPTIONAL
+        
+        if not other_user_id:
+            return jsonify({'error': 'otherUserId is required'}), 400
+        
+        if other_user_id == current_user.id:
+            return jsonify({'error': 'Cannot start conversation with yourself'}), 400
+        
+        other_user = db.session.get(User, other_user_id)
+        if not other_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        if event_id:
+            event = db.session.get(EventLocation, event_id)
+            if not event:
+                return jsonify({'error': 'Event not found'}), 404
+        
+        # Helper to build event_id filter (handles NULL properly)
+        if event_id is None:
+            event_filter = Conversation.event_id.is_(None)
+        else:
+            event_filter = Conversation.event_id == event_id
+        
+        # Check if conversation already exists (bidirectional)
+        existing = db.session.query(Conversation).filter(
             db.or_(
-                Conversation.user_id == current_user.id,
-                Conversation.other_user_id == current_user.id
+                db.and_(
+                    Conversation.user_id == current_user.id,
+                    Conversation.other_user_id == other_user_id,
+                    event_filter
+                ),
+                db.and_(
+                    Conversation.user_id == other_user_id,
+                    Conversation.other_user_id == current_user.id,
+                    event_filter
+                )
             )
-        ).order_by(Conversation.updated_at.desc()).all()
+        ).first()
         
-        print(f"\n{'='*60}")
-        print(f"GET /conversations for user {current_user.id}")
-        print(f"Found {len(conversations)} conversations")
-        print(f"{'='*60}\n")
+        if existing:
+            print(f"DEBUG: Found existing conversation {existing.id}")
+            return jsonify({'conversationId': existing.id}), 200
         
-        threads = []
-        for conv in conversations:
-            other_user = conv.other_user if conv.user_id == current_user.id else conv.user
-            latest_msg = conv.latest_message
-            
-            # DEBUG: Check all messages in this conversation
-            all_msgs = Message.query.filter_by(conversation_id=conv.id).all()
-            print(f"\n=== CONV {conv.id} ===")
-            print(f"  Structure: user_id={conv.user_id}, other_user_id={conv.other_user_id}")
-            print(f"  Current user: {current_user.id}")
-            print(f"  Other user: {other_user.id}")
-            print(f"  Total messages in conv: {len(all_msgs)}")
-            
-            for msg in all_msgs:
-                print(f"    - Msg {msg.id}: sender={msg.sender_id} → receiver={msg.receiver_id}, is_read={msg.is_read}, text='{msg.message[:30]}...'")
-            
-            # Calculate unread count
-            unread = db.session.query(Message).filter(
-                Message.conversation_id == conv.id,
-                Message.receiver_id == current_user.id,
-                Message.is_read == False
-            ).count()
-            print(f"  Unread count for user {current_user.id}: {unread}")
-            
-            if latest_msg:
-                other_name = ""
-                if other_user.parent_profile:
-                    first_name = other_user.parent_profile.first_name or ""
-                    last_name = other_user.parent_profile.last_name or ""
-                    other_name = f"{first_name} {last_name}".strip()
-                
-                other_image = ""
-                if other_user.parent_profile and other_user.parent_profile.images:
-                    if len(other_user.parent_profile.images) > 0:
-                        other_image = other_user.parent_profile.images[0].image_url or ""
-                
-                thread = {
-                    'conversationId': conv.id,
-                    'otherUserId': other_user.id,
-                    'otherUserName': other_name or other_user.email,
-                    'otherUserImage': other_image,
-                    'eventId': conv.event_id,
-                    'eventName': conv.event.event_name if conv.event else None,
-                    'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
-                    'time': latest_msg.time_ago,
-                    'unreadCount': unread,
-                    'lastMessageTime': latest_msg.timestamp.isoformat(),
-                }
-                
-                print(f"  ✓ Added thread with unreadCount={thread['unreadCount']}")
-                threads.append(thread)
-            else:
-                print(f"  ✗ Skipped - no latest_msg")
+        # Create new conversation
+        print(f"DEBUG: Creating new conversation for user {current_user.id} ↔ {other_user_id}")
+        conversation = Conversation(
+            user_id=current_user.id,
+            other_user_id=other_user_id,
+            event_id=event_id  # ← Can be None
+        )
         
-        print(f"\n{'='*60}")
-        print(f"Returning {len(threads)} threads")
-        print(f"Final response = {threads}")
-        print(f"{'='*60}\n")
+        db.session.add(conversation)
+        db.session.commit()
         
-        return jsonify(threads), 200
+        print(f"DEBUG: Created conversation {conversation.id}")
+        return jsonify({'conversationId': conversation.id}), 201
     
     except Exception as e:
-        print(f"ERROR in get_conversations: {e}")
+        db.session.rollback()
+        print(f"ERROR in start_conversation: {e}")
         import traceback
         traceback.print_exc()
-        db.session.rollback()
         return jsonify({'error': str(e)}), 500
  
  
