@@ -2035,6 +2035,80 @@ def post_ticket():
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
  
+@app.route('/conversations', methods=['GET'])
+def get_conversations():
+    """
+    Get all active conversations for current user.
+    Shows both event-specific and general chats.
+    """
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        conversations = db.session.query(Conversation).filter(
+            db.or_(
+                Conversation.user_id == current_user.id,
+                Conversation.other_user_id == current_user.id
+            )
+        ).order_by(Conversation.updated_at.desc()).all()
+        
+        print(f"DEBUG: Found {len(conversations)} conversations")
+        
+        threads = []
+        for conv in conversations:
+            other_user = conv.other_user if conv.user_id == current_user.id else conv.user
+            latest_msg = conv.latest_message
+            
+            print(f"DEBUG: Processing conv {conv.id}, latest_msg={latest_msg}")
+            
+            if latest_msg:
+                unread = db.session.query(Message).filter(
+                    Message.conversation_id == conv.id,
+                    Message.receiver_id == current_user.id,
+                    Message.is_read == False
+                ).count()
+                
+                other_name = ""
+                if other_user.parent_profile:
+                    first_name = other_user.parent_profile.first_name or ""
+                    last_name = other_user.parent_profile.last_name or ""
+                    other_name = f"{first_name} {last_name}".strip()
+                
+                other_image = ""
+                if other_user.parent_profile and other_user.parent_profile.images:
+                    if len(other_user.parent_profile.images) > 0:
+                        other_image = other_user.parent_profile.images[0].image_url or ""
+                
+                thread = {
+                    'conversationId': conv.id,
+                    'otherUserId': other_user.id,
+                    'otherUserName': other_name or other_user.email,
+                    'otherUserImage': other_image,
+                    'eventId': conv.event_id,
+                    'eventName': conv.event.event_name if conv.event else None,
+                    'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
+                    'time': latest_msg.time_ago,
+                    'unreadCount': unread,
+                    'lastMessageTime': latest_msg.timestamp.isoformat(),
+                }
+                
+                print(f"DEBUG: thread data = {thread}")
+                threads.append(thread)
+        
+        print(f"DEBUG: Returning {len(threads)} threads")
+        print(f"DEBUG: Final response = {threads}")
+        
+        return jsonify(threads), 200
+    
+    except Exception as e:
+        print(f"ERROR in get_conversations: {e}")
+        import traceback
+        traceback.print_exc()
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+ 
+ 
 @app.route('/conversations', methods=['POST'])
 def start_conversation():
     """
@@ -2116,78 +2190,6 @@ def start_conversation():
         print(f"ERROR in start_conversation: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
- 
- 
-@app.route('/conversations', methods=['POST'])
-def start_conversation():
-    """
-    Start or get existing conversation.
-    If conversation exists, return it. Otherwise create.
-    
-    Request body:
-    {
-        "otherUserId": 5,
-        "eventId": 42  // Optional - set when messaging from event screen
-    }
-    """
-    current_user = get_current_user_from_token()
-    if not current_user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    try:
-        data = request.get_json()
-        other_user_id = data.get('otherUserId')
-        event_id = data.get('eventId')  # ← OPTIONAL
-        
-        if not other_user_id:
-            return jsonify({'error': 'otherUserId is required'}), 400
-        
-        if other_user_id == current_user.id:
-            return jsonify({'error': 'Cannot start conversation with yourself'}), 400
-        
-        other_user = db.session.get(User, other_user_id)
-        if not other_user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        if event_id:
-            event = db.session.get(EventLocation, event_id)
-            if not event:
-                return jsonify({'error': 'Event not found'}), 404
-        
-        # Check if conversation already exists
-        existing = db.session.query(Conversation).filter(
-            db.or_(
-                db.and_(
-                    Conversation.user_id == current_user.id,
-                    Conversation.other_user_id == other_user_id,
-                    Conversation.event_id == event_id  # ← Match event if provided
-                ),
-                db.and_(
-                    Conversation.user_id == other_user_id,
-                    Conversation.other_user_id == current_user.id,
-                    Conversation.event_id == event_id
-                )
-            )
-        ).first()
-        
-        if existing:
-            return jsonify({'conversationId': existing.id}), 200
-        
-        # Create new conversation
-        conversation = Conversation(
-            user_id=current_user.id,
-            other_user_id=other_user_id,
-            event_id=event_id  # ← Can be None
-        )
-        
-        db.session.add(conversation)
-        db.session.commit()
-        
-        return jsonify({'conversationId': conversation.id}), 201
-    
-    except Exception as e:
-        db.session.rollback()
         return jsonify({'error': str(e)}), 500
  
     
