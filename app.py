@@ -1,7 +1,7 @@
-
 from datetime import date, datetime, timezone, timedelta
 import re, os
 from flask import Flask, jsonify, logging, request, send_from_directory
+from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, join_room, disconnect, emit
 from werkzeug.utils import secure_filename
@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config[
     'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_6_user:Q3tI1aYGdingQWskiw3MyD6YCyGKkcfr@dpg-daheocafngtc7396qm10-a.frankfurt-postgres.render.com/kidplay_render_database_6"
-socketio = SocketIO(app)
+socketio = SocketIO(app, cors_allowed_origins="*")  # ← Configure CORS
+CORS(app)  # ← Add this line
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
 bcrypt = Bcrypt()
-
 # Store active connections: user_id -> sid (session id)
 active_connections = {}
 
