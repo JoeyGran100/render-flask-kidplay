@@ -2086,7 +2086,6 @@ def get_conversations():
                     'otherUserName': other_name or other_user.email,
                     'otherUserImage': other_image,
                     'eventId': conv.event_id,
-                    'eventName': conv.event.event_name if conv.event else None,
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
                     'unreadCount': unread,
