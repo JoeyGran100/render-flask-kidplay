@@ -975,13 +975,13 @@ def sign_in():
     try:
         data = request.get_json()
         email = data.get('email')
-        password_hash = data.get('password_hash')
+        password = data.get('password')  # ← Plaintext password from client
 
-        if not email or not password_hash:
+        if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
 
         user = User.query.filter_by(email=email).first()
-        if not user or not bcrypt.check_password_hash(user.password_hash, password_hash):
+        if not user or not bcrypt.check_password_hash(user.password_hash, password):
             return jsonify({'message': 'Invalid credentials'}), 401
 
         payload = {
@@ -1012,6 +1012,11 @@ def get_signin_data():
         for rel in signin
     ]
     return jsonify(data)
+
+@app.route('/test', methods=['GET'])
+def test():
+    return jsonify({'message': 'Flask is reachable!'}), 200
+
 
 
 @app.route('/logout', methods=['POST'])
