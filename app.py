@@ -1007,7 +1007,7 @@ def get_signin_data():
         {
             'id': rel.id,
             'email': rel.email,
-            'password': rel.password,
+            'password_hash': rel.password_hash,
         }
         for rel in signin
     ]
