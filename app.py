@@ -21,7 +21,7 @@ from typing import Optional
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_6_user:Q3tI1aYGdingQWskiw3MyD6YCyGKkcfr@dpg-daheocafngtc7396qm10-a.frankfurt-postgres.render.com/kidplay_render_database_6"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_7_user:oF2rCKJbeGByPoKcxjOTXskus8VjhPn0@dpg-dahvqhks728c73dq35jg-a.frankfurt-postgres.render.com/kidplay_render_database_7"
 
 # ✅ FIX: Add CORS configuration
 socketio = SocketIO(app)
