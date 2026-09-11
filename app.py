@@ -1,9 +1,8 @@
 from datetime import date, datetime, timezone, timedelta
 import re, os
 from flask import Flask, jsonify, logging, request, send_from_directory
-from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, join_room, disconnect, emit
+from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
 from flask import request, jsonify
 import traceback
@@ -18,26 +17,19 @@ import secrets       # built-in (used for qr_token generation)
 from flask_bcrypt import Bcrypt
 import uuid
 import os
-import requests
 from typing import Optional
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config[
     'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_6_user:Q3tI1aYGdingQWskiw3MyD6YCyGKkcfr@dpg-daheocafngtc7396qm10-a.frankfurt-postgres.render.com/kidplay_render_database_6"
 
 # ✅ FIX: Add CORS configuration
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app)
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
 bcrypt = Bcrypt()
 # Store active connections: user_id -> sid (session id)
-active_connections = {}
 
 app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
 SECRET_KEY = app.config['SECRET_KEY']
@@ -3023,154 +3015,6 @@ def get_messages(conversation_id):
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
     
-    
-@app.route('/conversations/<int:conversation_id>/messages', methods=['POST'])
-def send_message(conversation_id):
-    """
-    Send a message in a conversation.
-    Emits socket event to notify receiver in real-time.
-    """
-    current_user = get_current_user_from_token()
-    if not current_user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    try:
-        conversation = Conversation.query.get(conversation_id)
-        if not conversation:
-            return jsonify({'error': 'Conversation not found'}), 404
-        
-        # Verify user is part of conversation
-        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'Request body required'}), 400
-        
-        message_text = data.get('message', '').strip()
-        reply_to_id = data.get('replyToId')
-        image_url = data.get('imageUrl')
-        
-        if not message_text and not image_url:
-            return jsonify({'error': 'message or imageUrl required'}), 400
-        
-        if len(message_text) > 10000:
-            return jsonify({'error': 'Message too long'}), 400
-        
-        # Determine receiver (the other person in conversation)
-        receiver_id = conversation.other_user_id if conversation.user_id == current_user.id else conversation.user_id
-        
-        new_message = Message(
-            conversation_id=conversation_id,
-            sender_id=current_user.id,
-            receiver_id=receiver_id,
-            message=message_text,
-            reply_to_id=reply_to_id,
-            image_url=image_url
-        )
-        
-        db.session.add(new_message)
-        conversation.updated_at = datetime.now(timezone.utc)
-        db.session.commit()
-        
-        # ===== EMIT SOCKET EVENT TO RECEIVER =====
-        if receiver_id in active_connections:
-            # Get sender's name from parent_profile
-            sender_name = current_user.email  # Fallback
-            if current_user.parent_profile:
-                first_name = current_user.parent_profile.first_name or ""
-                last_name = current_user.parent_profile.last_name or ""
-                sender_name = f"{first_name} {last_name}".strip() or current_user.email
-            
-            # Count unread messages for the receiver
-            unread_count = Message.query.filter(
-                Message.conversation_id == conversation_id,
-                Message.receiver_id == receiver_id,
-                Message.is_read == False
-            ).count()
-            
-            socketio.emit(
-                'new_message',
-                {
-                    'conversationId': conversation_id,
-                    'senderId': current_user.id,
-                    'senderName': sender_name,
-                    'message': message_text,
-                    'timestamp': new_message.timestamp.isoformat(),
-                    'unreadCount': unread_count
-                },
-                to=active_connections[receiver_id]  # Send only to that user's socket
-            )
-            logger.info(f"📨 Emitted new_message to user {receiver_id} (SID: {active_connections[receiver_id]})")
-        else:
-            logger.info(f"⚠️ User {receiver_id} not connected, message stored for later")
-        
-        return jsonify(new_message.to_dict()), 201
-    
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"❌ Error in send_message: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-
-@socketio.on('connect')
-def handle_connect(auth):
-    """
-    User connects to socket.
-    Auth should contain: {"token": "jwt_token_here"}
-    """
-    try:
-        # Get user_id from JWT token in auth
-        token = auth.get('token') if auth else None
-        if not token:
-            logger.warning("Connection attempt without token")
-            return False  # Reject connection
-        
-        # Decode JWT and get user_id
-        user_id = decode_token(token)
-        if not user_id:
-            logger.warning("Failed to decode token or extract user_id")
-            return False
-        
-        # Store connection
-        active_connections[user_id] = request.sid
-        logger.info(f"✅ User {user_id} connected (SID: {request.sid}). Active connections: {len(active_connections)}")
-        
-        emit('connection_response', {
-            'status': 'connected',
-            'userId': user_id,
-            'message': f'Connected as user {user_id}'
-        })
-        
-    except Exception as e:
-        logger.error(f"❌ Connection error: {e}")
-        return False
- 
- 
-@socketio.on('disconnect')
-def handle_disconnect():
-    """User disconnects from socket"""
-    try:
-        user_id = None
-        for uid, sid in list(active_connections.items()):
-            if sid == request.sid:
-                user_id = uid
-                del active_connections[uid]
-                break
-        
-        if user_id:
-            logger.info(f"❌ User {user_id} disconnected. Active connections: {len(active_connections)}")
-    except Exception as e:
-        logger.error(f"Error in disconnect handler: {e}")
-
-
-@socketio.on_error_default
-def default_error_handler(e):
-    """Handle socket errors"""
-    logger.error(f"Socket error: {e}")
-
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
