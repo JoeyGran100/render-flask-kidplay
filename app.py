@@ -2271,32 +2271,90 @@ def get_follows():
  
 @app.route('/follows', methods=['POST'])
 def post_follow():
+    """Follow an organizer/user"""
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     data = request.get_json()
     if not data or 'following_id' not in data:
         return jsonify({'error': 'following_id is required'}), 400
- 
-    if data['following_id'] == user.id:
+
+    following_id = data['following_id']
+
+    # Validation
+    if following_id == user.id:
         return jsonify({'error': 'Cannot follow yourself'}), 400
- 
-    existing = Follow.query.filter_by(follower_id=user.id, following_id=data['following_id']).first()
+
+    # Check if user exists
+    target_user = User.query.get(following_id)
+    if not target_user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Check if already following
+    existing = Follow.query.filter_by(
+        follower_id=user.id,
+        following_id=following_id
+    ).first()
+    
     if existing:
         return jsonify({'error': 'Already following this user'}), 409
- 
-    follow = Follow(follower_id=user.id, following_id=data['following_id'])
-    db.session.add(follow)
- 
+
     try:
+        follow = Follow(follower_id=user.id, following_id=following_id)
+        db.session.add(follow)
         db.session.commit()
-    except Exception:
+        
+        logger.info(f"User {user.id} followed user {following_id}")
+        
+        return jsonify({
+            'message': 'Successfully followed user',
+            'user_id': following_id,
+            'since': follow.created_at.isoformat(),
+        }), 201
+        
+    except Exception as e:
         db.session.rollback()
-        traceback.print_exc()
+        logger.error(f"Error following user: {str(e)}", exc_info=True)
         return jsonify({'error': 'Failed to follow user'}), 500
  
-    return jsonify({'message': 'Now following user'}), 201
+ 
+ @app.route('/follows/<int:following_id>', methods=['DELETE'])
+def delete_follow(following_id):
+    """Unfollow an organizer/user"""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Validation
+    if following_id == user.id:
+        return jsonify({'error': 'Cannot unfollow yourself'}), 400
+
+    # Check if following exists
+    follow = Follow.query.filter_by(
+        follower_id=user.id,
+        following_id=following_id
+    ).first()
+    
+    if not follow:
+        return jsonify({'error': 'Not following this user'}), 404
+
+    try:
+        db.session.delete(follow)
+        db.session.commit()
+        
+        logger.info(f"User {user.id} unfollowed user {following_id}")
+        
+        return jsonify({
+            'message': 'Successfully unfollowed user',
+            'user_id': following_id,
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error unfollowing user: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Failed to unfollow user'}), 500
+ 
  
  
 # ─────────────────────────────────────────────────────────────────────────────
