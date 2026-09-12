@@ -2242,6 +2242,7 @@ def post_event_like():
 # FAVOURITE EVENTS (WITH FULL DETAILS) ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
     """Get all events liked by the current user with full details"""
@@ -2250,7 +2251,6 @@ def get_favourite_events():
         return jsonify({'error': 'Unauthorized'}), 401
     
     try:
-        # Join EventLike with EventLocation and all related data
         liked_events = (
             db.session.query(EventLocation)
             .join(EventLike, EventLike.event_id == EventLocation.id)
@@ -2277,7 +2277,7 @@ def get_favourite_events():
                 'is_upcoming': e.is_upcoming,
                 'is_ongoing': e.is_ongoing,
                 'is_past': e.is_past,
-                # ── Related Data ──
+                # ── Venue ──
                 'venue': {
                     'id': e.venue.id,
                     'name': e.venue.name,
@@ -2285,16 +2285,43 @@ def get_favourite_events():
                     'latitude': e.venue.latitude,
                     'longitude': e.venue.longitude,
                 } if e.venue else None,
+                # ── Category ──
                 'category': {
                     'id': e.event_category.id,
                     'name': e.event_category.name,
                 } if e.event_category else None,
+                # ── Organizer (FULL DETAILS) ──
                 'organizer': {
                     'id': e.event_organizer.id,
-                    'name': e.event_organizer.first_name + ' ' + e.event_organizer.last_name,
-                    'avatar_url': e.event_organizer.avatar_url,
+                    'user_id': e.event_organizer.user_id,
+                    'name': e.event_organizer.name,
+                    'bio': e.event_organizer.organizer_bio,
+                    'top_event_hashtags': e.event_organizer.top_event_hashtags or [],
+                    'verification_status': e.event_organizer.verification_status.value,
+                    'is_approved': e.event_organizer.is_approved,
+                    'verified_at': e.event_organizer.verified_at.isoformat() if e.event_organizer.verified_at else None,
+                    # ── Profile details (from ParentsProfile via owner) ──
+                    'first_name': e.event_organizer.first_name,
+                    'last_name': e.event_organizer.last_name,
+                    'gender': e.event_organizer.gender.value if e.event_organizer.gender else None,
+                    'phone_number': e.event_organizer.phone_number,
+                    'date_of_birth': e.event_organizer.date_of_birth.isoformat() if e.event_organizer.date_of_birth else None,
+                    # ── Computed stats ──
+                    'follower_count': e.event_organizer.follower_count,
+                    'total_events_created': e.event_organizer.total_events_created,
+                    'total_participants': e.event_organizer.total_participants,
+                    # ── Portfolio images ──
+                    'portfolio_images': [
+                        {
+                            'id': img.id,
+                            'image_url': img.image_url,
+                            'display_order': img.display_order,
+                            'uploaded_at': img.uploaded_at.isoformat(),
+                        }
+                        for img in e.event_organizer.images
+                    ] if e.event_organizer.images else [],
                 } if e.event_organizer else None,
-                # ── Images ──
+                # ── Event Images ──
                 'cover_image': {
                     'id': e.cover_image.id,
                     'image_url': e.cover_image.image_url,
@@ -2322,7 +2349,7 @@ def get_favourite_events():
     except Exception:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
-
+    
 
 @app.route('/favourites/<int:event_id>', methods=['DELETE'])
 def remove_favourite_event(event_id):
