@@ -18,6 +18,20 @@ from flask_bcrypt import Bcrypt
 import uuid
 import os
 from typing import Optional
+import logging
+
+# Add this to your Flask app setup
+logging.basicConfig(
+    level=logging.DEBUG,  # Change to INFO for production
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),  # Log to file
+        logging.StreamHandler()  # Also print to console
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
 
 app = Flask(__name__)
 app.config[
@@ -2280,11 +2294,18 @@ def post_event_like():
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
     """Get all events liked by the current user with full details"""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
+    logger.info("=== GET /favourites request started ===")
     
     try:
+        user = get_current_user_from_token()
+        if not user:
+            logger.warning("Unauthorized request - no user token found")
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        logger.info(f"User authenticated: {user.id}")
+        
+        # Query liked events
+        logger.info(f"Querying liked events for user {user.id}")
         liked_events = (
             db.session.query(EventLocation)
             .join(EventLike, EventLike.event_id == EventLocation.id)
@@ -2293,80 +2314,124 @@ def get_favourite_events():
             .all()
         )
         
-        return jsonify([
-            {
-                'id': e.id,
-                'venue_id': e.venue_id,
-                'event_category_id': e.event_category_id,
-                'event_organizer_id': e.event_organizer_id,
-                'start_time': e.start_time.isoformat(),
-                'end_time': e.end_time.isoformat() if e.end_time else None,
-                'event_description': e.event_description,
-                'max_attendees': e.max_attendees,
-                'girls_attendees': e.girls_attendees,
-                'boys_attendees': e.boys_attendees,
-                # ── Age Range ──
-                'min_age': e.min_age,  # ✅ ADDED
-                'max_age': e.max_age,  # ✅ ADDED
-                'age_range': e.age_range,  # "1 - 18" or "1+"
-                'base_price': float(e.base_price) if e.base_price else None,
-                'currency': e.currency,
-                'is_checkin_closed': e.is_checkin_closed,
-                'is_upcoming': e.is_upcoming,
-                'is_ongoing': e.is_ongoing,
-                'is_past': e.is_past,
+        logger.info(f"Found {len(liked_events)} liked events for user {user.id}")
+        
+        # Build response
+        response_data = []
+        for idx, e in enumerate(liked_events):
+            try:
+                logger.debug(f"Processing event {idx + 1}/{len(liked_events)}: Event ID {e.id}")
+                
+                # Get liked_at timestamp
+                like_record = (
+                    db.session.query(EventLike)
+                    .filter_by(user_id=user.id, event_id=e.id)
+                    .first()
+                )
+                
+                if not like_record:
+                    logger.warning(f"Like record not found for event {e.id}, skipping")
+                    continue
+                
+                event_data = {
+                    'id': e.id,
+                    'venue_id': e.venue_id,
+                    'event_category_id': e.event_category_id,
+                    'event_organizer_id': e.event_organizer_id,
+                    'start_time': e.start_time.isoformat(),
+                    'end_time': e.end_time.isoformat() if e.end_time else None,
+                    'event_description': e.event_description,
+                    'max_attendees': e.max_attendees,
+                    'girls_attendees': e.girls_attendees,
+                    'boys_attendees': e.boys_attendees,
+                    # ── Age Range ──
+                    'min_age': e.min_age,
+                    'max_age': e.max_age,
+                    'age_range': e.age_range,
+                    'base_price': float(e.base_price) if e.base_price else None,
+                    'currency': e.currency,
+                    'is_checkin_closed': e.is_checkin_closed,
+                    'is_upcoming': e.is_upcoming,
+                    'is_ongoing': e.is_ongoing,
+                    'is_past': e.is_past,
+                }
+                
                 # ── Venue ──
-                'venue': {
-                    'id': e.venue.id,
-                    'name': e.venue.name,
-                    'address': e.venue.address,
-                    'latitude': e.venue.latitude,
-                    'longitude': e.venue.longitude,
-                } if e.venue else None,
+                if e.venue:
+                    event_data['venue'] = {
+                        'id': e.venue.id,
+                        'name': e.venue.name,
+                        'address': e.venue.address,
+                        'latitude': e.venue.latitude,
+                        'longitude': e.venue.longitude,
+                    }
+                    logger.debug(f"  Venue loaded: {e.venue.name}")
+                else:
+                    logger.warning(f"  Event {e.id} has no venue")
+                    event_data['venue'] = None
+                
                 # ── Category ──
-                'category': {
-                    'id': e.event_category.id,
-                    'name': e.event_category.name,
-                } if e.event_category else None,
+                if e.event_category:
+                    event_data['category'] = {
+                        'id': e.event_category.id,
+                        'name': e.event_category.name,
+                    }
+                    logger.debug(f"  Category loaded: {e.event_category.name}")
+                else:
+                    logger.warning(f"  Event {e.id} has no category")
+                    event_data['category'] = None
+                
                 # ── Organizer (FULL DETAILS) ──
-                'organizer': {
-                    'id': e.event_organizer.id,
-                    'user_id': e.event_organizer.user_id,
-                    'name': e.event_organizer.name,
-                    'avatar_url': e.event_organizer.avatar_url,
-                    'bio': e.event_organizer.organizer_bio,
-                    'top_event_hashtags': e.event_organizer.top_event_hashtags or [],
-                    'verification_status': e.event_organizer.verification_status.value,
-                    'is_approved': e.event_organizer.is_approved,
-                    'verified_at': e.event_organizer.verified_at.isoformat() if e.event_organizer.verified_at else None,
-                    # ── Profile details (from ParentsProfile via owner) ──
-                    'first_name': e.event_organizer.first_name,
-                    'last_name': e.event_organizer.last_name,
-                    'gender': e.event_organizer.gender.value if e.event_organizer.gender else None,
-                    'phone_number': e.event_organizer.phone_number,
-                    'date_of_birth': e.event_organizer.date_of_birth.isoformat() if e.event_organizer.date_of_birth else None,
-                    # ── Computed stats ──
-                    'follower_count': e.event_organizer.follower_count,
-                    'total_events_created': e.event_organizer.total_events_created,
-                    'total_participants': e.event_organizer.total_participants,
-                    # ── Portfolio images ──
-                    'portfolio_images': [
-                        {
-                            'id': img.id,
-                            'image_url': img.image_url,
-                            'display_order': img.display_order,
-                            'uploaded_at': img.uploaded_at.isoformat(),
-                        }
-                        for img in e.event_organizer.images
-                    ] if e.event_organizer.images else [],
-                } if e.event_organizer else None,
+                if e.event_organizer:
+                    logger.debug(f"  Loading organizer {e.event_organizer.id}")
+                    event_data['organizer'] = {
+                        'id': e.event_organizer.id,
+                        'user_id': e.event_organizer.user_id,
+                        'name': e.event_organizer.name,
+                        'avatar_url': e.event_organizer.avatar_url,
+                        'bio': e.event_organizer.organizer_bio,
+                        'top_event_hashtags': e.event_organizer.top_event_hashtags or [],
+                        'verification_status': e.event_organizer.verification_status.value,
+                        'is_approved': e.event_organizer.is_approved,
+                        'verified_at': e.event_organizer.verified_at.isoformat() if e.event_organizer.verified_at else None,
+                        # ── Profile details ──
+                        'first_name': e.event_organizer.first_name,
+                        'last_name': e.event_organizer.last_name,
+                        'gender': e.event_organizer.gender.value if e.event_organizer.gender else None,
+                        'phone_number': e.event_organizer.phone_number,
+                        'date_of_birth': e.event_organizer.date_of_birth.isoformat() if e.event_organizer.date_of_birth else None,
+                        # ── Computed stats ──
+                        'follower_count': e.event_organizer.follower_count,
+                        'total_events_created': e.event_organizer.total_events_created,
+                        'total_participants': e.event_organizer.total_participants,
+                        # ── Portfolio images ──
+                        'portfolio_images': [
+                            {
+                                'id': img.id,
+                                'image_url': img.image_url,
+                                'display_order': img.display_order,
+                                'uploaded_at': img.uploaded_at.isoformat(),
+                            }
+                            for img in e.event_organizer.images
+                        ] if e.event_organizer.images else [],
+                    }
+                    logger.debug(f"  Organizer loaded with {len(e.event_organizer.images or [])} portfolio images")
+                else:
+                    logger.warning(f"  Event {e.id} has no organizer")
+                    event_data['organizer'] = None
+                
                 # ── Event Images ──
-                'cover_image': {
-                    'id': e.cover_image.id,
-                    'image_url': e.cover_image.image_url,
-                    'uploaded_at': e.cover_image.uploaded_at.isoformat(),
-                } if e.cover_image else None,
-                'gallery_images': [
+                if e.cover_image:
+                    event_data['cover_image'] = {
+                        'id': e.cover_image.id,
+                        'image_url': e.cover_image.image_url,
+                        'uploaded_at': e.cover_image.uploaded_at.isoformat(),
+                    }
+                    logger.debug(f"  Cover image loaded")
+                else:
+                    event_data['cover_image'] = None
+                
+                event_data['gallery_images'] = [
                     {
                         'id': img.id,
                         'image_url': img.image_url,
@@ -2374,20 +2439,28 @@ def get_favourite_events():
                         'uploaded_at': img.uploaded_at.isoformat(),
                     }
                     for img in e.images
-                ] if e.images else [],
-                'liked_at': (
-                    db.session.query(EventLike)
-                    .filter_by(user_id=user.id, event_id=e.id)
-                    .first()
-                    .liked_at.isoformat()
-                ),
-            }
-            for e in liked_events
-        ]), 200
+                ] if e.images else []
+                
+                logger.debug(f"  Gallery images loaded: {len(event_data['gallery_images'])} images")
+                
+                event_data['liked_at'] = like_record.liked_at.isoformat()
+                
+                response_data.append(event_data)
+                logger.debug(f"Event {e.id} processed successfully")
+                
+            except Exception as event_error:
+                logger.error(f"Error processing event {e.id}: {str(event_error)}", exc_info=True)
+                continue
         
-    except Exception:
+        logger.info(f"Successfully built response with {len(response_data)} events")
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        logger.error(f"Internal server error in /favourites: {str(e)}", exc_info=True)
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error details: {repr(e)}")
         traceback.print_exc()
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 
 
