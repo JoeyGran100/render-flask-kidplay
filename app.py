@@ -2305,7 +2305,10 @@ def get_favourite_events():
                 'max_attendees': e.max_attendees,
                 'girls_attendees': e.girls_attendees,
                 'boys_attendees': e.boys_attendees,
-                'age_range': e.age_range,  # Returns "1 - 18" or "1+"
+                # ── Age Range ──
+                'min_age': e.min_age,  # ✅ ADDED
+                'max_age': e.max_age,  # ✅ ADDED
+                'age_range': e.age_range,  # "1 - 18" or "1+"
                 'base_price': float(e.base_price) if e.base_price else None,
                 'currency': e.currency,
                 'is_checkin_closed': e.is_checkin_closed,
@@ -2330,6 +2333,7 @@ def get_favourite_events():
                     'id': e.event_organizer.id,
                     'user_id': e.event_organizer.user_id,
                     'name': e.event_organizer.name,
+                    'avatar_url': e.event_organizer.avatar_url,
                     'bio': e.event_organizer.organizer_bio,
                     'top_event_hashtags': e.event_organizer.top_event_hashtags or [],
                     'verification_status': e.event_organizer.verification_status.value,
@@ -2384,7 +2388,8 @@ def get_favourite_events():
     except Exception:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
-    
+
+
 
 @app.route('/favourites/<int:event_id>', methods=['DELETE'])
 def remove_favourite_event(event_id):
