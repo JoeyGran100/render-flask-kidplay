@@ -21,7 +21,7 @@ from typing import Optional
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_7_user:oF2rCKJbeGByPoKcxjOTXskus8VjhPn0@dpg-dahvqhks728c73dq35jg-a.frankfurt-postgres.render.com/kidplay_render_database_7"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_7_u8ig_user:hGWagISE1UrbGRAoB4vNzAtTh4O321tq@dpg-daiksgfqj5pc73ahl430-a.frankfurt-postgres.render.com/kidplay_render_database_7_u8ig"
 
 # ✅ FIX: Add CORS configuration
 socketio = SocketIO(app)
@@ -156,6 +156,7 @@ class EventOrganizer(db.Model):
     name    = db.Column(db.String(100), unique=True, nullable=False)
 
     organizer_bio           = db.Column(db.Text, nullable=True)
+    avatar_url              = db.Column(db.String(500), nullable=True)  # Profile picture
     top_event_hashtags = db.Column(db.ARRAY(db.String), nullable=True)
 
     verification_status = db.Column(db.Enum(OrganizerVerificationStatus),default=OrganizerVerificationStatus.pending,nullable=False)
@@ -337,6 +338,11 @@ class EventLocation(db.Model):
     max_attendees = db.Column(db.Integer, nullable=False)
     girls_attendees = db.Column(db.Integer, nullable=True)
     boys_attendees  = db.Column(db.Integer, nullable=True)
+    
+    # Age range ─────────────────────────────────────────────────────────────
+    min_age       = db.Column(db.Integer, nullable=False, default=1)  # Minimum age requirement
+    max_age       = db.Column(db.Integer, nullable=True, default=18)  # Maximum age requirement
+    
     base_price    = db.Column(db.Numeric(10, 2))
     currency      = db.Column(db.String(10), default='SEK', nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -374,11 +380,35 @@ class EventLocation(db.Model):
         if value is not None and value < 0:
             raise ValueError(f"{key} cannot be negative")
         return value
+    
+    
+    @validates('min_age')
+    def validate_min_age(self, key, value):
+        if value is not None and value < 0:
+            raise ValueError("min_age cannot be negative")
+        return value
+    
+    @validates('max_age')
+    def validate_max_age(self, key, value):
+        if value is not None and value < 0:
+            raise ValueError("max_age cannot be negative")
+        if value is not None and self.min_age and value < self.min_age:
+            raise ValueError("max_age cannot be less than min_age")
+        return value
+    
  
     def validate_attendee_totals(self):
         validate_attendee_totals(self.max_attendees, self.girls_attendees, self.boys_attendees)
  
     # ── State properties ───────────────────────────────────────────────────────
+    
+    @property
+    def age_range(self):
+        """Format age range as '1 - 18' or '1+' if no max age"""
+        if self.max_age is None:
+            return f"{self.min_age}+"
+        return f"{self.min_age} - {self.max_age}"
+    
  
     @property
     def end_time(self):
@@ -1556,6 +1586,7 @@ def get_event_organizer():
         'id':                   organizer.id,
         'name':                 organizer.name,
         'organizer_bio':        organizer.organizer_bio,
+        'avatar_url':           organizer.avatar_url,  # ← ADD THIS
         'top_event_hashtags':   organizer.top_event_hashtags or [],
         'verification_status':  organizer.verification_status.value,
         'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
@@ -1807,6 +1838,7 @@ def get_events():
                 'max_attendees':    e.max_attendees,
                 'girls_attendees':  e.girls_attendees,
                 'boys_attendees':   e.boys_attendees,
+                'age_range':        e.age_range,  # Returns "18 - 22" or "18+"
                 'base_price':       float(e.base_price) if e.base_price else None,
                 'currency':         e.currency,
                 'is_checkin_closed':e.is_checkin_closed,
@@ -1856,6 +1888,8 @@ def post_event():
         max_attendees=data['max_attendees'],
         girls_attendees=data.get('girls_attendees'),
         boys_attendees=data.get('boys_attendees'),
+        min_age=data.get('min_age', 1),
+        max_age=data.get('max_age', 18),
         base_price=data.get('base_price'),
         currency=data.get('currency', 'SEK'),
     )
@@ -2271,6 +2305,7 @@ def get_favourite_events():
                 'max_attendees': e.max_attendees,
                 'girls_attendees': e.girls_attendees,
                 'boys_attendees': e.boys_attendees,
+                'age_range': e.age_range,  # Returns "1 - 18" or "1+"
                 'base_price': float(e.base_price) if e.base_price else None,
                 'currency': e.currency,
                 'is_checkin_closed': e.is_checkin_closed,
