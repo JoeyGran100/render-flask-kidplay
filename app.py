@@ -184,7 +184,10 @@ class EventOrganizer(db.Model):
 
     @property
     def _user_profile(self):
-        return self.owner.profile if self.owner else None
+        """Get parent profile from owner User"""
+        if not self.owner:
+            return None
+        return self.owner.parent_profile  # ✅ FIXED - matches User model relationship name
 
     @property
     def first_name(self):
