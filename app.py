@@ -2239,6 +2239,113 @@ def post_event_like():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
+# FAVOURITE EVENTS (WITH FULL DETAILS) ✅
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/favourites', methods=['GET'])
+def get_favourite_events():
+    """Get all events liked by the current user with full details"""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        # Join EventLike with EventLocation and all related data
+        liked_events = (
+            db.session.query(EventLocation)
+            .join(EventLike, EventLike.event_id == EventLocation.id)
+            .filter(EventLike.user_id == user.id)
+            .order_by(EventLike.liked_at.desc())
+            .all()
+        )
+        
+        return jsonify([
+            {
+                'id': e.id,
+                'venue_id': e.venue_id,
+                'event_category_id': e.event_category_id,
+                'event_organizer_id': e.event_organizer_id,
+                'start_time': e.start_time.isoformat(),
+                'end_time': e.end_time.isoformat() if e.end_time else None,
+                'event_description': e.event_description,
+                'max_attendees': e.max_attendees,
+                'girls_attendees': e.girls_attendees,
+                'boys_attendees': e.boys_attendees,
+                'base_price': float(e.base_price) if e.base_price else None,
+                'currency': e.currency,
+                'is_checkin_closed': e.is_checkin_closed,
+                'is_upcoming': e.is_upcoming,
+                'is_ongoing': e.is_ongoing,
+                'is_past': e.is_past,
+                # ── Related Data ──
+                'venue': {
+                    'id': e.venue.id,
+                    'name': e.venue.name,
+                    'address': e.venue.address,
+                    'latitude': e.venue.latitude,
+                    'longitude': e.venue.longitude,
+                } if e.venue else None,
+                'category': {
+                    'id': e.event_category.id,
+                    'name': e.event_category.name,
+                } if e.event_category else None,
+                'organizer': {
+                    'id': e.event_organizer.id,
+                    'name': e.event_organizer.first_name + ' ' + e.event_organizer.last_name,
+                    'avatar_url': e.event_organizer.avatar_url,
+                } if e.event_organizer else None,
+                # ── Images ──
+                'cover_image': {
+                    'id': e.cover_image.id,
+                    'image_url': e.cover_image.image_url,
+                    'uploaded_at': e.cover_image.uploaded_at.isoformat(),
+                } if e.cover_image else None,
+                'gallery_images': [
+                    {
+                        'id': img.id,
+                        'image_url': img.image_url,
+                        'display_order': img.display_order,
+                        'uploaded_at': img.uploaded_at.isoformat(),
+                    }
+                    for img in e.images
+                ] if e.images else [],
+                'liked_at': (
+                    db.session.query(EventLike)
+                    .filter_by(user_id=user.id, event_id=e.id)
+                    .first()
+                    .liked_at.isoformat()
+                ),
+            }
+            for e in liked_events
+        ]), 200
+        
+    except Exception:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/favourites/<int:event_id>', methods=['DELETE'])
+def remove_favourite_event(event_id):
+    """Remove an event from user's favourites"""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    like = EventLike.query.filter_by(user_id=user.id, event_id=event_id).first()
+    if not like:
+        return jsonify({'error': 'Event not in favourites'}), 404
+    
+    try:
+        db.session.delete(like)
+        db.session.commit()
+        return jsonify({'message': 'Event removed from favourites'}), 200
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to remove event'}), 500
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
 # REPORTS ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
