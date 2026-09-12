@@ -25,7 +25,6 @@ logging.basicConfig(
     level=logging.DEBUG,  # Change to INFO for production
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('app.log'),  # Log to file
         logging.StreamHandler()  # Also print to console
     ]
 )
@@ -184,10 +183,7 @@ class EventOrganizer(db.Model):
 
     @property
     def _user_profile(self):
-        """Get parent profile from owner User"""
-        if not self.owner:
-            return None
-        return self.owner.parent_profile  # ✅ FIXED - matches User model relationship name
+        return self.owner.parent_profile  # ✅ Matches User model's relationship
 
     @property
     def first_name(self):
@@ -1657,6 +1653,53 @@ def post_event_organizer():
  
  
  # Only an admin can approve a host/Organizer. This is a separate endpoint to keep the workflow clear and auditable.
+
+
+@app.route('/organizers/<int:organizer_id>', methods=['GET'])
+def get_organizer_public(organizer_id):
+    """Public organizer profile - accessible by anyone"""
+    organizer = db.session.query(EventOrganizer).get(organizer_id)
+    
+    if not organizer:
+        return jsonify({'error': 'Organizer not found'}), 404
+    
+    # Optional: Check if organizer is approved/verified before showing
+    if not organizer.is_approved:
+        return jsonify({'error': 'Organizer profile not available'}), 403
+    
+    return jsonify({
+        'id':                   organizer.id,
+        'name':                 organizer.name,
+        'organizer_bio':        organizer.organizer_bio,
+        'avatar_url':           organizer.avatar_url,
+        'top_event_hashtags':   organizer.top_event_hashtags or [],
+        'verification_status':  organizer.verification_status.value,
+        'is_approved':          organizer.is_approved,
+        'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
+        
+        # ← Don't expose these publicly (or optionally):
+        # 'first_name':         organizer.first_name,  # Optional: keep private
+        # 'last_name':          organizer.last_name,   # Optional: keep private
+        # 'phone_number':       organizer.phone_number,  # Never expose
+        # 'date_of_birth':      organizer.date_of_birth,  # Never expose
+        
+        # ── Public Stats ──
+        'follower_count':       organizer.follower_count,
+        'total_events_created': organizer.total_events_created,
+        'total_participants':   organizer.total_participants,
+        
+        # ── Portfolio ──
+        'portfolio_images': [
+            {
+                'id': img.id,
+                'image_url': img.image_url,
+                'display_order': img.display_order,
+                'uploaded_at': img.uploaded_at.isoformat(),
+            }
+            for img in organizer.images
+        ] if organizer.images else [],
+    }), 200
+
 
 
 @app.route('/organizer/<int:organizer_id>/approve', methods=['POST'])
