@@ -1590,26 +1590,44 @@ def get_event_organizer():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     organizer = user.event_organizer
     if not organizer:
         return jsonify({'error': 'Organizer profile not found'}), 404
- 
+
     return jsonify({
         'id':                   organizer.id,
+        'user_id':              organizer.user_id,  # ← ADD (useful for APIs)
         'name':                 organizer.name,
         'organizer_bio':        organizer.organizer_bio,
-        'avatar_url':           organizer.avatar_url,  # ← ADD THIS
+        'avatar_url':           organizer.avatar_url,
         'top_event_hashtags':   organizer.top_event_hashtags or [],
         'verification_status':  organizer.verification_status.value,
+        'is_approved':          organizer.is_approved,
         'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
+        
+        # ── Profile Details ──
         'first_name':           organizer.first_name,
         'last_name':            organizer.last_name,
         'phone_number':         organizer.phone_number,
         'gender':               organizer.gender.value if organizer.gender else None,
+        'date_of_birth':        organizer.date_of_birth.isoformat() if organizer.date_of_birth else None,
+        
+        # ── Stats (important for host credibility) ──
+        'follower_count':       organizer.follower_count,  # ← ADD THIS
         'total_events_created': organizer.total_events_created,
         'total_participants':   organizer.total_participants,
-        'is_approved':          organizer.is_approved,
+        
+        # ── Portfolio Images (shows past events/work) ──
+        'portfolio_images': [
+            {
+                'id': img.id,
+                'image_url': img.image_url,
+                'display_order': img.display_order,
+                'uploaded_at': img.uploaded_at.isoformat(),
+            }
+            for img in organizer.images
+        ] if organizer.images else [],  # ← ADD THIS
     }), 200
  
  
