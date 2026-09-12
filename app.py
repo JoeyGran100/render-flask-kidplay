@@ -2319,7 +2319,7 @@ def post_follow():
         return jsonify({'error': 'Failed to follow user'}), 500
  
  
- @app.route('/follows/<int:following_id>', methods=['DELETE'])
+@app.route('/follows/<int:following_id>', methods=['DELETE'])
 def delete_follow(following_id):
     """Unfollow an organizer/user"""
     user = get_current_user_from_token()
