@@ -2259,66 +2259,17 @@ def post_organizer_payment_details():
  
 @app.route('/follows', methods=['GET'])
 def get_follows():
+    """Get current user's followers and following"""
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
  
     return jsonify({
         'following': [{'user_id': f.following_id, 'since': f.created_at.isoformat()} for f in user.following],
-        'followers': [{'user_id': f.follower_id,  'since': f.created_at.isoformat()} for f in user.followers],
+        'followers': [{'user_id': f.follower_id, 'since': f.created_at.isoformat()} for f in user.followers],
     }), 200
- 
- 
-@app.route('/follows', methods=['POST'])
-def post_follow():
-    """Follow an organizer/user"""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
 
-    data = request.get_json()
-    if not data or 'following_id' not in data:
-        return jsonify({'error': 'following_id is required'}), 400
 
-    following_id = data['following_id']
-
-    # Validation
-    if following_id == user.id:
-        return jsonify({'error': 'Cannot follow yourself'}), 400
-
-    # Check if user exists
-    target_user = User.query.get(following_id)
-    if not target_user:
-        return jsonify({'error': 'User not found'}), 404
-
-    # Check if already following
-    existing = Follow.query.filter_by(
-        follower_id=user.id,
-        following_id=following_id
-    ).first()
-    
-    if existing:
-        return jsonify({'error': 'Already following this user'}), 409
-
-    try:
-        follow = Follow(follower_id=user.id, following_id=following_id)
-        db.session.add(follow)
-        db.session.commit()
-        
-        logger.info(f"User {user.id} followed user {following_id}")
-        
-        return jsonify({
-            'message': 'Successfully followed user',
-            'user_id': following_id,
-            'since': follow.created_at.isoformat(),
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error following user: {str(e)}", exc_info=True)
-        return jsonify({'error': 'Failed to follow user'}), 500
- 
- 
 @app.route('/follows/<int:following_id>', methods=['POST'])
 def toggle_follow(following_id):
     """Follow or unfollow based on current state"""
@@ -2326,14 +2277,12 @@ def toggle_follow(following_id):
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    # Validation
     if current_user.id == following_id:
         return jsonify({'error': 'Cannot follow yourself'}), 400
     
     if not User.query.get(following_id):
         return jsonify({'error': 'User not found'}), 404
     
-    # Toggle logic
     follow = Follow.query.filter_by(
         follower_id=current_user.id,
         following_id=following_id
@@ -2343,23 +2292,18 @@ def toggle_follow(following_id):
         if follow:
             db.session.delete(follow)
         else:
-            follow = Follow(
-                follower_id=current_user.id,
-                following_id=following_id
-            )
+            follow = Follow(follower_id=current_user.id, following_id=following_id)
             db.session.add(follow)
         
         db.session.commit()
-        
         return jsonify({
-            'following': bool(not follow),  # True if now following, False if unfollowed
+            'following': bool(not follow),
             'message': 'Followed' if not follow else 'Unfollowed'
         }), 200
         
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': 'Toggle failed'}), 500
- 
  
  
 # ─────────────────────────────────────────────────────────────────────────────
