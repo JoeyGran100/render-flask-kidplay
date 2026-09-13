@@ -1675,18 +1675,29 @@ def post_event_organizer():
 
 @app.route('/organizers/<int:organizer_id>', methods=['GET'])
 def get_organizer_public(organizer_id):
-    """Public organizer profile - accessible by anyone"""
+    """Public organizer profile with follow status"""
+    current_user = get_current_user_from_token()  # ← Get current user (can be None)
+    
     organizer = db.session.query(EventOrganizer).get(organizer_id)
     
     if not organizer:
         return jsonify({'error': 'Organizer not found'}), 404
     
-    # Optional: Check if organizer is approved/verified before showing
     if not organizer.is_approved:
         return jsonify({'error': 'Organizer profile not available'}), 403
     
+    # ✅ Check if current user is following this organizer
+    is_following = False
+    if current_user:
+        follow = Follow.query.filter_by(
+            follower_id=current_user.id,
+            following_id=organizer.user_id  # ← Match user_id, not organizer_id
+        ).first()
+        is_following = follow is not None
+    
     return jsonify({
         'id':                   organizer.id,
+        'user_id':              organizer.user_id,
         'name':                 organizer.name,
         'organizer_bio':        organizer.organizer_bio,
         'avatar_url':           organizer.avatar_url,
@@ -1694,12 +1705,6 @@ def get_organizer_public(organizer_id):
         'verification_status':  organizer.verification_status.value,
         'is_approved':          organizer.is_approved,
         'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
-        
-        # ← Don't expose these publicly (or optionally):
-        # 'first_name':         organizer.first_name,  # Optional: keep private
-        # 'last_name':          organizer.last_name,   # Optional: keep private
-        # 'phone_number':       organizer.phone_number,  # Never expose
-        # 'date_of_birth':      organizer.date_of_birth,  # Never expose
         
         # ── Public Stats ──
         'follower_count':       organizer.follower_count,
@@ -1716,6 +1721,9 @@ def get_organizer_public(organizer_id):
             }
             for img in organizer.images
         ] if organizer.images else [],
+        
+        # ✅ NEW: Include follow status
+        'is_following': is_following,
     }), 200
 
 
