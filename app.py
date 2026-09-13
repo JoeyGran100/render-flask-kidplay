@@ -2299,14 +2299,17 @@ def toggle_follow(following_id):
     try:
         if follow:
             db.session.delete(follow)
+            db.session.commit()
+            is_following = False  # ✅ Explicitly set
         else:
             follow = Follow(follower_id=current_user.id, following_id=following_id)
             db.session.add(follow)
+            db.session.commit()
+            is_following = True  # ✅ Explicitly set
         
-        db.session.commit()
         return jsonify({
-            'following': bool(not follow),
-            'message': 'Followed' if not follow else 'Unfollowed'
+            'following': is_following,  # ✅ Return correct state
+            'message': 'Followed' if is_following else 'Unfollowed'
         }), 200
         
     except Exception as e:
