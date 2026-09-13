@@ -2319,41 +2319,46 @@ def post_follow():
         return jsonify({'error': 'Failed to follow user'}), 500
  
  
-@app.route('/follows/<int:following_id>', methods=['DELETE'])
-def delete_follow(following_id):
-    """Unfollow an organizer/user"""
-    user = get_current_user_from_token()
-    if not user:
+@app.route('/follows/<int:following_id>', methods=['POST'])
+def toggle_follow(following_id):
+    """Follow or unfollow based on current state"""
+    current_user = get_current_user_from_token()
+    if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
-
+    
     # Validation
-    if following_id == user.id:
-        return jsonify({'error': 'Cannot unfollow yourself'}), 400
-
-    # Check if following exists
+    if current_user.id == following_id:
+        return jsonify({'error': 'Cannot follow yourself'}), 400
+    
+    if not User.query.get(following_id):
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Toggle logic
     follow = Follow.query.filter_by(
-        follower_id=user.id,
+        follower_id=current_user.id,
         following_id=following_id
     ).first()
     
-    if not follow:
-        return jsonify({'error': 'Not following this user'}), 404
-
     try:
-        db.session.delete(follow)
+        if follow:
+            db.session.delete(follow)
+        else:
+            follow = Follow(
+                follower_id=current_user.id,
+                following_id=following_id
+            )
+            db.session.add(follow)
+        
         db.session.commit()
         
-        logger.info(f"User {user.id} unfollowed user {following_id}")
-        
         return jsonify({
-            'message': 'Successfully unfollowed user',
-            'user_id': following_id,
+            'following': bool(not follow),  # True if now following, False if unfollowed
+            'message': 'Followed' if not follow else 'Unfollowed'
         }), 200
         
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Error unfollowing user: {str(e)}", exc_info=True)
-        return jsonify({'error': 'Failed to unfollow user'}), 500
+        return jsonify({'error': 'Toggle failed'}), 500
  
  
  
