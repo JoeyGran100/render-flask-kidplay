@@ -1675,8 +1675,8 @@ def post_event_organizer():
 
 @app.route('/organizers/<int:organizer_id>', methods=['GET'])
 def get_organizer_public(organizer_id):
-    """Public organizer profile with follow status"""
-    current_user = get_current_user_from_token()  # ← Get current user (can be None)
+    """Public organizer profile with follow status - FULL DETAILS"""
+    current_user = get_current_user_from_token()
     
     organizer = db.session.query(EventOrganizer).get(organizer_id)
     
@@ -1686,12 +1686,12 @@ def get_organizer_public(organizer_id):
     if not organizer.is_approved:
         return jsonify({'error': 'Organizer profile not available'}), 403
     
-    # ✅ Check if current user is following this organizer
+    # Check if current user is following this organizer
     is_following = False
     if current_user:
         follow = Follow.query.filter_by(
             follower_id=current_user.id,
-            following_id=organizer.user_id  # ← Match user_id, not organizer_id
+            following_id=organizer.user_id
         ).first()
         is_following = follow is not None
     
@@ -1722,7 +1722,7 @@ def get_organizer_public(organizer_id):
             for img in organizer.images
         ] if organizer.images else [],
         
-        # ✅ NEW: Include follow status
+        # ── Follow Status ──
         'is_following': is_following,
     }), 200
 
@@ -2372,7 +2372,7 @@ def post_event_like():
 
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
-    """Get all events liked by the current user with full details"""
+    """Get all events liked by the current user with minimal organizer data"""
     logger.info("=== GET /favourites request started ===")
     
     try:
@@ -2384,7 +2384,6 @@ def get_favourite_events():
         logger.info(f"User authenticated: {user.id}")
         
         # Query liked events
-        logger.info(f"Querying liked events for user {user.id}")
         liked_events = (
             db.session.query(EventLocation)
             .join(EventLike, EventLike.event_id == EventLocation.id)
@@ -2395,13 +2394,11 @@ def get_favourite_events():
         
         logger.info(f"Found {len(liked_events)} liked events for user {user.id}")
         
-        # Build response
         response_data = []
         for idx, e in enumerate(liked_events):
             try:
                 logger.debug(f"Processing event {idx + 1}/{len(liked_events)}: Event ID {e.id}")
                 
-                # Get liked_at timestamp
                 like_record = (
                     db.session.query(EventLike)
                     .filter_by(user_id=user.id, event_id=e.id)
@@ -2423,7 +2420,6 @@ def get_favourite_events():
                     'max_attendees': e.max_attendees,
                     'girls_attendees': e.girls_attendees,
                     'boys_attendees': e.boys_attendees,
-                    # ── Age Range ──
                     'min_age': e.min_age,
                     'max_age': e.max_age,
                     'age_range': e.age_range,
@@ -2444,9 +2440,7 @@ def get_favourite_events():
                         'latitude': e.venue.latitude,
                         'longitude': e.venue.longitude,
                     }
-                    logger.debug(f"  Venue loaded: {e.venue.name}")
                 else:
-                    logger.warning(f"  Event {e.id} has no venue")
                     event_data['venue'] = None
                 
                 # ── Category ──
@@ -2455,46 +2449,20 @@ def get_favourite_events():
                         'id': e.event_category.id,
                         'name': e.event_category.name,
                     }
-                    logger.debug(f"  Category loaded: {e.event_category.name}")
                 else:
-                    logger.warning(f"  Event {e.id} has no category")
                     event_data['category'] = None
                 
-                # ── Organizer (FULL DETAILS) ──
+                # ── Organizer (PREVIEW ONLY) ──
                 if e.event_organizer:
-                    logger.debug(f"  Loading organizer {e.event_organizer.id}")
                     event_data['organizer'] = {
                         'id': e.event_organizer.id,
                         'user_id': e.event_organizer.user_id,
                         'name': e.event_organizer.name,
                         'avatar_url': e.event_organizer.avatar_url,
-                        'bio': e.event_organizer.organizer_bio,
-                        'top_event_hashtags': e.event_organizer.top_event_hashtags or [],
-                        'verification_status': e.event_organizer.verification_status.value,
                         'is_approved': e.event_organizer.is_approved,
-                        'verified_at': e.event_organizer.verified_at.isoformat() if e.event_organizer.verified_at else None,
-                        # ── Profile details ──
-                        'first_name': e.event_organizer.first_name,
-                        'last_name': e.event_organizer.last_name,
-                        'gender': e.event_organizer.gender.value if e.event_organizer.gender else None,
-                        'phone_number': e.event_organizer.phone_number,
-                        'date_of_birth': e.event_organizer.date_of_birth.isoformat() if e.event_organizer.date_of_birth else None,
-                        # ── Computed stats ──
                         'follower_count': e.event_organizer.follower_count,
-                        'total_events_created': e.event_organizer.total_events_created,
-                        'total_participants': e.event_organizer.total_participants,
-                        # ── Portfolio images ──
-                        'portfolio_images': [
-                            {
-                                'id': img.id,
-                                'image_url': img.image_url,
-                                'display_order': img.display_order,
-                                'uploaded_at': img.uploaded_at.isoformat(),
-                            }
-                            for img in e.event_organizer.images
-                        ] if e.event_organizer.images else [],
                     }
-                    logger.debug(f"  Organizer loaded with {len(e.event_organizer.images or [])} portfolio images")
+                    logger.debug(f"  Organizer preview loaded: {e.event_organizer.name}")
                 else:
                     logger.warning(f"  Event {e.id} has no organizer")
                     event_data['organizer'] = None
@@ -2506,7 +2474,6 @@ def get_favourite_events():
                         'image_url': e.cover_image.image_url,
                         'uploaded_at': e.cover_image.uploaded_at.isoformat(),
                     }
-                    logger.debug(f"  Cover image loaded")
                 else:
                     event_data['cover_image'] = None
                 
@@ -2519,8 +2486,6 @@ def get_favourite_events():
                     }
                     for img in e.images
                 ] if e.images else []
-                
-                logger.debug(f"  Gallery images loaded: {len(event_data['gallery_images'])} images")
                 
                 event_data['liked_at'] = like_record.liked_at.isoformat()
                 
@@ -2536,11 +2501,8 @@ def get_favourite_events():
         
     except Exception as e:
         logger.error(f"Internal server error in /favourites: {str(e)}", exc_info=True)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error details: {repr(e)}")
         traceback.print_exc()
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
-
 
 
 @app.route('/favourites/<int:event_id>', methods=['DELETE'])
