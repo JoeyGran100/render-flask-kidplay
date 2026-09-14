@@ -1404,18 +1404,27 @@ def get_kids_profile(kid_id):
 @app.route('/kids/profiles', methods=['POST'])
 def create_kids_profile():
     """Create a new kid profile"""
+    logger.info("Creating new kid profile")
+    
     parent = get_current_parent()
     if not parent:
+        logger.warning("Unauthorized access attempt to create kid profile")
         return jsonify({'error': 'Unauthorized'}), 401
+    
+    logger.info(f"Parent {parent.id} initiating kid profile creation")
 
     try:
         data = request.get_json()
+        logger.debug(f"Received payload: {data}")
 
         # Validate required fields
         if not data.get('first_name'):
+            logger.warning(f"Missing required field 'first_name' for parent {parent.id}")
             return jsonify({'error': 'first_name is required'}), 400
 
         # Create new profile
+        logger.info(f"Creating profile for {data.get('first_name')} {data.get('last_name')}")
+        
         profile = KidsProfile(
             parent_profile_id=parent.id,
             first_name=data.get('first_name'),
@@ -1431,12 +1440,17 @@ def create_kids_profile():
 
         db.session.add(profile)
         db.session.commit()
-
+        
+        logger.info(f"Kid profile {profile.id} created successfully for parent {parent.id}")
         return jsonify(serialize_kids_profile(profile)), 201
+        
     except ValueError as e:
+        logger.error(f"Invalid data for parent {parent.id}: {str(e)}", exc_info=True)
         return jsonify({'error': f'Invalid data: {str(e)}'}), 400
+        
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Unexpected error creating kid profile for parent {parent.id}: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
