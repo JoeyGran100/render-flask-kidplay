@@ -1333,7 +1333,7 @@ def get_current_parent():
 
 # ─── Serialization helpers ────────────────────────────────────────────────
 def serialize_kids_profile(profile):
-    """Serialize a single kids profile"""
+    """Serialize a KidsProfile object to JSON"""
     return {
         'id': profile.id,
         'first_name': profile.first_name,
@@ -1345,9 +1345,9 @@ def serialize_kids_profile(profile):
         'hobbies': profile.hobbies or [],
         'allergies': profile.allergies or [],
         'individual_needs': profile.individual_needs or [],
-        'photo_url': profile.image.image_url if profile.image else None,
-        'created_at': profile.created_at.isoformat(),
-        'updated_at': profile.updated_at.isoformat()
+        'photo_url': profile.photo_url,
+        'created_at': profile.created_at.isoformat() if profile.created_at else None,  # ✅ Handle None
+        'updated_at': profile.updated_at.isoformat() if profile.updated_at else None,  # ✅ Handle None
     }
 
 
