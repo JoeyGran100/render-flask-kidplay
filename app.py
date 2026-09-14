@@ -1345,34 +1345,44 @@ def serialize_kids_profile(profile):
         'hobbies': profile.hobbies or [],
         'allergies': profile.allergies or [],
         'individual_needs': profile.individual_needs or [],
-        'photo_url': profile.photo_url,
-        'created_at': profile.created_at.isoformat() if profile.created_at else None,  # ✅ Handle None
-        'updated_at': profile.updated_at.isoformat() if profile.updated_at else None,  # ✅ Handle None
+        'photo_url': profile.image.image_url if profile.image else None,  # ✅ Access via relationship
+        'created_at': profile.created_at.isoformat() if profile.created_at else None,
+        'updated_at': profile.updated_at.isoformat() if profile.updated_at else None,
     }
 
 
-# ─── GET all kids profiles ────────────────────────────────────────────────
 @app.route('/kids/profiles', methods=['GET'])
 def get_kids_profiles():
     """Get all kids profiles for the current parent"""
+    logger.info("Fetching all kid profiles")
+    
     parent = get_current_parent()
     if not parent:
+        logger.warning("Unauthorized access to get kid profiles")
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
+        logger.info(f"Fetching profiles for parent {parent.id}")
+        
         profiles = (
             KidsProfile.query
             .filter_by(parent_profile_id=parent.id)
-            .options(joinedload(KidsProfile.image))
+            .options(joinedload(KidsProfile.image))  # ✅ Eager load images
             .order_by(KidsProfile.created_at.asc())
             .all()
         )
 
+        logger.info(f"Found {len(profiles)} profiles for parent {parent.id}")
+        
         if not profiles:
+            logger.info(f"No profiles found for parent {parent.id}")
             return jsonify([]), 200
 
-        return jsonify([serialize_kids_profile(p) for p in profiles]), 200
+        serialized = [serialize_kids_profile(p) for p in profiles]
+        return jsonify(serialized), 200
+        
     except Exception as e:
+        logger.error(f"Error fetching profiles for parent {parent.id}: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
