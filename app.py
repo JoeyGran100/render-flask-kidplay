@@ -1422,14 +1422,26 @@ def create_kids_profile():
             logger.warning(f"Missing required field 'first_name' for parent {parent.id}")
             return jsonify({'error': 'first_name is required'}), 400
 
-        # Create new profile
+        # Parse date of birth - frontend sends YYYY/MM/DD format
+        parsed_dob = None
+        if data.get('date_of_birth'):
+            try:
+                dob_str = data['date_of_birth']
+                # Convert YYYY/MM/DD to YYYY-MM-DD for datetime.fromisoformat()
+                formatted_dob = dob_str.replace('/', '-')
+                parsed_dob = datetime.fromisoformat(formatted_dob)
+                logger.debug(f"Parsed date_of_birth: {parsed_dob} (input: {dob_str})")
+            except ValueError as e:
+                logger.warning(f"Invalid date format for parent {parent.id}: {data['date_of_birth']}")
+                return jsonify({'error': 'Invalid date format. Expected YYYY/MM/DD'}), 400
+
         logger.info(f"Creating profile for {data.get('first_name')} {data.get('last_name')}")
         
         profile = KidsProfile(
             parent_profile_id=parent.id,
             first_name=data.get('first_name'),
             last_name=data.get('last_name'),
-            date_of_birth=datetime.fromisoformat(data['date_of_birth']) if data.get('date_of_birth') else None,
+            date_of_birth=parsed_dob,
             gender=ChildEnum(data['gender']) if data.get('gender') else None,
             grade_level=data.get('grade_level'),
             bio=data.get('bio'),
