@@ -1320,180 +1320,202 @@ def post_parents_image():
 # KIDS PROFILE✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/kids/profile', methods=['POST'])
-def post_kids_profile():
+# ─── Helper function for authorization ────────────────────────────────────
+def get_current_parent():
+    """Get current parent from token"""
     user = get_current_user_from_token()
     if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
- 
-    profile = user.kids_profile
-    if not profile:
-        profile = KidsProfile(user_auth_id=user.id)
-        db.session.add(profile)
- 
-    if 'first_name' in data:
-        profile.first_name = data['first_name']
-    if 'last_name' in data:
-        profile.last_name = data['last_name']
-    if 'date_of_birth' in data:
-        try:
-            profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid date_of_birth, expected YYYY-MM-DD'}), 400
-    if 'gender' in data:
-        gender_map = {e.value: e for e in ChildEnum}
-        val = data['gender']  # no .lower()
-        if val not in gender_map:
-            return jsonify({'error': f'Invalid gender: {val}'}), 400
-        profile.gender = gender_map[val]
-    if 'grade_level' in data:
-        profile.grade_level = data['grade_level']
-    if 'hobbies' in data:
-        if not isinstance(data['hobbies'], list):
-            return jsonify({'error': 'hobbies must be a list'}), 400
-        profile.hobbies = data['hobbies']
-    if 'allergies' in data:
-        if not isinstance(data['allergies'], list):
-            return jsonify({'error': 'allergies must be a list'}), 400
-        profile.allergies = data['allergies']
-    if 'individual_needs' in data:
-        if not isinstance(data['individual_needs'], list):
-            return jsonify({'error': 'individual_needs must be a list'}), 400
-        profile.individual_needs = data['individual_needs']
-    if 'bio' in data:
-        if not isinstance(data['bio'], str):
-            return jsonify({'error': 'bio must be a string'}), 400
-        profile.bio = data['bio']
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to save kids profile'}), 500
- 
-    return jsonify({'message': 'Kids profile saved'}), 201
+        return None
+    
+    parent = ParentsProfile.query.filter_by(user_auth_id=user.id).first()
+    return parent
 
 
-@app.route('/kids/profile', methods=['GET'])
-def get_kids_profile():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    profiles = (
-        KidsProfile.query
-        .filter_by(user_auth_id=user.id)
-        .options(joinedload(KidsProfile.image))
-        .order_by(KidsProfile.created_at.asc())
-        .all()
-    )
-    if not profiles:
-        return jsonify({'error': 'No kids profiles found'}), 404
-
-    return jsonify([
-        {
-            'id':         p.id,
-            'first_name': p.first_name,
-            'last_name':  p.last_name,
-            'photo_url':  p.image.image_url if p.image else None,
-        }
-        for p in profiles
-    ]), 200
-
-
-@app.route('/kids/profile/<int:kid_id>', methods=['GET'])
-def get_kid_profile(kid_id):
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    profile = (
-        KidsProfile.query
-        .filter_by(id=kid_id, user_auth_id=user.id)
-        .options(joinedload(KidsProfile.image))
-        .first()
-    )
-    if not profile:
-        return jsonify({'error': 'Kid profile not found'}), 404
-
-    return jsonify({
-        'id':               profile.id,
-        'first_name':       profile.first_name,
-        'last_name':        profile.last_name,
-        'date_of_birth':    profile.date_of_birth.isoformat() if profile.date_of_birth else None,
-        'gender':           profile.gender.value if profile.gender else None,
-        'bio':              profile.bio,
-        'grade_level':      profile.grade_level,
-        'photo_url':        profile.image.image_url if profile.image else None,
-        'hobbies':          profile.hobbies or [],
-        'allergies':        profile.allergies or [],
+# ─── Serialization helpers ────────────────────────────────────────────────
+def serialize_kids_profile(profile):
+    """Serialize a single kids profile"""
+    return {
+        'id': profile.id,
+        'first_name': profile.first_name,
+        'last_name': profile.last_name,
+        'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
+        'gender': profile.gender.value if profile.gender else None,
+        'grade_level': profile.grade_level,
+        'bio': profile.bio,
+        'hobbies': profile.hobbies or [],
+        'allergies': profile.allergies or [],
         'individual_needs': profile.individual_needs or [],
-        'created_at':       profile.created_at.isoformat() if profile.created_at else None,
-        'updated_at':       profile.updated_at.isoformat() if profile.updated_at else None,
-    }), 200
+        'photo_url': profile.image.image_url if profile.image else None,
+        'created_at': profile.created_at.isoformat(),
+        'updated_at': profile.updated_at.isoformat()
+    }
 
- 
-@app.route('/kids/profile/<int:kid_id>', methods=['PUT'])
-def update_kids_profile(kid_id):
-    user = get_current_user_from_token()
-    if not user:
+
+# ─── GET all kids profiles ────────────────────────────────────────────────
+@app.route('/kids/profiles', methods=['GET'])
+def get_kids_profiles():
+    """Get all kids profiles for the current parent"""
+    parent = get_current_parent()
+    if not parent:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    profile = KidsProfile.query.filter_by(id=kid_id, user_auth_id=user.id).first()
-    if not profile:
-        return jsonify({'error': 'Kid profile not found'}), 404
+    try:
+        profiles = (
+            KidsProfile.query
+            .filter_by(parent_profile_id=parent.id)
+            .options(joinedload(KidsProfile.image))
+            .order_by(KidsProfile.created_at.asc())
+            .all()
+        )
 
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
+        if not profiles:
+            return jsonify([]), 200
 
-    if 'first_name' in data:
-        profile.first_name = data['first_name']
-    if 'last_name' in data:
-        profile.last_name = data['last_name']
-    if 'social_security_number' in data:
-        profile.social_security_number = str(data['social_security_number'])
-    if 'date_of_birth' in data:
-        try:
-            profile.date_of_birth = date.fromisoformat(data['date_of_birth'])
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid date_of_birth, expected YYYY-MM-DD'}), 400
-    if 'gender' in data:
-        gender_map = {e.value: e for e in ChildEnum}
-        val = data['gender']
-        if val not in gender_map:
-            return jsonify({'error': f'Invalid gender: {val}'}), 400
-        profile.gender = gender_map[val]
-    if 'grade_level' in data:
-        profile.grade_level = data['grade_level']
-    if 'hobbies' in data:
-        if not isinstance(data['hobbies'], list):
-            return jsonify({'error': 'hobbies must be a list'}), 400
-        profile.hobbies = data['hobbies']
-    if 'allergies' in data:
-        if not isinstance(data['allergies'], list):
-            return jsonify({'error': 'allergies must be a list'}), 400
-        profile.allergies = data['allergies']
-    if 'individual_needs' in data:
-        if not isinstance(data['individual_needs'], list):
-            return jsonify({'error': 'individual_needs must be a list'}), 400
-        profile.individual_needs = data['individual_needs']
+        return jsonify([serialize_kids_profile(p) for p in profiles]), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── GET single kid profile ───────────────────────────────────────────────
+@app.route('/kids/profiles/<int:kid_id>', methods=['GET'])
+def get_kids_profile(kid_id):
+    """Get a specific kid's profile"""
+    parent = get_current_parent()
+    if not parent:
+        return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to update kids profile'}), 500
+        profile = (
+            KidsProfile.query
+            .filter_by(id=kid_id, parent_profile_id=parent.id)
+            .options(joinedload(KidsProfile.image))
+            .first()
+        )
 
-    return jsonify({'message': 'Kid profile updated'}), 200
- 
- 
+        if not profile:
+            return jsonify({'error': 'Kid profile not found'}), 404
+
+        return jsonify(serialize_kids_profile(profile)), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── POST create new kid profile ──────────────────────────────────────────
+@app.route('/kids/profiles', methods=['POST'])
+def create_kids_profile():
+    """Create a new kid profile"""
+    parent = get_current_parent()
+    if not parent:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        if not data.get('first_name'):
+            return jsonify({'error': 'first_name is required'}), 400
+
+        # Create new profile
+        profile = KidsProfile(
+            parent_profile_id=parent.id,
+            first_name=data.get('first_name'),
+            last_name=data.get('last_name'),
+            date_of_birth=datetime.fromisoformat(data['date_of_birth']) if data.get('date_of_birth') else None,
+            gender=ChildEnum(data['gender']) if data.get('gender') else None,
+            grade_level=data.get('grade_level'),
+            bio=data.get('bio'),
+            hobbies=data.get('hobbies', []),
+            allergies=data.get('allergies', []),
+            individual_needs=data.get('individual_needs', [])
+        )
+
+        db.session.add(profile)
+        db.session.commit()
+
+        return jsonify(serialize_kids_profile(profile)), 201
+    except ValueError as e:
+        return jsonify({'error': f'Invalid data: {str(e)}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── PUT update kid profile ──────────────────────────────────────────────
+@app.route('/kids/profiles/<int:kid_id>', methods=['PUT'])
+def update_kids_profile(kid_id):
+    """Update an existing kid's profile"""
+    parent = get_current_parent()
+    if not parent:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        profile = KidsProfile.query.filter_by(
+            id=kid_id,
+            parent_profile_id=parent.id
+        ).first()
+
+        if not profile:
+            return jsonify({'error': 'Kid profile not found'}), 404
+
+        data = request.get_json()
+
+        # Update fields
+        if 'first_name' in data:
+            profile.first_name = data['first_name']
+        if 'last_name' in data:
+            profile.last_name = data['last_name']
+        if 'date_of_birth' in data:
+            profile.date_of_birth = datetime.fromisoformat(data['date_of_birth']) if data['date_of_birth'] else None
+        if 'gender' in data:
+            profile.gender = ChildEnum(data['gender']) if data['gender'] else None
+        if 'grade_level' in data:
+            profile.grade_level = data['grade_level']
+        if 'bio' in data:
+            profile.bio = data['bio']
+        if 'hobbies' in data:
+            profile.hobbies = data['hobbies']
+        if 'allergies' in data:
+            profile.allergies = data['allergies']
+        if 'individual_needs' in data:
+            profile.individual_needs = data['individual_needs']
+
+        profile.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+
+        return jsonify(serialize_kids_profile(profile)), 200
+    except ValueError as e:
+        return jsonify({'error': f'Invalid data: {str(e)}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── DELETE kid profile ──────────────────────────────────────────────────
+@app.route('/kids/profiles/<int:kid_id>', methods=['DELETE'])
+def delete_kids_profile(kid_id):
+    """Delete a kid profile"""
+    parent = get_current_parent()
+    if not parent:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        profile = KidsProfile.query.filter_by(
+            id=kid_id,
+            parent_profile_id=parent.id
+        ).first()
+
+        if not profile:
+            return jsonify({'error': 'Kid profile not found'}), 404
+
+        db.session.delete(profile)
+        db.session.commit()
+
+        return jsonify({'message': 'Kid profile deleted successfully'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+    
+    
 # ─────────────────────────────────────────────────────────────────────────────
 # KIDS PROFILE IMAGES
 # ─────────────────────────────────────────────────────────────────────────────
