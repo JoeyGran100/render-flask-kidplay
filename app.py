@@ -3411,7 +3411,6 @@ def send_message():
         conversation_id = data.get('conversationId')
         receiver_id = data.get('receiverId')
         message_text = data.get('message')
-        event_id = data.get('eventId')
         reply_to_id = data.get('replyToId')
         image_url = data.get('imageUrl')
         
@@ -3442,7 +3441,6 @@ def send_message():
             message=message_text,
             reply_to_id=reply_to_id,
             image_url=image_url,
-            event_id=event_id
         )
         
         db.session.add(message)
