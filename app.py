@@ -3395,6 +3395,9 @@ def get_messages(conversation_id):
 @app.route('/messages', methods=['POST'])
 def send_message():
     
+    print(f"DEBUG: Received POST /messages request")
+    print(f"DEBUG: Request JSON: {request.get_json()}")
+        
     current_user = get_current_user_from_token()
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
