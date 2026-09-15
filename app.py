@@ -3253,7 +3253,6 @@ def get_conversations():
         return jsonify({'error': str(e)}), 500
  
  
- 
 @app.route('/conversations', methods=['POST'])
 def start_conversation():
     """
@@ -3338,7 +3337,6 @@ def start_conversation():
         return jsonify({'error': str(e)}), 500
  
     
-
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
 def get_messages(conversation_id):
     """
@@ -3391,8 +3389,65 @@ def get_messages(conversation_id):
     
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 500   
+
+
+@app.route('/messages', methods=['POST'])
+def send_message():
     
+    current_user = get_current_user_from_token()
+    if not current_user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        data = request.get_json()
+        conversation_id = data.get('conversationId')
+        receiver_id = data.get('receiverId')
+        message_text = data.get('message')
+        event_id = data.get('eventId')
+        reply_to_id = data.get('replyToId')
+        image_url = data.get('imageUrl')
+        
+        # Validate required fields
+        if not conversation_id or not receiver_id or not message_text:
+            return jsonify({'error': 'conversationId, receiverId, and message are required'}), 400
+        
+        # Verify conversation exists and user is part of it
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            return jsonify({'error': 'Conversation not found'}), 404
+        
+        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
+            return jsonify({'error': 'Unauthorized - not part of this conversation'}), 403
+        
+        # Create message
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=current_user.id,
+            receiver_id=receiver_id,
+            message=message_text,
+            reply_to_id=reply_to_id,
+            image_url=image_url,
+            event_id=event_id
+        )
+        
+        db.session.add(message)
+        db.session.commit()
+        
+        print(f"DEBUG: Message {message.id} sent from user {current_user.id} to {receiver_id}")
+        
+        return jsonify({
+            'message': message_text,
+            'id': message.id
+        }), 201
+    
+    except Exception as e:
+        db.session.rollback()
+        print(f"ERROR in send_message: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
