@@ -3399,11 +3399,15 @@ def send_message():
     print(f"DEBUG: Request JSON: {request.get_json()}")
         
     current_user = get_current_user_from_token()
+    print(f"🔍 DEBUG: current_user = {current_user}")
+
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
     
     try:
         data = request.get_json()
+        print(f"🔍 DEBUG: Request data: {data}")
+
         conversation_id = data.get('conversationId')
         receiver_id = data.get('receiverId')
         message_text = data.get('message')
@@ -3411,16 +3415,23 @@ def send_message():
         reply_to_id = data.get('replyToId')
         image_url = data.get('imageUrl')
         
+        print(f"🔍 DEBUG: conversation_id={conversation_id}, receiver_id={receiver_id}")
+
         # Validate required fields
         if not conversation_id or not receiver_id or not message_text:
+            print(f"🔍 DEBUG: FAILED - Missing required fields!")
             return jsonify({'error': 'conversationId, receiverId, and message are required'}), 400
         
         # Verify conversation exists and user is part of it
         conversation = Conversation.query.get(conversation_id)
+        print(f"🔍 DEBUG: conversation = {conversation}")
+
         if not conversation:
+            print(f"🔍 DEBUG: FAILED - Conversation not found!")
             return jsonify({'error': 'Conversation not found'}), 404
         
         if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
+            print(f"🔍 DEBUG: FAILED - User not part of conversation!")
             return jsonify({'error': 'Unauthorized - not part of this conversation'}), 403
         
         # Create message
