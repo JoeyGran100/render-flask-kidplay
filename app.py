@@ -1056,7 +1056,7 @@ def sign_in():
         return jsonify({
             'message': 'Sign in successful',
             'token': token,
-            'userId': user.id  # ✅ ADD THIS - same as in JWT payload
+            'user_id': user.id  # ✅ Changed to snake_case
         }), 200
 
     except Exception as e:
