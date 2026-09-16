@@ -3408,18 +3408,20 @@ def send_message():
         data = request.get_json()
         print(f"🔍 DEBUG: Request data: {data}")
 
-        conversation_id = data.get('conversationId')
-        receiver_id = data.get('receiverId')
+        # ✅ Changed to snake_case to match frontend
+        conversation_id = data.get('conversation_id')
+        receiver_id = data.get('receiver_id')
         message_text = data.get('message')
-        reply_to_id = data.get('replyToId')
-        image_url = data.get('imageUrl')
+        reply_to_id = data.get('reply_to_id')
+        image_url = data.get('image_url')
         
         print(f"🔍 DEBUG: conversation_id={conversation_id}, receiver_id={receiver_id}")
 
         # Validate required fields
         if not conversation_id or not receiver_id or not message_text:
             print(f"🔍 DEBUG: FAILED - Missing required fields!")
-            return jsonify({'error': 'conversationId, receiverId, and message are required'}), 400
+            # ✅ Updated error message to match snake_case
+            return jsonify({'error': 'conversation_id, receiver_id, and message are required'}), 400
         
         # Verify conversation exists and user is part of it
         conversation = Conversation.query.get(conversation_id)
@@ -3448,9 +3450,10 @@ def send_message():
         
         print(f"DEBUG: Message {message.id} sent from user {current_user.id} to {receiver_id}")
         
+        # ✅ Response uses camelCase (matches PostMessagesResponse on frontend)
         return jsonify({
-            'message': message_text,
-            'id': message.id
+            'id': message.id,
+            'message': message_text
         }), 201
     
     except Exception as e:
