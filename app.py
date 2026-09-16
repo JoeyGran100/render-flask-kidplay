@@ -1037,7 +1037,7 @@ def has_liked_event(user_id: int, event_id: int) -> bool:
 #         return jsonify({'error': str(e)}), 500
     
     
-@app.route('/sign-in', methods=['POST'])
+@app.route('/log-in', methods=['POST'])
 def sign_in():
     try:
         data = request.get_json()
@@ -1051,39 +1051,48 @@ def sign_in():
         if not user or not bcrypt.check_password_hash(user.password_hash, password):
             return jsonify({'message': 'Invalid credentials'}), 401
 
-        payload = {
-            'user_id': user.id,
-            'exp': datetime.utcnow() + timedelta(days=7)
-        }
-        token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
-        if isinstance(token, bytes):
-            token = token.decode('utf-8')
+        token = create_token(user)  # ✅ Use your existing function
 
-        return jsonify({'message': 'Sign in successful', 'token': token}), 200
+        return jsonify({
+            'message': 'Sign in successful',
+            'token': token,
+            'userId': user.id  # ✅ ADD THIS - same as in JWT payload
+        }), 200
 
     except Exception as e:
         print("Sign-in error:", e)
         return jsonify({'error': str(e)}), 500
 
 
-# Getting Sign-in DATA
-@app.route('/sign-in', methods=['GET'])
-def get_signin_data():
-    signin = User.query.all()
-    data = [
-        {
-            'id': rel.id,
-            'email': rel.email,
-            'password_hash': rel.password_hash,
-        }
-        for rel in signin
-    ]
-    return jsonify(data)
+@app.route('/sign-up', methods=['POST'])
+def sign_up():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
 
-@app.route('/test', methods=['GET'])
-def test():
-    return jsonify({'message': 'Flask is reachable!'}), 200
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
 
+        if User.query.filter_by(email=email).first():
+            return jsonify({'message': 'Email already exists'}), 400
+
+        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        new_user = User(email=email, password_hash=hashed_password)
+        db.session.add(new_user)
+        db.session.commit()
+
+        token = create_token(new_user)  # ✅ Use your existing function
+
+        return jsonify({
+            'message': 'Sign up successful',
+            'token': token,
+            'userId': new_user.id  # ✅ ADD THIS
+        }), 200
+
+    except Exception as e:
+        print("Sign-up error:", e)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/logout', methods=['POST'])
