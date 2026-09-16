@@ -1151,7 +1151,7 @@ def postData():
 
         # Check if email exists
         if User.query.filter_by(email=new_email).first():
-            return jsonify({'message': 'Email already exists'}), 409  # ✅ 409 Conflict is more accurate than 400
+            return jsonify({'message': 'Email already exists'}), 409
 
         # Hash password before storing ✅
         hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
@@ -1168,7 +1168,11 @@ def postData():
         if isinstance(token, bytes):
             token = token.decode('utf-8')
 
-        return jsonify({'message': "New User added", 'token': token}), 201
+        return jsonify({
+            'message': "New User added",
+            'token': token,
+            'userId': new_user.id  # ✅ ADD THIS
+        }), 201
 
     except Exception as e:
         traceback.print_exc()
