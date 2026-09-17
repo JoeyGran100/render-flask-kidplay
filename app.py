@@ -2204,6 +2204,30 @@ def get_tickets():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
     
+    # Re-fetch user with all relationships eager-loaded to avoid N+1 queries
+    user = (
+        db.session.query(User)
+        .options(
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.ticket),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.venue),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.event_category),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.event_organizer),
+            db.joinedload(User.parent_profile)
+        )
+        .filter(User.id == user.id)
+        .first()
+    )
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
     # Collect tickets through attendances
     tickets = [a.ticket for a in user.attendances if a.ticket]
     
@@ -2251,9 +2275,9 @@ def get_tickets():
             'user_profile': {
                 'id':        user.id,
                 'email':     user.email,
-                'name':      user.parents_profile.name if user.parents_profile else None,
-                'phone':     user.parents_profile.phone if user.parents_profile else None,
-                'gender':    user.parents_profile.gender.value if user.parents_profile and user.parents_profile.gender else None,
+                'name':      f"{user.parent_profile.first_name} {user.parent_profile.last_name}".strip() if user.parent_profile else None,
+                'phone':     user.parent_profile.phone_number if user.parent_profile else None,
+                'gender':    user.parent_profile.gender.value if user.parent_profile and user.parent_profile.gender else None,
             }
         }
         for t in tickets
