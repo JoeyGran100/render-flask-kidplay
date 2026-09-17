@@ -2068,6 +2068,75 @@ def post_event():
     return jsonify({'message': 'Event created', 'id': event.id}), 201
  
  
+ 
+ # My Created Events: Returns all events created by the logged-in organizer, including venue and category details, cover image, and other relevant information.
+@app.route('/my_created_events', methods=['GET'])
+def get_created_events():
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'message': 'Unauthorized'}), 401
+
+    # Get the organizer profile for this user
+    organizer = EventOrganizer.query.filter_by(user_id=user.id).first()
+    if not organizer:
+        return jsonify({'message': 'User is not an event organizer'}), 403
+
+    # Get all events created by this organizer
+    created_locations = (
+        EventLocation.query
+        .filter_by(event_organizer_id=organizer.id)
+        .options(
+            db.joinedload(EventLocation.venue),
+            db.joinedload(EventLocation.event_category),
+            db.joinedload(EventLocation.cover_image)
+        )
+        .all()
+    )
+
+    created_events = []
+    for loc in created_locations:
+        venue = loc.venue
+        
+        # Get first venue image URL (or None if no images)
+        venue_image_url = None
+        if venue.images:
+            venue_image_url = venue.images[0].image_url
+        
+        # Get cover image URL (or None)
+        cover_image_url = loc.cover_image.image_url if loc.cover_image else None
+        
+        created_events.append({
+            'id':                     loc.id,
+            'venue_id':               venue.id,
+            'venue_name':             venue.name,
+            'venue_address':          venue.address,
+            'venue_latitude':         float(venue.latitude) if venue.latitude else None,
+            'venue_longitude':        float(venue.longitude) if venue.longitude else None,
+            'venue_image_url':        venue_image_url,
+            'cover_image_url':        cover_image_url,
+            'category':               loc.event_category.name,
+            'start_time':             loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'end_time':               loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
+            'duration_minutes':       loc.duration_minutes,
+            'description':            loc.event_description,
+            'base_price':             float(loc.base_price) if loc.base_price else None,
+            'currency':               loc.currency,
+            'max_attendees':          loc.max_attendees,
+            'girls_attendees':        loc.girls_attendees,
+            'boys_attendees':         loc.boys_attendees,
+            'min_age':                loc.min_age,
+            'max_age':                loc.max_age,
+            'age_range':              loc.age_range,
+            'is_checkin_closed':      loc.is_checkin_closed,
+            'is_ongoing':             loc.is_ongoing,
+            'is_upcoming':            loc.is_upcoming,
+            'is_past':                loc.is_past,
+            'created_at':             loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        })
+
+    return jsonify({'created_events': created_events}), 200
+ 
+ 
 # ─────────────────────────────────────────────────────────────────────────────
 # ATTENDANCE ✅
 # ─────────────────────────────────────────────────────────────────────────────
