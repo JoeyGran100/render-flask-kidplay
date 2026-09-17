@@ -2203,11 +2203,37 @@ def get_tickets():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+    
+    # Re-fetch user with all relationships eager-loaded to avoid N+1 queries
+    user = (
+        db.session.query(User)
+        .options(
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.ticket),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.venue),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.event_category),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.event_organizer),
+            db.joinedload(User.parents_profile)
+        )
+        .filter(User.id == user.id)
+        .first()
+    )
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
     # Collect tickets through attendances
     tickets = [a.ticket for a in user.attendances if a.ticket]
+    
     return jsonify([
         {
+            # Ticket info
             'id':           t.id,
             'ticket_uid':   t.ticket_uid,
             'ticket_code':  t.ticket_code,
@@ -2218,6 +2244,41 @@ def get_tickets():
             'issued_at':    t.issued_at.isoformat() if t.issued_at else None,
             'paid_at':      t.paid_at.isoformat() if t.paid_at else None,
             'is_void':      t.is_void,
+            
+            # Event Location Details
+            'event': {
+                'id':                t.attendance.location.id,
+                'start_time':        t.attendance.location.start_time.isoformat(),
+                'end_time':          t.attendance.location.end_time.isoformat() if t.attendance.location.end_time else None,
+                'duration_minutes':  t.attendance.location.duration_minutes,
+                'description':       t.attendance.location.event_description,
+                'age_range':         t.attendance.location.age_range,
+                'max_attendees':     t.attendance.location.max_attendees,
+                'category':          t.attendance.location.event_category.name,
+                'organizer': {
+                    'id':   t.attendance.location.event_organizer.id,
+                    'name': t.attendance.location.event_organizer.name,
+                },
+                'base_price':        float(t.attendance.location.base_price) if t.attendance.location.base_price else None,
+            },
+            
+            # Venue Details
+            'venue': {
+                'id':        t.attendance.location.venue.id,
+                'name':      t.attendance.location.venue.name,
+                'address':   t.attendance.location.venue.address,
+                'latitude':  t.attendance.location.venue.latitude,
+                'longitude': t.attendance.location.venue.longitude,
+            },
+            
+            # Parent/User Profile Info
+            'user_profile': {
+                'id':        user.id,
+                'email':     user.email,
+                'name':      user.parents_profile.name if user.parents_profile else None,
+                'phone':     user.parents_profile.phone if user.parents_profile else None,
+                'gender':    user.parents_profile.gender.value if user.parents_profile and user.parents_profile.gender else None,
+            }
         }
         for t in tickets
     ]), 200
