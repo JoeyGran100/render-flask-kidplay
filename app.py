@@ -2016,7 +2016,10 @@ def get_event_details(event_id):
                 'latitude': float(event.venue.latitude) if event.venue.latitude else None,
                 'longitude': float(event.venue.longitude) if event.venue.longitude else None,
             },
-            'event_category_id': event.event_category_id,
+            'event_category': {
+                'id': event.event_category.id,
+                'name': event.event_category.name,
+            } if event.event_category else None,
             'start_time': event.start_time.isoformat(),      # From DB
             'duration_minutes': event.duration_minutes,      # From DB
             'end_time': event.end_time.isoformat() if event.end_time else None,  # Calculated property
