@@ -2055,15 +2055,14 @@ def get_events():
 # Load organizer details for a specific event, but only the organizer info, not the full event details. 
 # This is useful for lightweight requests where you just need to show who is organizing an event without fetching all event data.  
 
-@app.route('/events/<int:event_id>/organizer/details', methods=['GET'])  # Different route
+@app.route('/events/<int:event_id>/organizer/details', methods=['GET'])
 def get_event_organizer_details(event_id):
     """
     Get organizer information for a specific event.
-    Lightweight endpoint for organizer details only.
     Includes EventOrganizer and EventOrganizerImage data.
     """
     try:
-        organizer = (
+        event = (
             EventLocation.query
             .filter_by(id=event_id)
             .options(
@@ -2072,12 +2071,13 @@ def get_event_organizer_details(event_id):
                     joinedload(EventOrganizer.owner).joinedload(User.parent_profile)
                 )
             )
-            .with_entities(EventLocation.event_organizer)
             .first()
         )
         
-        if not organizer:
+        if not event or not event.event_organizer:
             return jsonify({'error': 'Event or organizer not found'}), 404
+        
+        organizer = event.event_organizer
         
         organizer_data = {
             'id': organizer.id,
