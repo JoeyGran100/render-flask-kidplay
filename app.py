@@ -3578,11 +3578,11 @@ def start_conversation():
                     other_image = other_user.parent_profile.images[0].image_url or ""
             
             return {
-                'conversationId': conv.id,
-                'otherUserId': other_user.id,
-                'otherUserName': other_name or other_user.email,
-                'otherUserImage': other_image,
-                'eventId': conv.event_id
+                'conversation_id': conv.id,
+                'other_user_id': other_user.id,
+                'other_user_name': other_name or other_user.email,
+                'other_user_image': other_image,
+                'event_id': conv.event_id
             }
         
         if existing:
@@ -3611,6 +3611,7 @@ def start_conversation():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+ 
  
     
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
