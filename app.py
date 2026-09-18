@@ -449,6 +449,11 @@ class EventLocation(db.Model):
     @property
     def is_upcoming(self):
         return datetime.now(timezone.utc) < self.start_time
+    
+    @property
+    def total_participants(self):
+        """Total number of attendees registered for this event"""
+        return Attendance.query.filter_by(location_id=self.id).count()
  
     # ── Gender counting ────────────────────────────────────────────────────────
  
