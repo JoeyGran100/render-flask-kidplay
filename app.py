@@ -2055,6 +2055,7 @@ def get_event_details(event_id):
             # Organizer preview
             'organizer_preview': {
                 'id': event.event_organizer.id,
+                'user_id': event.event_organizer.user_id,  # ← Add this
                 'first_name': event.event_organizer.first_name,
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
