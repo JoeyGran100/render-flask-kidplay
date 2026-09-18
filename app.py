@@ -1999,7 +1999,8 @@ def get_events():
                 joinedload(EventLocation.event_organizer),
                 joinedload(EventLocation.event_category),
                 joinedload(EventLocation.cover_image),
-                joinedload(EventLocation.images)
+                joinedload(EventLocation.images),
+                joinedload(EventLocation.attendances).joinedload(Attendance.user).joinedload(User.parent_profile)
             )
             .order_by(EventLocation.start_time.asc())
             .all()
@@ -2032,8 +2033,8 @@ def get_events():
                 # Attendance calculations
                 'total_attendees': e.total_participants,
                 'remaining_spots': e.max_attendees - e.total_participants,
-                'total_male_attendees': e._count_by_gender(GenderEnum.Male),
-                'total_female_attendees': e._count_by_gender(GenderEnum.Female),
+                'total_male_attendees': sum(1 for a in e.attendances if a.user.parent_profile.gender == GenderEnum.Male),
+                'total_female_attendees': sum(1 for a in e.attendances if a.user.parent_profile.gender == GenderEnum.Female),
                 'cover_image': {
                     'id': e.cover_image.id,
                     'image_url': e.cover_image.image_url,
