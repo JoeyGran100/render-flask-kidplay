@@ -2017,8 +2017,9 @@ def get_event_details(event_id):
                 'longitude': float(event.venue.longitude) if event.venue.longitude else None,
             },
             'event_category_id': event.event_category_id,
-            'start_time': event.start_time.isoformat(),
-            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'start_time': event.start_time.isoformat(),      # From DB
+            'duration_minutes': event.duration_minutes,      # From DB
+            'end_time': event.end_time.isoformat() if event.end_time else None,  # Calculated property
             'event_description': event.event_description,
             'max_attendees': event.max_attendees,
             'girls_attendees': event.girls_attendees,
