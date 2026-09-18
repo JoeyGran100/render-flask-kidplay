@@ -1984,16 +1984,15 @@ def post_venue():
 # EVENT LOCATIONS ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.route('/events', methods=['GET'])
-def get_events():
+@app.route('/events/<int:event_id>', methods=['GET'])
+def get_event_details(event_id):
     """
-    Get all upcoming events with basic info + organizer preview.
-    Includes attendance and spot calculations.
-    Avoids N+1 using eager loading of organizer and venue relationships.
+    Get details for a specific event.
     """
     try:
-        events = (
+        event = (
             EventLocation.query
+            .filter_by(id=event_id)
             .options(
                 joinedload(EventLocation.venue),
                 joinedload(EventLocation.event_organizer),
@@ -2002,62 +2001,61 @@ def get_events():
                 joinedload(EventLocation.images),
                 joinedload(EventLocation.attendances).joinedload(Attendance.user).joinedload(User.parent_profile)
             )
-            .order_by(EventLocation.start_time.asc())
-            .all()
+            .first()
         )
         
-        return jsonify([
-            {
-                'id': e.id,
-                'venue': {
-                    'id': e.venue.id,
-                    'name': e.venue.name,
-                    'address': e.venue.address,
-                    'latitude': float(e.venue.latitude) if e.venue.latitude else None,
-                    'longitude': float(e.venue.longitude) if e.venue.longitude else None,
-                },
-                'event_category_id': e.event_category_id,
-                'start_time': e.start_time.isoformat(),
-                'end_time': e.end_time.isoformat() if e.end_time else None,
-                'event_description': e.event_description,
-                'max_attendees': e.max_attendees,
-                'girls_attendees': e.girls_attendees,
-                'boys_attendees': e.boys_attendees,
-                'age_range': e.age_range,
-                'base_price': float(e.base_price) if e.base_price else None,
-                'currency': e.currency,
-                'is_checkin_closed': e.is_checkin_closed,
-                'is_upcoming': e.is_upcoming,
-                'is_ongoing': e.is_ongoing,
-                'is_past': e.is_past,
-                # Attendance calculations
-                'total_attendees': e.total_participants,
-                'remaining_spots': e.max_attendees - e.total_participants,
-                'total_male_attendees': sum(1 for a in e.attendances if a.user.parent_profile.gender == GenderEnum.Male),
-                'total_female_attendees': sum(1 for a in e.attendances if a.user.parent_profile.gender == GenderEnum.Female),
-                'cover_image': {
-                    'id': e.cover_image.id,
-                    'image_url': e.cover_image.image_url,
-                    'uploaded_at': e.cover_image.uploaded_at.isoformat()
-                } if e.cover_image else None,
-                'gallery_images': [
-                    {
-                        'id': img.id,
-                        'image_url': img.image_url,
-                        'display_order': img.display_order
-                    }
-                    for img in e.images
-                ],
-                # Organizer preview
-                'organizer_preview': {
-                    'id': e.event_organizer.id,
-                    'first_name': e.event_organizer.first_name,
-                    'avatar_url': e.event_organizer.avatar_url,
-                    'is_approved': e.event_organizer.is_approved,
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        return jsonify({
+            'id': event.id,
+            'venue': {
+                'id': event.venue.id,
+                'name': event.venue.name,
+                'address': event.venue.address,
+                'latitude': float(event.venue.latitude) if event.venue.latitude else None,
+                'longitude': float(event.venue.longitude) if event.venue.longitude else None,
+            },
+            'event_category_id': event.event_category_id,
+            'start_time': event.start_time.isoformat(),
+            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'event_description': event.event_description,
+            'max_attendees': event.max_attendees,
+            'girls_attendees': event.girls_attendees,
+            'boys_attendees': event.boys_attendees,
+            'age_range': event.age_range,
+            'base_price': float(event.base_price) if event.base_price else None,
+            'currency': event.currency,
+            'is_checkin_closed': event.is_checkin_closed,
+            'is_upcoming': event.is_upcoming,
+            'is_ongoing': event.is_ongoing,
+            'is_past': event.is_past,
+            # Attendance calculations
+            'total_attendees': event.total_participants,
+            'remaining_spots': event.max_attendees - event.total_participants,
+            'total_male_attendees': sum(1 for a in event.attendances if a.user.parent_profile.gender == GenderEnum.Male),
+            'total_female_attendees': sum(1 for a in event.attendances if a.user.parent_profile.gender == GenderEnum.Female),
+            'cover_image': {
+                'id': event.cover_image.id,
+                'image_url': event.cover_image.image_url,
+                'uploaded_at': event.cover_image.uploaded_at.isoformat()
+            } if event.cover_image else None,
+            'gallery_images': [
+                {
+                    'id': img.id,
+                    'image_url': img.image_url,
+                    'display_order': img.display_order
                 }
+                for img in event.images
+            ],
+            # Organizer preview
+            'organizer_preview': {
+                'id': event.event_organizer.id,
+                'first_name': event.event_organizer.first_name,
+                'avatar_url': event.event_organizer.avatar_url,
+                'is_approved': event.event_organizer.is_approved,
             }
-            for e in events
-        ]), 200
+        }), 200
         
     except Exception:
         traceback.print_exc()
