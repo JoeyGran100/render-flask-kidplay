@@ -2082,8 +2082,6 @@ def get_event_organizer_details(event_id):
         organizer_data = {
             'id': organizer.id,
             'name': organizer.name,
-            'first_name': organizer.first_name,
-            'last_name': organizer.last_name,
             'avatar_url': organizer.avatar_url,
             'bio': organizer.organizer_bio,
             'verification_status': organizer.verification_status.value,
