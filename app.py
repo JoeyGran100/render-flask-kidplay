@@ -1983,6 +1983,7 @@ def post_venue():
 def get_events():
     """
     Get all upcoming events with basic info + organizer preview.
+    Includes attendance and spot calculations.
     Avoids N+1 using eager loading of organizer and venue relationships.
     """
     try:
@@ -2023,6 +2024,11 @@ def get_events():
                 'is_upcoming': e.is_upcoming,
                 'is_ongoing': e.is_ongoing,
                 'is_past': e.is_past,
+                # Attendance calculations
+                'total_attendees': e.total_participants,
+                'remaining_spots': e.max_attendees - e.total_participants,
+                'total_male_attendees': e._count_by_gender(GenderEnum.Male),
+                'total_female_attendees': e._count_by_gender(GenderEnum.Female),
                 'cover_image': {
                     'id': e.cover_image.id,
                     'image_url': e.cover_image.image_url,
