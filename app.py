@@ -2056,7 +2056,7 @@ def get_events():
 # This is useful for lightweight requests where you just need to show who is organizing an event without fetching all event data.  
 
 @app.route('/events/<int:event_id>/organizer/details', methods=['GET'])  # Different route
-def get_event_organizer(event_id):
+def get_event_organizer_details(event_id):
     """
     Get organizer information for a specific event.
     Lightweight endpoint for organizer details only.
