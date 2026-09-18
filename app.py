@@ -1978,37 +1978,134 @@ def post_venue():
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT LOCATIONS ✅
 # ─────────────────────────────────────────────────────────────────────────────
- 
+
 @app.route('/events', methods=['GET'])
 def get_events():
+    """
+    Get all upcoming events with basic info + organizer preview.
+    Avoids N+1 using eager loading of organizer and venue relationships.
+    """
     try:
-        events = EventLocation.query.order_by(EventLocation.start_time.asc()).all()
+        events = (
+            EventLocation.query
+            .options(
+                joinedload(EventLocation.venue),
+                joinedload(EventLocation.event_organizer),
+                joinedload(EventLocation.event_category),
+                joinedload(EventLocation.cover_image),
+                joinedload(EventLocation.images)
+            )
+            .order_by(EventLocation.start_time.asc())
+            .all()
+        )
+        
         return jsonify([
             {
-                'id':               e.id,
-                'venue_id':         e.venue_id,
-                'event_category_id':e.event_category_id,
-                'event_organizer_id':e.event_organizer_id,
-                'start_time':       e.start_time.isoformat(),
-                'end_time':         e.end_time.isoformat(),
-                'event_description':e.event_description,
-                'max_attendees':    e.max_attendees,
-                'girls_attendees':  e.girls_attendees,
-                'boys_attendees':   e.boys_attendees,
-                'age_range':        e.age_range,  # Returns "18 - 22" or "18+"
-                'base_price':       float(e.base_price) if e.base_price else None,
-                'currency':         e.currency,
-                'is_checkin_closed':e.is_checkin_closed,
-                'is_upcoming':      e.is_upcoming,
-                'is_ongoing':       e.is_ongoing,
-                'is_past':          e.is_past,
+                'id': e.id,
+                'venue': {
+                    'id': e.venue.id,
+                    'name': e.venue.name,
+                    'address': e.venue.address,
+                    'latitude': float(e.venue.latitude) if e.venue.latitude else None,
+                    'longitude': float(e.venue.longitude) if e.venue.longitude else None,
+                },
+                'event_category_id': e.event_category_id,
+                'start_time': e.start_time.isoformat(),
+                'end_time': e.end_time.isoformat() if e.end_time else None,
+                'event_description': e.event_description,
+                'max_attendees': e.max_attendees,
+                'girls_attendees': e.girls_attendees,
+                'boys_attendees': e.boys_attendees,
+                'age_range': e.age_range,
+                'base_price': float(e.base_price) if e.base_price else None,
+                'currency': e.currency,
+                'is_checkin_closed': e.is_checkin_closed,
+                'is_upcoming': e.is_upcoming,
+                'is_ongoing': e.is_ongoing,
+                'is_past': e.is_past,
+                'cover_image': {
+                    'id': e.cover_image.id,
+                    'image_url': e.cover_image.image_url,
+                    'uploaded_at': e.cover_image.uploaded_at.isoformat()
+                } if e.cover_image else None,
+                'gallery_images': [
+                    {
+                        'id': img.id,
+                        'image_url': img.image_url,
+                        'display_order': img.display_order
+                    }
+                    for img in e.images
+                ],
+                # Organizer preview
+                'organizer_preview': {
+                    'id': e.event_organizer.id,
+                    'first_name': e.event_organizer.first_name,
+                    'avatar_url': e.event_organizer.avatar_url,
+                    'is_approved': e.event_organizer.is_approved,
+                }
             }
             for e in events
         ]), 200
+        
     except Exception:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
- 
+    
+    
+# Load organizer details for a specific event, but only the organizer info, not the full event details. 
+# This is useful for lightweight requests where you just need to show who is organizing an event without fetching all event data.  
+
+@app.route('/events/<int:event_id>/organizer', methods=['GET'])
+def get_event_organizer(event_id):
+    """
+    Get organizer information for a specific event.
+    Lightweight endpoint for organizer details only.
+    Includes EventOrganizer and EventOrganizerImage data.
+    """
+    try:
+        organizer = (
+            EventLocation.query
+            .filter_by(id=event_id)
+            .options(
+                joinedload(EventLocation.event_organizer).options(
+                    joinedload(EventOrganizer.images),
+                    joinedload(EventOrganizer.owner).joinedload(User.parent_profile)
+                )
+            )
+            .with_entities(EventLocation.event_organizer)
+            .first()
+        )
+        
+        if not organizer:
+            return jsonify({'error': 'Event or organizer not found'}), 404
+        
+        organizer_data = {
+            'id': organizer.id,
+            'name': organizer.name,
+            'first_name': organizer.first_name,
+            'last_name': organizer.last_name,
+            'avatar_url': organizer.avatar_url,
+            'bio': organizer.organizer_bio,
+            'verification_status': organizer.verification_status.value,
+            'is_approved': organizer.is_approved,
+            'portfolio_images': [
+                {
+                    'id': img.id,
+                    'image_url': img.image_url,
+                    'display_order': img.display_order,
+                    'uploaded_at': img.uploaded_at.isoformat()
+                }
+                for img in organizer.images
+            ],
+            'contact_email': organizer.owner.email if organizer.owner else None,
+        }
+        
+        return jsonify(organizer_data), 200
+        
+    except Exception:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error'}), 500
+
  
 @app.route('/events', methods=['POST'])
 def post_event():
@@ -2070,6 +2167,9 @@ def post_event():
  
  
  # My Created Events: Returns all events created by the logged-in organizer, including venue and category details, cover image, and other relevant information.
+
+
+
 @app.route('/my_created_events', methods=['GET'])
 def get_created_events():
     user = get_current_user_from_token()
