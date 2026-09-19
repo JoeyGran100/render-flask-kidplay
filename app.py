@@ -3478,15 +3478,15 @@ def get_conversations():
                         other_image = other_user.parent_profile.images[0].image_url or ""
                 
                 thread = {
-                    'conversationId': conv.id,
-                    'otherUserId': other_user.id,
-                    'otherUserName': other_name or other_user.email,
-                    'otherUserImage': other_image,
-                    'eventId': conv.event_id,
+                    'conversationId': conv.id,          # ✅ camelCase
+                    'otherUserId': other_user.id,       # ✅ camelCase
+                    'otherUserName': other_name or other_user.email,  # ✅ camelCase
+                    'otherUserImage': other_image,      # ✅ camelCase
+                    'eventId': conv.event_id,           # ✅ camelCase
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
-                    'unreadCount': unread,
-                    'lastMessageTime': latest_msg.timestamp.isoformat(),
+                    'unreadCount': unread,              # ✅ camelCase
+                    'lastMessageTime': latest_msg.timestamp.isoformat(),  # ✅ camelCase
                 }
                 
                 print(f"  ✓ Added thread with unreadCount={thread['unreadCount']}")
@@ -3507,8 +3507,8 @@ def get_conversations():
         traceback.print_exc()
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
- 
- 
+
+
 @app.route('/conversations', methods=['POST'])
 def start_conversation():
     """
@@ -3521,11 +3521,11 @@ def start_conversation():
     
     try:
         data = request.get_json()
-        other_user_id = data.get('other_user_id')  # ✅ snake_case
-        event_id = data.get('event_id')             # ✅ snake_case
+        other_user_id = data.get('otherUserId')   # ✅ camelCase
+        event_id = data.get('eventId')             # ✅ camelCase
         
         if not other_user_id:
-            return jsonify({'error': 'other_user_id is required'}), 400
+            return jsonify({'error': 'otherUserId is required'}), 400
         
         if other_user_id == current_user.id:
             return jsonify({'error': 'Cannot start conversation with yourself'}), 400
@@ -3578,11 +3578,11 @@ def start_conversation():
                     other_image = other_user.parent_profile.images[0].image_url or ""
             
             return {
-                'conversation_id': conv.id,         # ✅ snake_case
-                'other_user_id': other_user.id,    # ✅ snake_case
-                'other_user_name': other_name or other_user.email,  # ✅ snake_case
-                'other_user_image': other_image,   # ✅ snake_case
-                'event_id': conv.event_id          # ✅ snake_case
+                'conversationId': conv.id,          # ✅ camelCase
+                'otherUserId': other_user.id,       # ✅ camelCase
+                'otherUserName': other_name or other_user.email,  # ✅ camelCase
+                'otherUserImage': other_image,      # ✅ camelCase
+                'eventId': conv.event_id            # ✅ camelCase
             }
         
         if existing:
@@ -3659,8 +3659,8 @@ def get_messages(conversation_id):
             'messages': messages_data,
             'total': total_count,
             'pages': messages_page.pages,
-            'currentPage': page,
-            'perPage': per_page
+            'currentPage': page,           # ✅ camelCase
+            'perPage': per_page            # ✅ camelCase
         }), 200
     
     except Exception as e:
@@ -3684,20 +3684,20 @@ def send_message():
         data = request.get_json()
         print(f"🔍 DEBUG: Request data: {data}")
 
-        # ✅ Changed to snake_case to match frontend
-        conversation_id = data.get('conversation_id')
-        receiver_id = data.get('receiver_id')
+        # ✅ Changed to camelCase to match frontend
+        conversation_id = data.get('conversationId')
+        receiver_id = data.get('receiverId')
         message_text = data.get('message')
-        reply_to_id = data.get('reply_to_id')
-        image_url = data.get('image_url')
+        reply_to_id = data.get('replyToId')
+        image_url = data.get('imageUrl')
         
-        print(f"🔍 DEBUG: conversation_id={conversation_id}, receiver_id={receiver_id}")
+        print(f"🔍 DEBUG: conversationId={conversation_id}, receiverId={receiver_id}")
 
         # Validate required fields
         if not conversation_id or not receiver_id or not message_text:
             print(f"🔍 DEBUG: FAILED - Missing required fields!")
-            # ✅ Updated error message to match snake_case
-            return jsonify({'error': 'conversation_id, receiver_id, and message are required'}), 400
+            # ✅ Updated error message to match camelCase
+            return jsonify({'error': 'conversationId, receiverId, and message are required'}), 400
         
         # Verify conversation exists and user is part of it
         conversation = Conversation.query.get(conversation_id)
@@ -3726,7 +3726,7 @@ def send_message():
         
         print(f"DEBUG: Message {message.id} sent from user {current_user.id} to {receiver_id}")
         
-        # ✅ Response uses camelCase (matches PostMessagesResponse on frontend)
+        # ✅ Response uses camelCase (matches frontend expectations)
         return jsonify({
             'id': message.id,
             'message': message_text
@@ -3738,6 +3738,7 @@ def send_message():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
 
 
 if __name__ == "__main__":
