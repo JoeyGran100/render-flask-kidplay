@@ -3521,11 +3521,11 @@ def start_conversation():
     
     try:
         data = request.get_json()
-        other_user_id = data.get('otherUserId')
-        event_id = data.get('eventId')
+        other_user_id = data.get('other_user_id')  # ✅ snake_case
+        event_id = data.get('event_id')             # ✅ snake_case
         
         if not other_user_id:
-            return jsonify({'error': 'otherUserId is required'}), 400
+            return jsonify({'error': 'other_user_id is required'}), 400
         
         if other_user_id == current_user.id:
             return jsonify({'error': 'Cannot start conversation with yourself'}), 400
@@ -3578,11 +3578,11 @@ def start_conversation():
                     other_image = other_user.parent_profile.images[0].image_url or ""
             
             return {
-                'conversation_id': conv.id,
-                'other_user_id': other_user.id,
-                'other_user_name': other_name or other_user.email,
-                'other_user_image': other_image,
-                'event_id': conv.event_id
+                'conversation_id': conv.id,         # ✅ snake_case
+                'other_user_id': other_user.id,    # ✅ snake_case
+                'other_user_name': other_name or other_user.email,  # ✅ snake_case
+                'other_user_image': other_image,   # ✅ snake_case
+                'event_id': conv.event_id          # ✅ snake_case
             }
         
         if existing:
@@ -3611,8 +3611,7 @@ def start_conversation():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
- 
- 
+
     
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
 def get_messages(conversation_id):
