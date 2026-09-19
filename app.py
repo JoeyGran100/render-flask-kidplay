@@ -3478,14 +3478,14 @@ def get_conversations():
                         other_image = other_user.parent_profile.images[0].image_url or ""
                 
                 thread = {
-                    'conversationId': conv.id,          # ✅ camelCase
-                    'otherUserId': other_user.id,       # ✅ camelCase
-                    'otherUserName': other_name or other_user.email,  # ✅ camelCase
-                    'otherUserImage': other_image,      # ✅ camelCase
-                    'eventId': conv.event_id,           # ✅ camelCase
+                    'conversationId': conv.id,              # ✅ camelCase
+                    'otherUserId': other_user.id,           # ✅ camelCase
+                    'otherUserName': other_name or other_user.email,
+                    'otherUserImage': other_image,          # ✅ camelCase
+                    'eventId': conv.event_id,               # ✅ camelCase
                     'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
                     'time': latest_msg.time_ago,
-                    'unreadCount': unread,              # ✅ camelCase
+                    'unreadCount': unread,                  # ✅ camelCase
                     'lastMessageTime': latest_msg.timestamp.isoformat(),  # ✅ camelCase
                 }
                 
@@ -3738,6 +3738,30 @@ def send_message():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+def build_conversation_response(conv, target_user_id):
+    """Build the response DTO for a conversation"""
+    other_user = conv.other_user if conv.user_id == target_user_id else conv.user
+    
+    other_name = ""
+    if other_user.parent_profile:
+        first_name = other_user.parent_profile.first_name or ""
+        last_name = other_user.parent_profile.last_name or ""
+        other_name = f"{first_name} {last_name}".strip()
+    
+    other_image = ""
+    if other_user.parent_profile and other_user.parent_profile.images:
+        if len(other_user.parent_profile.images) > 0:
+            other_image = other_user.parent_profile.images[0].image_url or ""
+    
+    return {
+        'conversationId': conv.id,          # ✅ camelCase
+        'otherUserId': other_user.id,       # ✅ camelCase
+        'otherUserName': other_name or other_user.email,  # ✅ camelCase
+        'otherUserImage': other_image,      # ✅ camelCase
+        'eventId': conv.event_id            # ✅ camelCase
+    }
 
 
 
