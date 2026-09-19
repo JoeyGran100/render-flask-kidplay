@@ -2586,20 +2586,36 @@ def post_ticket():
 
 @app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
 def get_rotating_qr(ticket_uid: str):
+    app.logger.debug(f"GET /ticket/{ticket_uid}/rotating_qr - Request received")
+    
     user = get_current_user_from_token()
     if not user:
+        app.logger.warning(f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}")
         return jsonify({'message': 'Unauthorized'}), 401
 
+    app.logger.debug(f"User {user.id} requesting rotating QR for ticket={ticket_uid}")
+
     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
+    app.logger.debug(f"Ticket found: {ticket_uid}, attendance_user_id={ticket.attendance.user_id}")
 
     if ticket.attendance.user_id != user.id:
+        app.logger.warning(
+            f"Forbidden: User {user.id} attempted to access ticket {ticket_uid} "
+            f"owned by user {ticket.attendance.user_id}"
+        )
         return jsonify({'message': 'Forbidden'}), 403
 
     if ticket.is_expired or ticket.status == 'cancelled':
+        app.logger.info(
+            f"Inactive ticket access: ticket={ticket_uid}, "
+            f"is_expired={ticket.is_expired}, status={ticket.status}"
+        )
         return jsonify({'message': 'Ticket is not active'}), 400
 
     try:
+        app.logger.debug(f"Generating rotating token for ticket={ticket_uid}")
         token = generate_rotating_token(ticket.ticket_uid)
+        app.logger.info(f"Successfully generated rotating token for ticket={ticket_uid}")
     except Exception as e:
         app.logger.exception(f"Failed to generate rotating token for ticket={ticket_uid}: {e}")
         return jsonify({'message': 'Failed to generate QR code'}), 500
@@ -2607,6 +2623,11 @@ def get_rotating_qr(ticket_uid: str):
     now = time.time()
     current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
     expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+
+    app.logger.debug(
+        f"Rotating QR response: ticket={ticket_uid}, expires_in_ms={expires_in_ms}, "
+        f"window_seconds={WINDOW_SECONDS}"
+    )
 
     return jsonify({
         'token':          token,
