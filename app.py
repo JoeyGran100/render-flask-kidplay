@@ -25,7 +25,6 @@ import hashlib   # Built-in
 import qrcode
 import time
 from datetime import date, datetime, timedelta, timezone
-from datetime import time
 
 # Add this to your Flask app setup
 logging.basicConfig(
