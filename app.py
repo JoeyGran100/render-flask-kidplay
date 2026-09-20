@@ -2584,207 +2584,391 @@ def post_ticket():
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
-def get_rotating_qr(ticket_uid: str):
-    app.logger.debug(f"GET /ticket/{ticket_uid}/rotating_qr - Request received")
+# @app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
+# def get_rotating_qr(ticket_uid: str):
+#     app.logger.debug(f"GET /ticket/{ticket_uid}/rotating_qr - Request received")
     
+#     user = get_current_user_from_token()
+#     if not user:
+#         app.logger.warning(f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}")
+#         return jsonify({'message': 'Unauthorized'}), 401
+
+#     app.logger.debug(f"User {user.id} requesting rotating QR for ticket={ticket_uid}")
+
+#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
+#     app.logger.debug(f"Ticket found: {ticket_uid}, attendance_user_id={ticket.attendance.user_id}")
+
+#     if ticket.attendance.user_id != user.id:
+#         app.logger.warning(
+#             f"Forbidden: User {user.id} attempted to access ticket {ticket_uid} "
+#             f"owned by user {ticket.attendance.user_id}"
+#         )
+#         return jsonify({'message': 'Forbidden'}), 403
+
+#     if ticket.is_expired or ticket.status == 'cancelled':
+#         app.logger.info(
+#             f"Inactive ticket access: ticket={ticket_uid}, "
+#             f"is_expired={ticket.is_expired}, status={ticket.status}"
+#         )
+#         return jsonify({'message': 'Ticket is not active'}), 400
+
+#     try:
+#         app.logger.debug(f"Generating rotating token for ticket={ticket_uid}")
+#         token = generate_rotating_token(ticket.ticket_uid)
+#         app.logger.info(f"Successfully generated rotating token for ticket={ticket_uid}")
+#     except Exception as e:
+#         app.logger.exception(f"Failed to generate rotating token for ticket={ticket_uid}: {e}")
+#         return jsonify({'message': 'Failed to generate QR code'}), 500
+
+#     now = time.time()
+#     current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
+#     expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+
+#     app.logger.debug(
+#         f"Rotating QR response: ticket={ticket_uid}, expires_in_ms={expires_in_ms}, "
+#         f"window_seconds={WINDOW_SECONDS}"
+#     )
+
+#     return jsonify({
+#         'token':          token,
+#         'expires_in_ms':  expires_in_ms,
+#         'window_seconds': WINDOW_SECONDS,
+#     }), 200
+
+
+# @app.route('/ticket/verify_rotating_qr', methods=['POST'])
+# def verify_rotating_qr():
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({'message': 'Unauthorized'}), 401
+
+#     token    = request.json.get('token', '')
+#     event_id = request.json.get('event_id')
+
+#     is_valid, ticket_uid = verify_rotating_token(token)
+
+#     if not is_valid:
+#         return jsonify({'valid': False, 'message': 'QR code expired or invalid'}), 200
+
+#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+#     if not ticket or ticket.is_expired or ticket.status == 'cancelled':
+#         return jsonify({'valid': False, 'message': 'Ticket is not active'}), 200
+
+#     if event_id and ticket.attendance.location_id != int(event_id):
+#         return jsonify({'valid': False, 'message': 'Ticket is for a different event'}), 200
+
+#     attendance_user = ticket.attendance.user
+#     profile         = attendance_user.parent_profile  # ✅ Changed from .profile to .parent_profile
+
+#     return jsonify({
+#         'valid':       True,
+#         'ticket_uid':  ticket.ticket_uid,
+#         'ticket_code': ticket.ticket_code,
+#         'user':        attendance_user.email,
+#         'first_name':  profile.first_name if profile else None,
+#         'last_name':   profile.last_name  if profile else None,
+#         'status':      ticket.status,
+#     }), 200
+
+
+# @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
+# def lookup_attendee(event_id: int):
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({'message': 'Unauthorized'}), 401
+
+#     logger.info(
+#         f"lookup_attendee: event_id={event_id} requested by user_id={user.id} "
+#         f"(type={type(user.id).__name__})"
+#     )
+
+#     location = EventLocation.query.filter_by(id=event_id).first()  # ✅ Changed from EventLocation
+#     if not location:
+#         logger.warning(f"lookup_attendee: no EventLocation found with id={event_id}")
+#         return jsonify({'message': 'Event not found'}), 404
+
+#     if location.event_organizer_id != user.id:  # ✅ Changed: organizer check
+#         logger.warning(
+#             f"lookup_attendee: FORBIDDEN — event_id={event_id} "
+#             f"event_organizer_id={location.event_organizer_id} (type={type(location.event_organizer_id).__name__}) "
+#             f"requesting user_id={user.id} (type={type(user.id).__name__})"
+#         )
+#         return jsonify({'message': 'Forbidden'}), 403
+
+#     ticket_code = request.args.get('ticket_code', '').strip()
+#     name_email  = request.args.get('query', '').strip()
+
+#     logger.info(
+#         f"lookup_attendee: ownership OK, location_id={location.id}, "
+#         f"ticket_code='{ticket_code}', query='{name_email}'"
+#     )
+
+#     if not ticket_code and not name_email:
+#         return jsonify({'message': 'Provide ticket_code or query'}), 400
+
+#     def escape_like(s: str) -> str:
+#         """Escape LIKE wildcards so literal % and _ in user input don't act as wildcards."""
+#         return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+#     q = (
+#         Attendance.query
+#         .filter_by(location_id=location.id)
+#         .join(Ticket,       Ticket.attendance_id == Attendance.id)
+#         .join(User,         User.id == Attendance.user_id)
+#         .outerjoin(ParentsProfile, ParentsProfile.user_auth_id == User.id)  # ✅ Changed from UserProfile
+#     )
+
+#     if ticket_code:
+#         safe_code = escape_like(ticket_code)
+#         q = q.filter(Ticket.ticket_code.ilike(f'%{safe_code}%'))
+#     elif name_email:
+#         safe_query = escape_like(name_email)
+#         q = q.filter(
+#             db.or_(
+#                 User.email.ilike(f'%{safe_query}%'),
+#                 ParentsProfile.first_name.ilike(f'%{safe_query}%'),  # ✅ Changed from UserProfile
+#                 ParentsProfile.last_name.ilike(f'%{safe_query}%'),   # ✅ Changed from UserProfile
+#             )
+#         )
+
+#     attendances = q.limit(10).all()
+
+#     logger.info(
+#         f"lookup_attendee: location_id={location.id} matched {len(attendances)} attendance row(s)"
+#     )
+
+#     # ── Batch-fetch most-recent image per user (avoids N+1 query loop) ─────────
+#     user_ids = [attendance.user.id for attendance in attendances]
+#     images_by_user = {}
+#     if user_ids:
+#         all_images = (
+#             ParentsProfileImages.query  # ✅ Changed from UserImages
+#             .filter(ParentsProfileImages.parent_profile_id.in_(user_ids))  # ✅ Adjusted filter
+#             .order_by(ParentsProfileImages.parent_profile_id, ParentsProfileImages.created_at.desc())  # ✅ Changed order_by
+#             .all()
+#         )
+#         for img in all_images:
+#             # First occurrence per parent_profile_id is the most recent, due to ORDER BY above
+#             if img.parent_profile_id not in images_by_user:  # ✅ Changed key
+#                 images_by_user[img.parent_profile_id] = img
+
+#     results = []
+#     for attendance in attendances:
+#         ticket  = attendance.ticket
+#         profile = attendance.user.parent_profile  # ✅ Changed from .profile to .parent_profile
+#         image   = images_by_user.get(profile.id) if profile else None  # ✅ Updated lookup
+
+#         results.append({
+#             'attendance_id':       attendance.id,
+#             'ticket_uid':          ticket.ticket_uid,
+#             'ticket_code':         ticket.ticket_code,
+#             'ticket_type':         ticket.ticket_type,
+#             'status':              ticket.status,
+#             'is_checked_in':       ticket.is_checked_in,
+#             'issued_at':           ticket.issued_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+#             'amount_paid':         float(ticket.amount_paid) if ticket.amount_paid else None,
+#             'currency':            ticket.currency,
+#             'cancellation_reason': ticket.cancellation_reason,
+#             'user': {
+#                 'email':        attendance.user.email,
+#                 'first_name':   profile.first_name   if profile else None,
+#                 'last_name':    profile.last_name     if profile else None,
+#                 'gender':       profile.gender.value  if profile and profile.gender else None,
+#                 'phone_number': profile.phone_number  if profile else None,
+#                 'image_url':    image.image_url       if image   else None,
+#             },
+#             'location': {
+#                 'start_time':        location.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+#                 'is_checkin_closed': location.is_checkin_closed,
+#             },
+#         })
+
+#     return jsonify({'results': results}), 200
+ 
+ 
+@app.route('tickets', methods=['GET'])
+def list_tickets():
+    """List user's tickets with pagination."""
     user = get_current_user_from_token()
     if not user:
-        app.logger.warning(f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}")
-        return jsonify({'message': 'Unauthorized'}), 401
-
-    app.logger.debug(f"User {user.id} requesting rotating QR for ticket={ticket_uid}")
-
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
-    app.logger.debug(f"Ticket found: {ticket_uid}, attendance_user_id={ticket.attendance.user_id}")
-
-    if ticket.attendance.user_id != user.id:
-        app.logger.warning(
-            f"Forbidden: User {user.id} attempted to access ticket {ticket_uid} "
-            f"owned by user {ticket.attendance.user_id}"
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('pageSize', 10, type=int)
+    
+    # Eager load relationships
+    query = (
+        db.session.query(Ticket)
+        .join(Attendance)
+        .options(
+            joinedload(Ticket.attendance)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.venue),
+            joinedload(Ticket.attendance)
+            .joinedload(Attendance.location)
+            .joinedload(EventLocation.event_organizer),
         )
-        return jsonify({'message': 'Forbidden'}), 403
-
-    if ticket.is_expired or ticket.status == 'cancelled':
-        app.logger.info(
-            f"Inactive ticket access: ticket={ticket_uid}, "
-            f"is_expired={ticket.is_expired}, status={ticket.status}"
-        )
-        return jsonify({'message': 'Ticket is not active'}), 400
-
-    try:
-        app.logger.debug(f"Generating rotating token for ticket={ticket_uid}")
-        token = generate_rotating_token(ticket.ticket_uid)
-        app.logger.info(f"Successfully generated rotating token for ticket={ticket_uid}")
-    except Exception as e:
-        app.logger.exception(f"Failed to generate rotating token for ticket={ticket_uid}: {e}")
-        return jsonify({'message': 'Failed to generate QR code'}), 500
-
-    now = time.time()
-    current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-    expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
-
-    app.logger.debug(
-        f"Rotating QR response: ticket={ticket_uid}, expires_in_ms={expires_in_ms}, "
-        f"window_seconds={WINDOW_SECONDS}"
+        .filter(Attendance.user_id == user.id)
+        .order_by(Ticket.issued_at.desc())
     )
-
+    
+    paginated = query.paginate(page=page, per_page=page_size)
+    
     return jsonify({
-        'token':          token,
-        'expires_in_ms':  expires_in_ms,
-        'window_seconds': WINDOW_SECONDS,
+        'tickets': [_ticket_to_json(t) for t in paginated.items],
+        'pagination': {
+            'pageNumber': page,
+            'pageSize': page_size,
+            'totalSize': paginated.total,
+        }
     }), 200
 
 
-@app.route('/ticket/verify_rotating_qr', methods=['POST'])
-def verify_rotating_qr():
+@app.route('tickets/<ticket_uid>', methods=['GET'])
+def get_ticket(ticket_uid: str):
+    """Get a specific ticket by UID."""
     user = get_current_user_from_token()
     if not user:
-        return jsonify({'message': 'Unauthorized'}), 401
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    ticket = (
+        Ticket.query
+        .filter_by(ticket_uid=ticket_uid)
+        .join(Attendance)
+        .filter(Attendance.user_id == user.id)
+        .first_or_404()
+    )
+    
+    return jsonify(_ticket_to_json(ticket)), 200
 
-    token    = request.json.get('token', '')
-    event_id = request.json.get('event_id')
 
+# ═══════════════════════════════════════════════════════════════════════════
+# QR Token Management - Separate Endpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('tickets/<ticket_uid>/qr-token', methods=['GET'])
+def get_qr_token(ticket_uid: str):
+    """Generate rotating QR token for ticket."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+    if not ticket:
+        return jsonify({'error': 'Ticket not found'}), 404
+    
+    if ticket.attendance.user_id != user.id:
+        return jsonify({'error': 'Forbidden'}), 403
+    
+    if ticket.is_expired or ticket.status == 'cancelled':
+        return jsonify({'error': 'Ticket is not active'}), 410  # 410 Gone
+    
+    try:
+        token = generate_rotating_token(ticket.ticket_uid)
+        now = time.time()
+        current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
+        expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+        
+        return jsonify({
+            'token': token,
+            'expiresInMs': expires_in_ms,  # camelCase per Google API design
+            'windowSeconds': WINDOW_SECONDS,
+        }), 200
+    except Exception as e:
+        app.logger.exception(f"Failed to generate QR for {ticket_uid}")
+        return jsonify({'error': 'Failed to generate QR token'}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# QR Verification - POST with validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('tickets/verify-qr', methods=['POST'])
+def verify_qr_token():
+    """Verify a QR token. Returns 200 for valid, 400 for invalid."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    data = request.get_json()
+    if not data or 'token' not in data:
+        return jsonify({'error': 'token is required'}), 400
+    
+    token = data['token']
+    event_id = data.get('eventId')  # camelCase
+    
     is_valid, ticket_uid = verify_rotating_token(token)
-
     if not is_valid:
-        return jsonify({'valid': False, 'message': 'QR code expired or invalid'}), 200
-
+        return jsonify({
+            'valid': False,
+            'message': 'QR code expired or invalid'
+        }), 400  # ✅ 400 instead of 200
+    
     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
     if not ticket or ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'valid': False, 'message': 'Ticket is not active'}), 200
-
+        return jsonify({
+            'valid': False,
+            'message': 'Ticket is no longer valid'
+        }), 400
+    
     if event_id and ticket.attendance.location_id != int(event_id):
-        return jsonify({'valid': False, 'message': 'Ticket is for a different event'}), 200
-
-    attendance_user = ticket.attendance.user
-    profile         = attendance_user.parent_profile  # ✅ Changed from .profile to .parent_profile
-
+        return jsonify({
+            'valid': False,
+            'message': 'Ticket is for a different event'
+        }), 400
+    
     return jsonify({
-        'valid':       True,
-        'ticket_uid':  ticket.ticket_uid,
-        'ticket_code': ticket.ticket_code,
-        'user':        attendance_user.email,
-        'first_name':  profile.first_name if profile else None,
-        'last_name':   profile.last_name  if profile else None,
-        'status':      ticket.status,
+        'valid': True,
+        'ticketUid': ticket.ticket_uid,
+        'ticketCode': ticket.ticket_code,
+        'user': ticket.attendance.user.email,
+        'firstName': ticket.attendance.user.parent_profile.first_name,
+        'lastName': ticket.attendance.user.parent_profile.last_name,
+        'status': ticket.status,
     }), 200
 
 
-@app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
-def lookup_attendee(event_id: int):
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'message': 'Unauthorized'}), 401
+# ═══════════════════════════════════════════════════════════════════════════
+# Helper - DRY JSON serialization
+# ═══════════════════════════════════════════════════════════════════════════
 
-    logger.info(
-        f"lookup_attendee: event_id={event_id} requested by user_id={user.id} "
-        f"(type={type(user.id).__name__})"
-    )
-
-    location = EventLocation.query.filter_by(id=event_id).first()  # ✅ Changed from EventLocation
-    if not location:
-        logger.warning(f"lookup_attendee: no EventLocation found with id={event_id}")
-        return jsonify({'message': 'Event not found'}), 404
-
-    if location.event_organizer_id != user.id:  # ✅ Changed: organizer check
-        logger.warning(
-            f"lookup_attendee: FORBIDDEN — event_id={event_id} "
-            f"event_organizer_id={location.event_organizer_id} (type={type(location.event_organizer_id).__name__}) "
-            f"requesting user_id={user.id} (type={type(user.id).__name__})"
-        )
-        return jsonify({'message': 'Forbidden'}), 403
-
-    ticket_code = request.args.get('ticket_code', '').strip()
-    name_email  = request.args.get('query', '').strip()
-
-    logger.info(
-        f"lookup_attendee: ownership OK, location_id={location.id}, "
-        f"ticket_code='{ticket_code}', query='{name_email}'"
-    )
-
-    if not ticket_code and not name_email:
-        return jsonify({'message': 'Provide ticket_code or query'}), 400
-
-    def escape_like(s: str) -> str:
-        """Escape LIKE wildcards so literal % and _ in user input don't act as wildcards."""
-        return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-
-    q = (
-        Attendance.query
-        .filter_by(location_id=location.id)
-        .join(Ticket,       Ticket.attendance_id == Attendance.id)
-        .join(User,         User.id == Attendance.user_id)
-        .outerjoin(ParentsProfile, ParentsProfile.user_auth_id == User.id)  # ✅ Changed from UserProfile
-    )
-
-    if ticket_code:
-        safe_code = escape_like(ticket_code)
-        q = q.filter(Ticket.ticket_code.ilike(f'%{safe_code}%'))
-    elif name_email:
-        safe_query = escape_like(name_email)
-        q = q.filter(
-            db.or_(
-                User.email.ilike(f'%{safe_query}%'),
-                ParentsProfile.first_name.ilike(f'%{safe_query}%'),  # ✅ Changed from UserProfile
-                ParentsProfile.last_name.ilike(f'%{safe_query}%'),   # ✅ Changed from UserProfile
-            )
-        )
-
-    attendances = q.limit(10).all()
-
-    logger.info(
-        f"lookup_attendee: location_id={location.id} matched {len(attendances)} attendance row(s)"
-    )
-
-    # ── Batch-fetch most-recent image per user (avoids N+1 query loop) ─────────
-    user_ids = [attendance.user.id for attendance in attendances]
-    images_by_user = {}
-    if user_ids:
-        all_images = (
-            ParentsProfileImages.query  # ✅ Changed from UserImages
-            .filter(ParentsProfileImages.parent_profile_id.in_(user_ids))  # ✅ Adjusted filter
-            .order_by(ParentsProfileImages.parent_profile_id, ParentsProfileImages.created_at.desc())  # ✅ Changed order_by
-            .all()
-        )
-        for img in all_images:
-            # First occurrence per parent_profile_id is the most recent, due to ORDER BY above
-            if img.parent_profile_id not in images_by_user:  # ✅ Changed key
-                images_by_user[img.parent_profile_id] = img
-
-    results = []
-    for attendance in attendances:
-        ticket  = attendance.ticket
-        profile = attendance.user.parent_profile  # ✅ Changed from .profile to .parent_profile
-        image   = images_by_user.get(profile.id) if profile else None  # ✅ Updated lookup
-
-        results.append({
-            'attendance_id':       attendance.id,
-            'ticket_uid':          ticket.ticket_uid,
-            'ticket_code':         ticket.ticket_code,
-            'ticket_type':         ticket.ticket_type,
-            'status':              ticket.status,
-            'is_checked_in':       ticket.is_checked_in,
-            'issued_at':           ticket.issued_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'amount_paid':         float(ticket.amount_paid) if ticket.amount_paid else None,
-            'currency':            ticket.currency,
-            'cancellation_reason': ticket.cancellation_reason,
-            'user': {
-                'email':        attendance.user.email,
-                'first_name':   profile.first_name   if profile else None,
-                'last_name':    profile.last_name     if profile else None,
-                'gender':       profile.gender.value  if profile and profile.gender else None,
-                'phone_number': profile.phone_number  if profile else None,
-                'image_url':    image.image_url       if image   else None,
+def _ticket_to_json(ticket: Ticket) -> dict:
+    """Serialize ticket to JSON following Google API guidelines."""
+    attendance = ticket.attendance
+    location = attendance.location
+    
+    return {
+        'ticketUid': ticket.ticket_uid,
+        'ticketCode': ticket.ticket_code,
+        'ticketType': ticket.ticket_type,
+        'status': ticket.status,
+        'issuedAt': ticket.issued_at.isoformat() if ticket.issued_at else None,
+        'paidAt': ticket.paid_at.isoformat() if ticket.paid_at else None,
+        'amountPaid': float(ticket.amount_paid) if ticket.amount_paid else None,
+        'currency': ticket.currency,
+        'event': {
+            'id': location.id,
+            'title': location.title,  # ✅ Add if missing
+            'startTime': location.start_time.isoformat(),
+            'endTime': location.end_time.isoformat() if location.end_time else None,
+            'category': location.event_category.name,
+            'organizer': {
+                'id': location.event_organizer.id,
+                'name': location.event_organizer.name,
             },
-            'location': {
-                'start_time':        location.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                'is_checkin_closed': location.is_checkin_closed,
-            },
-        })
-
-    return jsonify({'results': results}), 200
- 
+        },
+        'venue': {
+            'id': location.venue.id,
+            'name': location.venue.name,
+            'address': location.venue.address,
+            'latitude': location.venue.latitude,
+            'longitude': location.venue.longitude,
+        },
+        'links': {
+            'self': f'/api/v1/tickets/{ticket.ticket_uid}',
+            'qrToken': f'/api/v1/tickets/{ticket.ticket_uid}/qr-token',
+        }
+    } 
  
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT HOST PAYMENT DETAILS ✅
