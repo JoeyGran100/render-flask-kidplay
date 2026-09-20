@@ -2786,7 +2786,7 @@ def post_ticket():
 #     return jsonify({'results': results}), 200
  
  
-@app.route('tickets', methods=['GET'])
+@app.route('/tickets', methods=['GET'])
 def list_tickets():
     """List user's tickets with pagination."""
     user = get_current_user_from_token()
@@ -2824,7 +2824,7 @@ def list_tickets():
     }), 200
 
 
-@app.route('tickets/<ticket_uid>', methods=['GET'])
+@app.route('/tickets/<ticket_uid>', methods=['GET'])
 def get_ticket(ticket_uid: str):
     """Get a specific ticket by UID."""
     user = get_current_user_from_token()
@@ -2846,7 +2846,7 @@ def get_ticket(ticket_uid: str):
 # QR Token Management - Separate Endpoint
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.route('tickets/<ticket_uid>/qr-token', methods=['GET'])
+@app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
 def get_qr_token(ticket_uid: str):
     """Generate rotating QR token for ticket."""
     user = get_current_user_from_token()
@@ -2883,7 +2883,7 @@ def get_qr_token(ticket_uid: str):
 # QR Verification - POST with validation
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.route('tickets/verify-qr', methods=['POST'])
+@app.route('/tickets/verify-qr', methods=['POST'])
 def verify_qr_token():
     """Verify a QR token. Returns 200 for valid, 400 for invalid."""
     user = get_current_user_from_token()
