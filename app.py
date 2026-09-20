@@ -2785,44 +2785,6 @@ def post_ticket():
 
 #     return jsonify({'results': results}), 200
  
- 
-@app.route('/tickets', methods=['GET'])
-def list_tickets():
-    """List user's tickets with pagination."""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('pageSize', 10, type=int)
-    
-    # Eager load relationships
-    query = (
-        db.session.query(Ticket)
-        .join(Attendance)
-        .options(
-            joinedload(Ticket.attendance)
-            .joinedload(Attendance.location)
-            .joinedload(EventLocation.venue),
-            joinedload(Ticket.attendance)
-            .joinedload(Attendance.location)
-            .joinedload(EventLocation.event_organizer),
-        )
-        .filter(Attendance.user_id == user.id)
-        .order_by(Ticket.issued_at.desc())
-    )
-    
-    paginated = query.paginate(page=page, per_page=page_size)
-    
-    return jsonify({
-        'tickets': [_ticket_to_json(t) for t in paginated.items],
-        'pagination': {
-            'pageNumber': page,
-            'pageSize': page_size,
-            'totalSize': paginated.total,
-        }
-    }), 200
-
 
 @app.route('/tickets/<ticket_uid>', methods=['GET'])
 def get_ticket(ticket_uid: str):
