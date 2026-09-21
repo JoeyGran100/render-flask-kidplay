@@ -2338,33 +2338,30 @@ Returns only what's needed for Google Maps clustering/markers
 @app.route('/events/map', methods=['GET'])
 def get_events_for_map():
     """
-    Get all upcoming events with only map-relevant data.
+    Get all upcoming/ongoing events with only map-relevant data.
     
     Query params (optional):
     - bounds=lat1,lng1,lat2,lng2  (filter by map viewport)
     - category_id=1,2,3           (filter by categories)
-    - status=upcoming|ongoing      (filter by status)
     
     Returns lightweight JSON optimized for map display.
     """
     try:
-        # Base query - only what's needed for map markers
+        # Base query - minimal joins for performance
         query = (
             EventLocation.query
-            .filter(EventLocation.is_upcoming | EventLocation.is_ongoing)  # Only active events
             .options(
-                # Minimal joinedload - only what we need
                 joinedload(EventLocation.venue),
                 joinedload(EventLocation.event_category),
             )
         )
         
-        # Optional: Filter by viewport bounds (if client provides)
+        # Optional: Filter by viewport bounds (database-level)
         bounds = request.args.get('bounds')  # lat1,lng1,lat2,lng2
         if bounds:
             try:
                 lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
-                # Simple bounding box filter
+                # Simple bounding box filter - done in database
                 query = query.filter(
                     Venue.latitude.between(min(lat1, lat2), max(lat1, lat2)),
                     Venue.longitude.between(min(lng1, lng2), max(lng1, lng2))
@@ -2372,7 +2369,7 @@ def get_events_for_map():
             except (ValueError, IndexError):
                 pass  # Ignore malformed bounds
         
-        # Optional: Filter by category
+        # Optional: Filter by category (database-level)
         category_ids = request.args.get('category_id')
         if category_ids:
             try:
@@ -2381,17 +2378,27 @@ def get_events_for_map():
             except ValueError:
                 pass
         
-        events = query.all()
+        # Fetch events from database
+        all_events = query.all()
+        
+        # Filter for ACTIVE events (upcoming OR ongoing) in Python
+        # This is necessary because is_upcoming and is_ongoing are @property methods
+        # and can't be filtered at the database level
+        now = datetime.now(timezone.utc)
+        active_events = [
+            event for event in all_events 
+            if not event.is_past  # Include all non-past events (upcoming + ongoing)
+        ]
         
         # Map to lightweight DTOs for map display
         map_events = [
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'description': event.event_description[:100] if event.event_description else '',  # Truncate for marker info window
+                'description': (event.event_description[:100] if event.event_description else ''),
                 'coordinate': {
-                    'latitude': float(event.venue.latitude) if event.venue.latitude else 0,
-                    'longitude': float(event.venue.longitude) if event.venue.longitude else 0,
+                    'latitude': float(event.venue.latitude) if event.venue.latitude else 0.0,
+                    'longitude': float(event.venue.longitude) if event.venue.longitude else 0.0,
                 },
                 'venue_name': event.venue.name,
                 'start_time': event.start_time.isoformat(),
@@ -2402,20 +2409,22 @@ def get_events_for_map():
                     else 'upcoming' if event.is_upcoming
                     else 'past'
                 ),
-                # Small icon hint for client-side marker customization
-                'marker_type': 'event',  # Could be 'sports', 'music', etc based on category
             }
-            for event in events
+            for event in active_events
         ]
         
         return jsonify({
+            'success': True,
             'count': len(map_events),
             'events': map_events
         }), 200
         
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error'
+        }), 500
 
 
 
