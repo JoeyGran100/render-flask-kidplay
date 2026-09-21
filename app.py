@@ -2375,15 +2375,21 @@ def get_events_for_map():
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'description': (event.event_description[:100] if event.event_description else ''),
+                'name': event.venue.name,
                 'coordinate': {
                     'latitude': float(event.venue.latitude) if event.venue.latitude else 0.0,
                     'longitude': float(event.venue.longitude) if event.venue.longitude else 0.0,
                 },
                 'venue_name': event.venue.name,
+                'address': event.venue.address,
                 'start_time': event.start_time.isoformat(),
                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
                 'max_attendees': event.max_attendees,
+                'duration_minutes': event.duration_minutes,
+                'end_time': event.end_time.isoformat(),
+                'age_range': event.age_range,
+                'base_price': float(event.base_price) if event.base_price else None,
+                'currency': event.currency,
                 'status': (
                     'ongoing' if event.is_ongoing
                     else 'upcoming' if event.is_upcoming
@@ -2450,15 +2456,21 @@ def get_events_in_bounds():
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'description': event.event_description[:100] if event.event_description else '',
+                'name': event.venue.name,
                 'coordinate': {
                     'latitude': float(event.venue.latitude),
                     'longitude': float(event.venue.longitude),
                 },
                 'venue_name': event.venue.name,
+                'address': event.venue.address,
                 'start_time': event.start_time.isoformat(),
                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
                 'max_attendees': event.max_attendees,
+                'duration_minutes': event.duration_minutes,
+                'end_time': event.end_time.isoformat(),
+                'age_range': event.age_range,
+                'base_price': float(event.base_price) if event.base_price else None,
+                'currency': event.currency,
                 'status': 'ongoing' if event.is_ongoing else 'upcoming',
             }
             for event in events
