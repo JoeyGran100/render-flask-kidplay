@@ -2337,39 +2337,26 @@ Returns only what's needed for Google Maps clustering/markers
 
 @app.route('/events/map', methods=['GET'])
 def get_events_for_map():
-    """
-    Get all upcoming/ongoing events with only map-relevant data.
-    
-    Query params (optional):
-    - bounds=lat1,lng1,lat2,lng2  (filter by map viewport)
-    - category_id=1,2,3           (filter by categories)
-    
-    Returns lightweight JSON optimized for map display.
-    """
     try:
-        # Base query - minimal joins for performance
-        query = (
-            EventLocation.query
-            .options(
-                joinedload(EventLocation.venue),
-                joinedload(EventLocation.event_category),
-            )
+        # Base query with explicit join for filtering
+        query = EventLocation.query.join(Venue).options(
+            joinedload(EventLocation.venue),
+            joinedload(EventLocation.event_category),
         )
         
         # Optional: Filter by viewport bounds (database-level)
-        bounds = request.args.get('bounds')  # lat1,lng1,lat2,lng2
+        bounds = request.args.get('bounds')
         if bounds:
             try:
                 lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
-                # Simple bounding box filter - done in database
                 query = query.filter(
                     Venue.latitude.between(min(lat1, lat2), max(lat1, lat2)),
                     Venue.longitude.between(min(lng1, lng2), max(lng1, lng2))
                 )
             except (ValueError, IndexError):
-                pass  # Ignore malformed bounds
+                pass
         
-        # Optional: Filter by category (database-level)
+        # Optional: Filter by category
         category_ids = request.args.get('category_id')
         if category_ids:
             try:
@@ -2378,19 +2365,12 @@ def get_events_for_map():
             except ValueError:
                 pass
         
-        # Fetch events from database
         all_events = query.all()
         
-        # Filter for ACTIVE events (upcoming OR ongoing) in Python
-        # This is necessary because is_upcoming and is_ongoing are @property methods
-        # and can't be filtered at the database level
+        # Filter for ACTIVE events in Python
         now = datetime.now(timezone.utc)
-        active_events = [
-            event for event in all_events 
-            if not event.is_past  # Include all non-past events (upcoming + ongoing)
-        ]
+        active_events = [event for event in all_events if not event.is_past]
         
-        # Map to lightweight DTOs for map display
         map_events = [
             {
                 'id': event.id,
@@ -2427,21 +2407,8 @@ def get_events_for_map():
         }), 500
 
 
-
 @app.route('/events/map/bounds', methods=['POST'])
 def get_events_in_bounds():
-    """
-    POST version for rectangular map viewport queries.
-    Useful when client wants to avoid long URL params.
-    
-    Body:
-    {
-        "northeast": {"lat": 59.33, "lng": 18.06},
-        "southwest": {"lat": 59.20, "lng": 18.00},
-        "category_ids": [1, 2, 3],  # optional
-        "status_filter": "upcoming"  # optional: upcoming|ongoing|all
-    }
-    """
     try:
         data = request.get_json()
         
@@ -2451,7 +2418,8 @@ def get_events_in_bounds():
         if not (ne.get('lat') and sw.get('lat')):
             return jsonify({'error': 'Invalid bounds'}), 400
         
-        query = EventLocation.query.options(
+        # ✅ Explicit join for filtering
+        query = EventLocation.query.join(Venue).options(
             joinedload(EventLocation.venue),
             joinedload(EventLocation.event_category),
         )
@@ -2465,19 +2433,19 @@ def get_events_in_bounds():
             Venue.longitude.between(lng_min, lng_max),
         )
         
-        # Filter by status
-        status = data.get('status_filter', 'upcoming')
-        if status == 'upcoming':
-            query = query.filter(EventLocation.is_upcoming)
-        elif status == 'ongoing':
-            query = query.filter(EventLocation.is_ongoing)
-        
         # Filter by categories
         categories = data.get('category_ids')
         if categories:
             query = query.filter(EventLocation.event_category_id.in_(categories))
         
         events = query.all()
+        
+        # ✅ Filter by status at Python level
+        status = data.get('status_filter', 'upcoming')
+        if status == 'upcoming':
+            events = [e for e in events if e.is_upcoming]
+        elif status == 'ongoing':
+            events = [e for e in events if e.is_ongoing]
         
         map_events = [
             {
@@ -2505,7 +2473,6 @@ def get_events_in_bounds():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
- 
  
  
 # ─────────────────────────────────────────────────────────────────────────────
