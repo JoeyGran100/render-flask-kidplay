@@ -2057,7 +2057,8 @@ def post_venue():
 @app.route('/events/<int:event_id>', methods=['GET'])
 def get_event_details(event_id):
     """
-    Get details for a specific event.
+    Get full event details (existing endpoint - UNCHANGED).
+    Add caching headers since maps will fetch these on marker tap.
     """
     try:
         event = (
@@ -2077,7 +2078,7 @@ def get_event_details(event_id):
         if not event:
             return jsonify({'error': 'Event not found'}), 404
         
-        return jsonify({
+        response = jsonify({
             'id': event.id,
             'venue': {
                 'id': event.venue.id,
@@ -2090,9 +2091,9 @@ def get_event_details(event_id):
                 'id': event.event_category.id,
                 'name': event.event_category.name,
             } if event.event_category else None,
-            'start_time': event.start_time.isoformat(),      # From DB
-            'duration_minutes': event.duration_minutes,      # From DB
-            'end_time': event.end_time.isoformat() if event.end_time else None,  # Calculated property
+            'start_time': event.start_time.isoformat(),
+            'duration_minutes': event.duration_minutes,
+            'end_time': event.end_time.isoformat() if event.end_time else None,
             'event_description': event.event_description,
             'max_attendees': event.max_attendees,
             'girls_attendees': event.girls_attendees,
@@ -2104,7 +2105,6 @@ def get_event_details(event_id):
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
             'is_past': event.is_past,
-            # Attendance calculations
             'total_attendees': event.total_participants,
             'remaining_spots': event.max_attendees - event.total_participants,
             'total_male_attendees': sum(1 for a in event.attendances if a.user.parent_profile.gender == GenderEnum.Male),
@@ -2122,17 +2122,22 @@ def get_event_details(event_id):
                 }
                 for img in event.images
             ],
-            # Organizer preview
             'organizer_preview': {
                 'id': event.event_organizer.id,
-                'user_id': event.event_organizer.user_id,  # ← Add this
+                'user_id': event.event_organizer.user_id,
                 'first_name': event.event_organizer.first_name,
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
             }
-        }), 200
+        })
         
-    except Exception:
+        # Cache for 5 minutes (events don't change frequently mid-session)
+        response.cache_control.max_age = 300
+        response.add_etag()
+        
+        return response, 200
+        
+    except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
     
@@ -2318,6 +2323,180 @@ def get_created_events():
         })
 
     return jsonify({'created_events': created_events}), 200
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# GOOGLE MAPS  ✅
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+ 
+"""
+NEW ENDPOINT: Lightweight map data
+Returns only what's needed for Google Maps clustering/markers
+"""
+
+@app.route('/events/map', methods=['GET'])
+def get_events_for_map():
+    """
+    Get all upcoming events with only map-relevant data.
+    
+    Query params (optional):
+    - bounds=lat1,lng1,lat2,lng2  (filter by map viewport)
+    - category_id=1,2,3           (filter by categories)
+    - status=upcoming|ongoing      (filter by status)
+    
+    Returns lightweight JSON optimized for map display.
+    """
+    try:
+        # Base query - only what's needed for map markers
+        query = (
+            EventLocation.query
+            .filter(EventLocation.is_upcoming | EventLocation.is_ongoing)  # Only active events
+            .options(
+                # Minimal joinedload - only what we need
+                joinedload(EventLocation.venue),
+                joinedload(EventLocation.event_category),
+            )
+        )
+        
+        # Optional: Filter by viewport bounds (if client provides)
+        bounds = request.args.get('bounds')  # lat1,lng1,lat2,lng2
+        if bounds:
+            try:
+                lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
+                # Simple bounding box filter
+                query = query.filter(
+                    Venue.latitude.between(min(lat1, lat2), max(lat1, lat2)),
+                    Venue.longitude.between(min(lng1, lng2), max(lng1, lng2))
+                )
+            except (ValueError, IndexError):
+                pass  # Ignore malformed bounds
+        
+        # Optional: Filter by category
+        category_ids = request.args.get('category_id')
+        if category_ids:
+            try:
+                ids = [int(x.strip()) for x in category_ids.split(',')]
+                query = query.filter(EventLocation.event_category_id.in_(ids))
+            except ValueError:
+                pass
+        
+        events = query.all()
+        
+        # Map to lightweight DTOs for map display
+        map_events = [
+            {
+                'id': event.id,
+                'title': event.event_category.name if event.event_category else 'Event',
+                'description': event.event_description[:100] if event.event_description else '',  # Truncate for marker info window
+                'coordinate': {
+                    'latitude': float(event.venue.latitude) if event.venue.latitude else 0,
+                    'longitude': float(event.venue.longitude) if event.venue.longitude else 0,
+                },
+                'venue_name': event.venue.name,
+                'start_time': event.start_time.isoformat(),
+                'remaining_spots': max(0, event.max_attendees - event.total_participants),
+                'max_attendees': event.max_attendees,
+                'status': (
+                    'ongoing' if event.is_ongoing
+                    else 'upcoming' if event.is_upcoming
+                    else 'past'
+                ),
+                # Small icon hint for client-side marker customization
+                'marker_type': 'event',  # Could be 'sports', 'music', etc based on category
+            }
+            for event in events
+        ]
+        
+        return jsonify({
+            'count': len(map_events),
+            'events': map_events
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+
+@app.route('/events/map/bounds', methods=['POST'])
+def get_events_in_bounds():
+    """
+    POST version for rectangular map viewport queries.
+    Useful when client wants to avoid long URL params.
+    
+    Body:
+    {
+        "northeast": {"lat": 59.33, "lng": 18.06},
+        "southwest": {"lat": 59.20, "lng": 18.00},
+        "category_ids": [1, 2, 3],  # optional
+        "status_filter": "upcoming"  # optional: upcoming|ongoing|all
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        ne = data.get('northeast', {})
+        sw = data.get('southwest', {})
+        
+        if not (ne.get('lat') and sw.get('lat')):
+            return jsonify({'error': 'Invalid bounds'}), 400
+        
+        query = EventLocation.query.options(
+            joinedload(EventLocation.venue),
+            joinedload(EventLocation.event_category),
+        )
+        
+        # Filter by bounds
+        lat_min, lat_max = min(ne['lat'], sw['lat']), max(ne['lat'], sw['lat'])
+        lng_min, lng_max = min(ne['lng'], sw['lng']), max(ne['lng'], sw['lng'])
+        
+        query = query.filter(
+            Venue.latitude.between(lat_min, lat_max),
+            Venue.longitude.between(lng_min, lng_max),
+        )
+        
+        # Filter by status
+        status = data.get('status_filter', 'upcoming')
+        if status == 'upcoming':
+            query = query.filter(EventLocation.is_upcoming)
+        elif status == 'ongoing':
+            query = query.filter(EventLocation.is_ongoing)
+        
+        # Filter by categories
+        categories = data.get('category_ids')
+        if categories:
+            query = query.filter(EventLocation.event_category_id.in_(categories))
+        
+        events = query.all()
+        
+        map_events = [
+            {
+                'id': event.id,
+                'title': event.event_category.name if event.event_category else 'Event',
+                'description': event.event_description[:100] if event.event_description else '',
+                'coordinate': {
+                    'latitude': float(event.venue.latitude),
+                    'longitude': float(event.venue.longitude),
+                },
+                'venue_name': event.venue.name,
+                'start_time': event.start_time.isoformat(),
+                'remaining_spots': max(0, event.max_attendees - event.total_participants),
+                'max_attendees': event.max_attendees,
+                'status': 'ongoing' if event.is_ongoing else 'upcoming',
+            }
+            for event in events
+        ]
+        
+        return jsonify({
+            'count': len(map_events),
+            'events': map_events
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error'}), 500
+ 
  
  
 # ─────────────────────────────────────────────────────────────────────────────
