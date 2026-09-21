@@ -2416,15 +2416,16 @@ def get_events_in_bounds():
         sw = data.get('southwest', {})
         
         if not (ne.get('lat') and sw.get('lat')):
-            return jsonify({'error': 'Invalid bounds'}), 400
+            return jsonify({
+                'success': False,
+                'error': 'Invalid bounds'
+            }), 400
         
-        # ✅ Explicit join for filtering
         query = EventLocation.query.join(Venue).options(
             joinedload(EventLocation.venue),
             joinedload(EventLocation.event_category),
         )
         
-        # Filter by bounds
         lat_min, lat_max = min(ne['lat'], sw['lat']), max(ne['lat'], sw['lat'])
         lng_min, lng_max = min(ne['lng'], sw['lng']), max(ne['lng'], sw['lng'])
         
@@ -2433,14 +2434,12 @@ def get_events_in_bounds():
             Venue.longitude.between(lng_min, lng_max),
         )
         
-        # Filter by categories
         categories = data.get('category_ids')
         if categories:
             query = query.filter(EventLocation.event_category_id.in_(categories))
         
         events = query.all()
         
-        # ✅ Filter by status at Python level
         status = data.get('status_filter', 'upcoming')
         if status == 'upcoming':
             events = [e for e in events if e.is_upcoming]
@@ -2465,14 +2464,19 @@ def get_events_in_bounds():
             for event in events
         ]
         
+        # ✅ Add 'success' field
         return jsonify({
+            'success': True,
             'count': len(map_events),
             'events': map_events
         }), 200
         
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error'
+        }), 500
  
  
 # ─────────────────────────────────────────────────────────────────────────────
