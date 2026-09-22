@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_7_u8ig_user:hGWagISE1UrbGRAoB4vNzAtTh4O321tq@dpg-daiksgfqj5pc73ahl430-a.frankfurt-postgres.render.com/kidplay_render_database_7_u8ig"
+    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_8_user:YozEdj5pE0zkZSKxajPhNV8I1M1mR7ov@dpg-dapbsvid0e5s73fae0mg-a.frankfurt-postgres.render.com/kidplay_render_database_8"
 
 # ✅ UPDATE Socket.IO INITIALIZATION
 socketio = SocketIO(
