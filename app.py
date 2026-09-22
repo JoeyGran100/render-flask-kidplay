@@ -4554,171 +4554,356 @@ def get_conversations():
 @app.route('/conversations', methods=['POST'])
 def start_conversation():
     """
-    Start or get existing conversation.
-    Returns full conversation data, not just ID.
+    Start or get an existing conversation.
+
+    A conversation is uniquely identified by:
+        - the two users, regardless of direction
+        - optionally the event
+
+    Returns full conversation data.
     """
-    print(f"\n{'='*60}")
-    print(f"POST /conversations - REQUEST RECEIVED")
-    print(f"{'='*60}")
-    
+    print(f"\n{'=' * 60}")
+    print("POST /conversations - REQUEST RECEIVED")
+    print(f"{'=' * 60}")
+
     current_user = get_current_user_from_token()
-    print(f"🔐 Current user: {current_user.id if current_user else 'None'}")
-    
+
+    print(
+        f"🔐 Current user: "
+        f"{current_user.id if current_user else 'None'}"
+    )
+
     if not current_user:
-        print(f"❌ Unauthorized - No current user")
+        print("❌ Unauthorized - No current user")
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
+
         print(f"📥 Raw request data: {data}")
-        
-        other_user_id = data.get('otherUserId')   # ✅ camelCase
-        event_id = data.get('eventId')             # ✅ camelCase
-        
-        print(f"📝 Parsed values:")
+
+        other_user_id = data.get('otherUserId')
+        event_id = data.get('eventId')
+
+        print("📝 Parsed values:")
         print(f"   - otherUserId: {other_user_id}")
         print(f"   - eventId: {event_id}")
-        
-        # Validate otherUserId
-        if not other_user_id:
-            print(f"❌ VALIDATION FAILED: otherUserId is required")
-            return jsonify({'error': 'otherUserId is required'}), 400
-        
-        print(f"✅ otherUserId validation passed")
-        
-        # Validate no self-conversation
+
+        # ---------------------------------------------------------
+        # Validate other user
+        # ---------------------------------------------------------
+
+        if other_user_id is None:
+            print("❌ VALIDATION FAILED: otherUserId is required")
+            return jsonify({
+                'error': 'otherUserId is required'
+            }), 400
+
+        try:
+            other_user_id = int(other_user_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                'error': 'otherUserId must be an integer'
+            }), 400
+
+        print("✅ otherUserId validation passed")
+
+        # ---------------------------------------------------------
+        # Prevent self-conversation
+        # ---------------------------------------------------------
+
         if other_user_id == current_user.id:
-            print(f"❌ VALIDATION FAILED: User trying to start conversation with themselves")
-            return jsonify({'error': 'Cannot start conversation with yourself'}), 400
-        
-        print(f"✅ Self-conversation validation passed")
-        
-        # Check if other user exists
+            print(
+                "❌ VALIDATION FAILED: "
+                "User trying to start conversation with themselves"
+            )
+            return jsonify({
+                'error': 'Cannot start conversation with yourself'
+            }), 400
+
+        print("✅ Self-conversation validation passed")
+
+        # ---------------------------------------------------------
+        # Check other user
+        # ---------------------------------------------------------
+
         other_user = db.session.get(User, other_user_id)
-        print(f"🔍 Looking up other_user with ID {other_user_id}: {other_user}")
-        
+
+        print(
+            f"🔍 Looking up other_user with ID "
+            f"{other_user_id}: {other_user}"
+        )
+
         if not other_user:
             print(f"❌ User not found: {other_user_id}")
-            return jsonify({'error': 'User not found'}), 404
-        
+            return jsonify({
+                'error': 'User not found'
+            }), 404
+
         print(f"✅ Other user found: {other_user.email}")
-        
-        # Check if event exists (if provided)
-        if event_id:
+
+        # ---------------------------------------------------------
+        # Validate event if supplied
+        # ---------------------------------------------------------
+
+        if event_id is not None:
+            try:
+                event_id = int(event_id)
+            except (TypeError, ValueError):
+                return jsonify({
+                    'error': 'eventId must be an integer'
+                }), 400
+
             event = db.session.get(EventLocation, event_id)
-            print(f"🔍 Looking up event with ID {event_id}: {event}")
-            
+
+            print(
+                f"🔍 Looking up event with ID "
+                f"{event_id}: {event}"
+            )
+
             if not event:
                 print(f"❌ Event not found: {event_id}")
-                return jsonify({'error': 'Event not found'}), 404
-            
+                return jsonify({
+                    'error': 'Event not found'
+                }), 404
+
             print(f"✅ Event found: {event.id}")
+
         else:
-            print(f"ℹ️ No event_id provided (general conversation)")
-        
-        # Helper to build event_id filter (handles NULL properly)
+            print("ℹ️ No event_id provided (general conversation)")
+
+        # ---------------------------------------------------------
+        # Event filter
+        # ---------------------------------------------------------
+
         if event_id is None:
             event_filter = Conversation.event_id.is_(None)
-            print(f"🔍 Event filter: event_id IS NULL")
+            print("🔍 Event filter: event_id IS NULL")
         else:
             event_filter = Conversation.event_id == event_id
             print(f"🔍 Event filter: event_id == {event_id}")
-        
-        # Check if conversation already exists (bidirectional)
-        print(f"\n🔎 Checking for existing conversation...")
-        print(f"   Scenario 1: user_id={current_user.id}, other_user_id={other_user_id}")
-        print(f"   Scenario 2: user_id={other_user_id}, other_user_id={current_user.id}")
-        
+
+        # ---------------------------------------------------------
+        # Find existing conversation
+        #
+        # Scenario 1:
+        # parent_id = current user
+        # other_user_id = other user
+        #
+        # Scenario 2:
+        # parent_id = other user
+        # other_user_id = current user
+        # ---------------------------------------------------------
+
+        print("\n🔎 Checking for existing conversation...")
+        print(
+            f"   Scenario 1: "
+            f"parent_id={current_user.id}, "
+            f"other_user_id={other_user_id}"
+        )
+        print(
+            f"   Scenario 2: "
+            f"parent_id={other_user_id}, "
+            f"other_user_id={current_user.id}"
+        )
+
         existing = db.session.query(Conversation).filter(
             db.or_(
                 db.and_(
-                    Conversation.user_id == current_user.id,
+                    Conversation.parent_id == current_user.id,
                     Conversation.other_user_id == other_user_id,
                     event_filter
                 ),
                 db.and_(
-                    Conversation.user_id == other_user_id,
+                    Conversation.parent_id == other_user_id,
                     Conversation.other_user_id == current_user.id,
                     event_filter
                 )
             )
         ).first()
-        
-        # ✅ Helper function to build conversation response
+
+        # ---------------------------------------------------------
+        # Build response
+        # ---------------------------------------------------------
+
         def build_conversation_response(conv, target_user_id):
-            """Build the response DTO for a conversation from the perspective of target_user"""
-            print(f"\n📦 Building response for conversation {conv.id}")
-            print(f"   - Conversation user_id: {conv.user_id}")
-            print(f"   - Conversation other_user_id: {conv.other_user_id}")
+            """
+            Build conversation response from target user's perspective.
+            """
+
+            print(
+                f"\n📦 Building response "
+                f"for conversation {conv.id}"
+            )
+
+            print(f"   - Conversation parent_id: {conv.parent_id}")
+            print(
+                f"   - Conversation other_user_id: "
+                f"{conv.other_user_id}"
+            )
             print(f"   - Target user: {target_user_id}")
-            
-            other_user = conv.other_user if conv.user_id == target_user_id else conv.user
-            print(f"   - Other user in response: {other_user.id}")
-            
+            print(f"   - Event ID: {conv.event_id}")
+
+            # If target is the parent, other_user is the partner.
+            # Otherwise parent is the partner.
+            if conv.parent_id == target_user_id:
+                other_user = conv.other_user
+            else:
+                other_user = conv.parent
+
+            if not other_user:
+                raise ValueError(
+                    f"Could not resolve other user "
+                    f"for conversation {conv.id}"
+                )
+
+            print(
+                f"   - Other user in response: "
+                f"{other_user.id}"
+            )
+
+            # -----------------------------------------------------
+            # Name
+            # -----------------------------------------------------
+
             other_name = ""
+
             if other_user.parent_profile:
-                first_name = other_user.parent_profile.first_name or ""
-                last_name = other_user.parent_profile.last_name or ""
-                other_name = f"{first_name} {last_name}".strip()
-                print(f"   - Other user name: {other_name}")
-            
+                first_name = (
+                    other_user.parent_profile.first_name or ""
+                )
+                last_name = (
+                    other_user.parent_profile.last_name or ""
+                )
+
+                other_name = (
+                    f"{first_name} {last_name}"
+                ).strip()
+
+            # -----------------------------------------------------
+            # Profile image
+            # -----------------------------------------------------
+
             other_image = ""
-            if other_user.parent_profile and other_user.parent_profile.images:
+
+            if (
+                other_user.parent_profile
+                and other_user.parent_profile.images
+            ):
                 if len(other_user.parent_profile.images) > 0:
-                    other_image = other_user.parent_profile.images[0].image_url or ""
-                    print(f"   - Other user image: {other_image[:30]}...")
-            
+                    other_image = (
+                        other_user
+                        .parent_profile
+                        .images[0]
+                        .image_url
+                        or ""
+                    )
+
+            # -----------------------------------------------------
+            # Response
+            # -----------------------------------------------------
+
             response = {
-                'conversationId': conv.id,          # ✅ camelCase
-                'otherUserId': other_user.id,       # ✅ camelCase
-                'otherUserName': other_name or other_user.email,  # ✅ camelCase
-                'otherUserImage': other_image,      # ✅ camelCase
-                'eventId': conv.event_id            # ✅ camelCase
+                'conversationId': conv.id,
+                'otherUserId': other_user.id,
+                'otherUserName': (
+                    other_name
+                    or other_user.email
+                ),
+                'otherUserImage': other_image,
+                'eventId': conv.event_id
             }
-            
+
             print(f"   - Response: {response}")
+
             return response
-        
+
+        # ---------------------------------------------------------
+        # Existing conversation
+        # ---------------------------------------------------------
+
         if existing:
-            print(f"\n✅ FOUND EXISTING CONVERSATION {existing.id}")
-            response = build_conversation_response(existing, current_user.id)
-            print(f"{'='*60}")
-            print(f"Returning 200 OK")
-            print(f"{'='*60}\n")
+            print(
+                f"\n✅ FOUND EXISTING CONVERSATION "
+                f"{existing.id}"
+            )
+
+            response = build_conversation_response(
+                existing,
+                current_user.id
+            )
+
+            print(f"{'=' * 60}")
+            print("Returning 200 OK")
+            print(f"{'=' * 60}\n")
+
             return jsonify(response), 200
-        
+
+        # ---------------------------------------------------------
         # Create new conversation
-        print(f"\n➕ Creating NEW conversation for user {current_user.id} ↔ {other_user_id}")
+        # ---------------------------------------------------------
+
+        print(
+            f"\n➕ Creating NEW conversation "
+            f"for user {current_user.id} "
+            f"↔ {other_user_id}"
+        )
+
         conversation = Conversation(
-            user_id=current_user.id,
+            parent_id=current_user.id,
             other_user_id=other_user_id,
             event_id=event_id
         )
-        
-        print(f"   - New conversation object created (not yet in DB)")
-        print(f"   - user_id: {conversation.user_id}")
-        print(f"   - other_user_id: {conversation.other_user_id}")
-        print(f"   - event_id: {conversation.event_id}")
-        
+
+        print(
+            "   - New conversation object created "
+            "(not yet in DB)"
+        )
+        print(
+            f"   - parent_id: "
+            f"{conversation.parent_id}"
+        )
+        print(
+            f"   - other_user_id: "
+            f"{conversation.other_user_id}"
+        )
+        print(
+            f"   - event_id: "
+            f"{conversation.event_id}"
+        )
+
         db.session.add(conversation)
         db.session.commit()
-        
-        print(f"✅ Conversation saved to DB with ID: {conversation.id}")
-        response = build_conversation_response(conversation, current_user.id)
-        print(f"{'='*60}")
-        print(f"Returning 201 CREATED")
-        print(f"{'='*60}\n")
+
+        print(
+            f"✅ Conversation saved to DB "
+            f"with ID: {conversation.id}"
+        )
+
+        response = build_conversation_response(
+            conversation,
+            current_user.id
+        )
+
+        print(f"{'=' * 60}")
+        print("Returning 201 CREATED")
+        print(f"{'=' * 60}\n")
+
         return jsonify(response), 201
-    
+
     except Exception as e:
         db.session.rollback()
-        print(f"\n{'='*60}")
+
+        print(f"\n{'=' * 60}")
         print(f"❌ ERROR in start_conversation: {e}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
+
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
+        return jsonify({
+            'error': str(e)
+        }), 500
     
     
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
