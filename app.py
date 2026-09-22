@@ -2003,23 +2003,51 @@ def post_event_category():
 # VENUES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/venues', methods=['GET'])
-def get_venues():
-    try:
-        venues = Venue.query.order_by(Venue.name.asc()).all()
-        return jsonify([
-            {
-                'id':        v.id,
-                'name':      v.name,
-                'address':   v.address,
-                'latitude':  v.latitude,
-                'longitude': v.longitude,
-            }
-            for v in venues
-        ]), 200
-    except Exception:
-        traceback.print_exc()
-        return jsonify({'error': 'Internal server error'}), 500
+# @app.route('/venues', methods=['GET'])
+# def get_venues():
+#     try:
+#         venues = Venue.query.order_by(Venue.name.asc()).all()
+#         return jsonify([
+#             {
+#                 'id':        v.id,
+#                 'name':      v.name,
+#                 'address':   v.address,
+#                 'latitude':  v.latitude,
+#                 'longitude': v.longitude,
+#             }
+#             for v in venues
+#         ]), 200
+#     except Exception:
+#         traceback.print_exc()
+#         return jsonify({'error': 'Internal server error'}), 500
+ 
+ 
+# @app.route('/venues', methods=['POST'])
+# def post_venue():
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({'error': 'Unauthorized'}), 401
+ 
+#     data = request.get_json()
+#     if not data or 'name' not in data:
+#         return jsonify({'error': 'name is required'}), 400
+ 
+#     venue = Venue(
+#         name=data['name'],
+#         address=data.get('address'),
+#         latitude=data.get('latitude'),
+#         longitude=data.get('longitude'),
+#     )
+#     db.session.add(venue)
+ 
+#     try:
+#         db.session.commit()
+#     except Exception:
+#         db.session.rollback()
+#         traceback.print_exc()
+#         return jsonify({'error': 'Failed to create venue'}), 500
+ 
+#     return jsonify({'message': 'Venue created', 'id': venue.id}), 201
  
  
 @app.route('/venues', methods=['POST'])
@@ -2027,27 +2055,91 @@ def post_venue():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+    
     data = request.get_json()
-    if not data or 'name' not in data:
-        return jsonify({'error': 'name is required'}), 400
- 
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    required = ['name', 'latitude', 'longitude']
+    missing = [f for f in required if f not in data]
+    if missing:
+        return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
+    
+    try:
+        latitude = float(data['latitude'])
+        longitude = float(data['longitude'])
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Latitude and longitude must be valid numbers'}), 400
+    
+    # Validate coordinates
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
+    
+    # Check if venue already exists (by coordinates or name + address)
+    existing_venue = Venue.query.filter_by(
+        latitude=latitude,
+        longitude=longitude
+    ).first()
+    
+    if existing_venue:
+        return jsonify({
+            'message': 'Venue already exists',
+            'id': existing_venue.id,
+            'name': existing_venue.name
+        }), 200
+    
     venue = Venue(
         name=data['name'],
         address=data.get('address'),
-        latitude=data.get('latitude'),
-        longitude=data.get('longitude'),
+        latitude=latitude,
+        longitude=longitude
     )
+    
     db.session.add(venue)
- 
+    
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'error': 'Failed to create venue'}), 500
- 
-    return jsonify({'message': 'Venue created', 'id': venue.id}), 201
+    
+    return jsonify({
+        'message': 'Venue created successfully',
+        'id': venue.id,
+        'name': venue.name,
+        'latitude': venue.latitude,
+        'longitude': venue.longitude
+    }), 201
+
+
+# Get all venues (for reference)
+@app.route('/venues', methods=['GET'])
+def get_venues():
+    venues = Venue.query.all()
+    return jsonify([{
+        'id': v.id,
+        'name': v.name,
+        'address': v.address,
+        'latitude': v.latitude,
+        'longitude': v.longitude
+    } for v in venues]), 200
+
+
+# Get venue by ID
+@app.route('/venues/<int:venue_id>', methods=['GET'])
+def get_venue(venue_id):
+    venue = Venue.query.get(venue_id)
+    if not venue:
+        return jsonify({'error': 'Venue not found'}), 404
+    
+    return jsonify({
+        'id': venue.id,
+        'name': venue.name,
+        'address': venue.address,
+        'latitude': venue.latitude,
+        'longitude': venue.longitude
+    }), 200
  
  
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2194,7 +2286,8 @@ def get_event_organizer_details(event_id):
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
 
- 
+# When creating an event, the organizer can either select an existing venue by providing a venue_id or create a new venue by providing venue_data. 
+# The endpoint will handle both cases and ensure that the venue is valid before creating the event.
 @app.route('/events', methods=['POST'])
 def post_event():
     user = get_current_user_from_token()
@@ -2209,7 +2302,57 @@ def post_event():
     if not data:
         return jsonify({'error': 'No data provided'}), 400
  
-    required = ['venue_id', 'event_category_id', 'start_time', 'end_time', 'max_attendees']
+    # Handle venue - either existing venue_id OR new venue data
+    venue_id = None
+    
+    if 'venue_id' in data:
+        # ✅ Use existing venue
+        venue_id = data['venue_id']
+        venue = Venue.query.get(venue_id)
+        if not venue:
+            return jsonify({'error': f'Venue with id {venue_id} not found'}), 404
+    
+    elif 'venue_data' in data:
+        # ✅ Create new venue from provided data
+        venue_data = data['venue_data']
+        required_venue = ['name', 'latitude', 'longitude']
+        missing = [f for f in required_venue if f not in venue_data]
+        if missing:
+            return jsonify({'error': f'Missing venue fields: {", ".join(missing)}'}), 400
+        
+        try:
+            latitude = float(venue_data['latitude'])
+            longitude = float(venue_data['longitude'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Latitude and longitude must be valid numbers'}), 400
+        
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
+        
+        # Check if venue already exists
+        existing_venue = Venue.query.filter_by(
+            latitude=latitude,
+            longitude=longitude
+        ).first()
+        
+        if existing_venue:
+            venue_id = existing_venue.id
+        else:
+            # Create new venue
+            new_venue = Venue(
+                name=venue_data['name'],
+                address=venue_data.get('address'),
+                latitude=latitude,
+                longitude=longitude
+            )
+            db.session.add(new_venue)
+            db.session.flush()  # Get the ID before commit
+            venue_id = new_venue.id
+    else:
+        return jsonify({'error': 'Must provide either venue_id or venue_data'}), 400
+ 
+    # Rest of event creation
+    required = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
     missing = [f for f in required if f not in data]
     if missing:
         return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
@@ -2221,7 +2364,7 @@ def post_event():
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
  
     event = EventLocation(
-        venue_id=data['venue_id'],
+        venue_id=venue_id,  # ✅ Use venue_id from either source
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
         start_time=start_time,
