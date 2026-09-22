@@ -5153,26 +5153,40 @@ def get_messages(conversation_id):
         }), 500
 
 
-@app.route('/messages', methods=['POST'])
-def send_message():
-
-    print("DEBUG: Received POST /messages request")
-    print(f"DEBUG: Request JSON: {request.get_json()}")
-
-    current_user = get_current_user_from_token()
-
-    print(f"🔍 DEBUG: current_user = {current_user}")
-
-    if not current_user:
-        return jsonify({
-            'error': 'Unauthorized'
-        }), 401
+@socketio.on('send_message')
+def handle_send_message(data):
+    """
+    Handle real-time message sending via Socket.IO.
+    Saves to database and emits to recipient.
+    """
+    print(f"\n{'='*60}")
+    print(f"💬 MESSAGE SEND REQUEST")
+    print(f"{'='*60}")
 
     try:
-        data = request.get_json() or {}
+        # ---------------------------------------------------------
+        # Find current user from active Socket.IO connection
+        # ---------------------------------------------------------
+        sid = request.sid
+        current_user_id = None
 
-        print(f"🔍 DEBUG: Request data: {data}")
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
 
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown sender (sid: {sid})")
+            emit('error', {
+                'message': 'Unauthorized - connection not authenticated'
+            })
+            return
+
+        print(f"👤 Sender: {current_user_id}")
+
+        # ---------------------------------------------------------
+        # Parse message data
+        # ---------------------------------------------------------
         conversation_id = data.get('conversationId')
         receiver_id = data.get('receiverId')
         message_text = data.get('message')
@@ -5180,140 +5194,162 @@ def send_message():
         image_url = data.get('imageUrl')
 
         print(
-            f"🔍 DEBUG: conversationId={conversation_id}, "
-            f"receiverId={receiver_id}"
+            f"📝 Data: convo={conversation_id}, "
+            f"receiver={receiver_id}, "
+            f"msg_len={len(message_text) if message_text else 0}"
         )
 
         # ---------------------------------------------------------
         # Validate required fields
         # ---------------------------------------------------------
+        if not conversation_id or not receiver_id or not message_text:
+            print(f"❌ VALIDATION FAILED: Missing required fields")
 
-        if (
-            conversation_id is None
-            or receiver_id is None
-            or not message_text
-        ):
-            print(
-                "🔍 DEBUG: FAILED - "
-                "Missing required fields!"
-            )
-
-            return jsonify({
-                'error': (
-                    'conversationId, receiverId, '
-                    'and message are required'
-                )
-            }), 400
+            emit('error', {
+                'message': 'conversationId, receiverId, and message are required'
+            })
+            return
 
         # ---------------------------------------------------------
         # Get conversation
+        # Use db.session.get() instead of Query.get()
         # ---------------------------------------------------------
-
-        conversation = db.session.get(
-            Conversation,
-            conversation_id
-        )
-
-        print(
-            f"🔍 DEBUG: conversation = {conversation}"
-        )
+        conversation = db.session.get(Conversation, conversation_id)
 
         if not conversation:
-            print(
-                "🔍 DEBUG: FAILED - "
-                "Conversation not found!"
-            )
+            print(f"❌ FAILED: Conversation {conversation_id} not found")
 
-            return jsonify({
-                'error': 'Conversation not found'
-            }), 404
+            emit('error', {
+                'message': 'Conversation not found'
+            })
+            return
 
         # ---------------------------------------------------------
         # Verify current user belongs to conversation
+        #
+        # Conversation uses:
+        #   parent_id
+        #   other_user_id
+        #
+        # NOT:
+        #   user_id
         # ---------------------------------------------------------
-
         if (
-            conversation.parent_id != current_user.id
-            and conversation.other_user_id != current_user.id
+            conversation.parent_id != current_user_id
+            and conversation.other_user_id != current_user_id
         ):
             print(
-                "🔍 DEBUG: FAILED - "
-                "User not part of conversation!"
+                f"❌ FAILED: User {current_user_id} "
+                f"not part of conversation"
             )
 
-            return jsonify({
-                'error': (
-                    'Unauthorized - '
-                    'not part of this conversation'
-                )
-            }), 403
+            emit('error', {
+                'message': 'Unauthorized - not part of this conversation'
+            })
+            return
 
         # ---------------------------------------------------------
-        # Verify receiver is actually the other participant
+        # Verify receiver is the OTHER participant
         # ---------------------------------------------------------
-
-        if current_user.id == conversation.parent_id:
+        if current_user_id == conversation.parent_id:
             expected_receiver_id = conversation.other_user_id
         else:
             expected_receiver_id = conversation.parent_id
 
         if receiver_id != expected_receiver_id:
             print(
-                "🔍 DEBUG: FAILED - "
-                f"Invalid receiver. "
-                f"Expected {expected_receiver_id}, "
-                f"got {receiver_id}"
+                f"❌ FAILED: Invalid receiver. "
+                f"Expected {expected_receiver_id}, got {receiver_id}"
             )
 
-            return jsonify({
-                'error': (
-                    'Receiver is not a participant '
-                    'in this conversation'
-                )
-            }), 400
+            emit('error', {
+                'message': 'Receiver is not the other participant in this conversation'
+            })
+            return
 
         # ---------------------------------------------------------
         # Create message
         # ---------------------------------------------------------
-
         message = Message(
             conversation_id=conversation_id,
-            sender_id=current_user.id,
+            sender_id=current_user_id,
             receiver_id=receiver_id,
             message=message_text,
             reply_to_id=reply_to_id,
-            image_url=image_url
+            image_url=image_url,
         )
 
         db.session.add(message)
 
-        # Keep conversation ordering current
+        # Update conversation timestamp
         conversation.updated_at = datetime.now(timezone.utc)
 
         db.session.commit()
 
-        print(
-            f"DEBUG: Message {message.id} sent "
-            f"from user {current_user.id} "
-            f"to {receiver_id}"
-        )
+        print(f"✅ Message {message.id} saved to database")
 
-        return jsonify({
+        # ---------------------------------------------------------
+        # Build response
+        # ---------------------------------------------------------
+        message_response = {
             'id': message.id,
-            'message': message_text
-        }), 201
+            'conversationId': conversation_id,
+            'senderId': current_user_id,
+            'receiverId': receiver_id,
+            'message': message_text,
+            'imageUrl': image_url,
+            'replyToId': reply_to_id,
+            'timestamp': message.timestamp.isoformat(),
+            'isRead': False
+        }
+
+        # ---------------------------------------------------------
+        # Confirm to sender
+        # ---------------------------------------------------------
+        emit('message_sent', message_response)
+
+        print(f"✅ Sent confirmation to sender")
+
+        # ---------------------------------------------------------
+        # Send to receiver if online
+        # ---------------------------------------------------------
+        if receiver_id in active_connections:
+
+            receiver_sid = active_connections[receiver_id]
+
+            print(
+                f"📤 Receiver {receiver_id} is online "
+                f"(sid: {receiver_sid})"
+            )
+
+            socketio.emit(
+                'new_message',
+                message_response,
+                room=receiver_sid
+            )
+
+            print(f"✅ Emitted new_message to receiver")
+
+        else:
+            print(
+                f"⚠️ Receiver {receiver_id} is offline "
+                f"(message saved)"
+            )
+
+        print(f"{'='*60}\n")
 
     except Exception as e:
-        db.session.rollback()
-
-        print(f"ERROR in send_message: {e}")
+        print(f"❌ ERROR in handle_send_message: {e}")
 
         import traceback
         traceback.print_exc()
 
-        return jsonify({
-            'error': str(e)
-        }), 500
+        db.session.rollback()
+
+        emit('error', {
+            'message': f'Error sending message: {str(e)}'
+        })
+
 
 
 def build_conversation_response(conv, target_user_id):
