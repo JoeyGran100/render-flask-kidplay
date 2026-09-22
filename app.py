@@ -2541,7 +2541,6 @@ def get_events_in_bounds():
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'name': event.name,
                 'event_name': event.event_name,
                 'coordinate': {
                     'latitude': float(event.event_coordinates.latitude),
