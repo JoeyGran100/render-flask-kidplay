@@ -2047,7 +2047,6 @@ def get_event_coordinates():
     event_coordinates = EventCoordinates.query.all()
     return jsonify([{
         'id': ec.id,
-        'name': ec.name,
         'address': ec.address,
         'latitude': ec.latitude,
         'longitude': ec.longitude
@@ -2063,7 +2062,6 @@ def get_event_coordinates_by_id(event_coordinates_id):
 
     return jsonify({
         'id': event_coordinates.id,
-        'name': event_coordinates.name,
         'address': event_coordinates.address,
         'latitude': event_coordinates.latitude,
         'longitude': event_coordinates.longitude
