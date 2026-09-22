@@ -2368,7 +2368,6 @@ def post_event():
  
     try:
         start_time = datetime.fromisoformat(data['start_time'])
-        end_time   = datetime.fromisoformat(data['end_time'])
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
  
@@ -2377,7 +2376,6 @@ def post_event():
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
         start_time=start_time,
-        end_time=end_time,
         event_description=data.get('event_description'),
         max_attendees=data['max_attendees'],
         girls_attendees=data.get('girls_attendees'),
