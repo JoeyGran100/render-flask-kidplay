@@ -2306,14 +2306,12 @@ def post_event():
     venue_id = None
     
     if 'venue_id' in data:
-        # ✅ Use existing venue
         venue_id = data['venue_id']
         venue = Venue.query.get(venue_id)
         if not venue:
             return jsonify({'error': f'Venue with id {venue_id} not found'}), 404
     
     elif 'venue_data' in data:
-        # ✅ Create new venue from provided data
         venue_data = data['venue_data']
         required_venue = ['name', 'latitude', 'longitude']
         missing = [f for f in required_venue if f not in venue_data]
@@ -2329,8 +2327,7 @@ def post_event():
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
         
-        # ✅ IMPROVED: Check for existing venue by name AND coordinates (with tolerance)
-        tolerance = 0.0001  # ~11 meters tolerance for floating point comparison
+        tolerance = 0.0001
         existing_venue = Venue.query.filter(
             Venue.name.ilike(venue_data['name'].strip()),
             Venue.latitude.between(latitude - tolerance, latitude + tolerance),
@@ -2341,7 +2338,6 @@ def post_event():
             print(f"✅ Venue already exists: {existing_venue.id}")
             venue_id = existing_venue.id
         else:
-            # ✅ Create new venue
             try:
                 new_venue = Venue(
                     name=venue_data['name'],
@@ -2350,7 +2346,7 @@ def post_event():
                     longitude=longitude
                 )
                 db.session.add(new_venue)
-                db.session.flush()  # Get the ID before commit
+                db.session.flush()
                 venue_id = new_venue.id
                 print(f"✅ New venue created with ID: {venue_id}")
             except Exception as e:
@@ -2368,14 +2364,25 @@ def post_event():
  
     try:
         start_time = datetime.fromisoformat(data['start_time'])
+        end_time = datetime.fromisoformat(data['end_time'])
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
+    
+    # ✅ NEW: Calculate duration_minutes from start and end time
+    duration = end_time - start_time
+    duration_minutes = int(duration.total_seconds() / 60)
+    
+    if duration_minutes <= 0:
+        return jsonify({'error': 'End time must be after start time'}), 400
+    
+    print(f"⏱️ Event duration: {duration_minutes} minutes")
  
     event = EventLocation(
         venue_id=venue_id,
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
         start_time=start_time,
+        duration_minutes=duration_minutes,  # ✅ Use calculated duration
         event_description=data.get('event_description'),
         max_attendees=data['max_attendees'],
         girls_attendees=data.get('girls_attendees'),
