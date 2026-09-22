@@ -4449,106 +4449,251 @@ def get_conversations():
     Deduplicates bidirectional conversations.
     """
     current_user = get_current_user_from_token()
+
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     try:
+        # ---------------------------------------------------------
+        # Find conversations where current user is either:
+        #   - parent
+        #   - other user
+        # ---------------------------------------------------------
+
         conversations = db.session.query(Conversation).filter(
             db.or_(
-                Conversation.user_id == current_user.id,
+                Conversation.parent_id == current_user.id,
                 Conversation.other_user_id == current_user.id
             )
-        ).order_by(Conversation.updated_at.desc()).all()
-        
-        print(f"\n{'='*60}")
+        ).order_by(
+            Conversation.updated_at.desc()
+        ).all()
+
+        print(f"\n{'=' * 60}")
         print(f"GET /conversations for user {current_user.id}")
-        print(f"Found {len(conversations)} conversations (before dedup)")
-        print(f"{'='*60}\n")
-        
+        print(
+            f"Found {len(conversations)} conversations "
+            f"(before dedup)"
+        )
+        print(f"{'=' * 60}\n")
+
+        # ---------------------------------------------------------
         # Deduplicate bidirectional conversations
-        # Key = (user1, user2, event_id) - sorted so order doesn't matter
+        #
+        # (user 1 -> user 2) and (user 2 -> user 1)
+        # represent the same conversation for the same event.
+        # ---------------------------------------------------------
+
         seen = {}
         unique_conversations = []
-        
+
         for conv in conversations:
-            # Create a unique key for this conversation pair
-            user_pair = tuple(sorted([conv.user_id, conv.other_user_id]))
-            key = (user_pair[0], user_pair[1], conv.event_id)
-            
+
+            user_pair = tuple(sorted([
+                conv.parent_id,
+                conv.other_user_id
+            ]))
+
+            key = (
+                user_pair[0],
+                user_pair[1],
+                conv.event_id
+            )
+
             if key not in seen:
                 seen[key] = conv
                 unique_conversations.append(conv)
+
             else:
-                print(f"DEBUG: Skipping duplicate conversation {conv.id} (already have {seen[key].id})")
-        
-        print(f"Found {len(unique_conversations)} unique conversations (after dedup)\n")
-        
+                print(
+                    f"DEBUG: Skipping duplicate conversation "
+                    f"{conv.id} "
+                    f"(already have {seen[key].id})"
+                )
+
+        print(
+            f"Found {len(unique_conversations)} unique "
+            f"conversations (after dedup)\n"
+        )
+
+        # ---------------------------------------------------------
+        # Build response
+        # ---------------------------------------------------------
+
         threads = []
+
         for conv in unique_conversations:
-            other_user = conv.other_user if conv.user_id == current_user.id else conv.user
+
+            # Determine which user is the other participant
+            if conv.parent_id == current_user.id:
+                other_user = conv.other_user
+            else:
+                other_user = conv.parent
+
+            if not other_user:
+                print(
+                    f"WARNING: Could not resolve other user "
+                    f"for conversation {conv.id}"
+                )
+                continue
+
             latest_msg = conv.latest_message
-            
-            # DEBUG: Check all messages in this conversation
-            all_msgs = Message.query.filter_by(conversation_id=conv.id).all()
+
+            # -----------------------------------------------------
+            # DEBUG
+            # -----------------------------------------------------
+
+            all_msgs = Message.query.filter_by(
+                conversation_id=conv.id
+            ).all()
+
             print(f"\n=== CONV {conv.id} ===")
-            print(f"  Structure: user_id={conv.user_id}, other_user_id={conv.other_user_id}")
+            print(
+                f"  Structure: "
+                f"parent_id={conv.parent_id}, "
+                f"other_user_id={conv.other_user_id}"
+            )
             print(f"  Current user: {current_user.id}")
             print(f"  Other user: {other_user.id}")
-            print(f"  Total messages in conv: {len(all_msgs)}")
-            
+            print(
+                f"  Total messages in conv: "
+                f"{len(all_msgs)}"
+            )
+
             for msg in all_msgs:
-                print(f"    - Msg {msg.id}: sender={msg.sender_id} → receiver={msg.receiver_id}, is_read={msg.is_read}, text='{msg.message[:30]}...'")
-            
-            # Calculate unread count
+                print(
+                    f"    - Msg {msg.id}: "
+                    f"sender={msg.sender_id} → "
+                    f"receiver={msg.receiver_id}, "
+                    f"is_read={msg.is_read}, "
+                    f"text='{msg.message[:30]}...'"
+                )
+
+            # -----------------------------------------------------
+            # Unread count
+            # -----------------------------------------------------
+
             unread = db.session.query(Message).filter(
                 Message.conversation_id == conv.id,
                 Message.receiver_id == current_user.id,
                 Message.is_read == False
             ).count()
-            print(f"  Unread count for user {current_user.id}: {unread}")
-            
+
+            print(
+                f"  Unread count for user "
+                f"{current_user.id}: {unread}"
+            )
+
+            # -----------------------------------------------------
+            # Only return conversations containing messages
+            # -----------------------------------------------------
+
             if latest_msg:
+
+                # -------------------------------------------------
+                # Other user's display name
+                # -------------------------------------------------
+
                 other_name = ""
+
                 if other_user.parent_profile:
-                    first_name = other_user.parent_profile.first_name or ""
-                    last_name = other_user.parent_profile.last_name or ""
-                    other_name = f"{first_name} {last_name}".strip()
-                
+                    first_name = (
+                        other_user.parent_profile.first_name
+                        or ""
+                    )
+
+                    last_name = (
+                        other_user.parent_profile.last_name
+                        or ""
+                    )
+
+                    other_name = (
+                        f"{first_name} {last_name}"
+                    ).strip()
+
+                # -------------------------------------------------
+                # Other user's image
+                # -------------------------------------------------
+
                 other_image = ""
-                if other_user.parent_profile and other_user.parent_profile.images:
+
+                if (
+                    other_user.parent_profile
+                    and other_user.parent_profile.images
+                ):
                     if len(other_user.parent_profile.images) > 0:
-                        other_image = other_user.parent_profile.images[0].image_url or ""
-                
+                        other_image = (
+                            other_user
+                            .parent_profile
+                            .images[0]
+                            .image_url
+                            or ""
+                        )
+
+                # -------------------------------------------------
+                # Thread response
+                # -------------------------------------------------
+
                 thread = {
-                    'conversationId': conv.id,              # ✅ camelCase
-                    'otherUserId': other_user.id,           # ✅ camelCase
-                    'otherUserName': other_name or other_user.email,
-                    'otherUserImage': other_image,          # ✅ camelCase
-                    'eventId': conv.event_id,               # ✅ camelCase
-                    'preview': latest_msg.message[:100] + ('...' if len(latest_msg.message) > 100 else ''),
+                    'conversationId': conv.id,
+                    'otherUserId': other_user.id,
+                    'otherUserName': (
+                        other_name
+                        or other_user.email
+                    ),
+                    'otherUserImage': other_image,
+                    'eventId': conv.event_id,
+                    'preview': (
+                        latest_msg.message[:100]
+                        + (
+                            '...'
+                            if len(latest_msg.message) > 100
+                            else ''
+                        )
+                    ),
                     'time': latest_msg.time_ago,
-                    'unreadCount': unread,                  # ✅ camelCase
-                    'lastMessageTime': latest_msg.timestamp.isoformat(),  # ✅ camelCase
+                    'unreadCount': unread,
+                    'lastMessageTime': (
+                        latest_msg.timestamp.isoformat()
+                    )
                 }
-                
-                print(f"  ✓ Added thread with unreadCount={thread['unreadCount']}")
+
+                print(
+                    f"  ✓ Added thread with "
+                    f"unreadCount={thread['unreadCount']}"
+                )
+
                 threads.append(thread)
+
             else:
-                print(f"  ✗ Skipped - no latest_msg")
-        
-        print(f"\n{'='*60}")
+                print(
+                    f"  ✗ Skipped - "
+                    f"conversation {conv.id} has no messages"
+                )
+
+        # ---------------------------------------------------------
+        # Return
+        # ---------------------------------------------------------
+
+        print(f"\n{'=' * 60}")
         print(f"Returning {len(threads)} threads")
         print(f"Final response = {threads}")
-        print(f"{'='*60}\n")
-        
+        print(f"{'=' * 60}\n")
+
         return jsonify(threads), 200
-    
+
     except Exception as e:
+
         print(f"ERROR in get_conversations: {e}")
+
         import traceback
         traceback.print_exc()
+
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
 @app.route('/conversations', methods=['POST'])
