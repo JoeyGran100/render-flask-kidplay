@@ -2329,25 +2329,34 @@ def post_event():
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
         
-        # Check if venue already exists
-        existing_venue = Venue.query.filter_by(
-            latitude=latitude,
-            longitude=longitude
+        # ✅ IMPROVED: Check for existing venue by name AND coordinates (with tolerance)
+        tolerance = 0.0001  # ~11 meters tolerance for floating point comparison
+        existing_venue = Venue.query.filter(
+            Venue.name.ilike(venue_data['name'].strip()),
+            Venue.latitude.between(latitude - tolerance, latitude + tolerance),
+            Venue.longitude.between(longitude - tolerance, longitude + tolerance)
         ).first()
         
         if existing_venue:
+            print(f"✅ Venue already exists: {existing_venue.id}")
             venue_id = existing_venue.id
         else:
-            # Create new venue
-            new_venue = Venue(
-                name=venue_data['name'],
-                address=venue_data.get('address'),
-                latitude=latitude,
-                longitude=longitude
-            )
-            db.session.add(new_venue)
-            db.session.flush()  # Get the ID before commit
-            venue_id = new_venue.id
+            # ✅ Create new venue
+            try:
+                new_venue = Venue(
+                    name=venue_data['name'],
+                    address=venue_data.get('address'),
+                    latitude=latitude,
+                    longitude=longitude
+                )
+                db.session.add(new_venue)
+                db.session.flush()  # Get the ID before commit
+                venue_id = new_venue.id
+                print(f"✅ New venue created with ID: {venue_id}")
+            except Exception as e:
+                db.session.rollback()
+                print(f"❌ Error creating venue: {str(e)}")
+                return jsonify({'error': f'Failed to create venue: {str(e)}'}), 400
     else:
         return jsonify({'error': 'Must provide either venue_id or venue_data'}), 400
  
@@ -2364,7 +2373,7 @@ def post_event():
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
  
     event = EventLocation(
-        venue_id=venue_id,  # ✅ Use venue_id from either source
+        venue_id=venue_id,
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
         start_time=start_time,
@@ -2388,9 +2397,11 @@ def post_event():
  
     try:
         db.session.commit()
-    except Exception:
+        print(f"✅ Event created with ID: {event.id}")
+    except Exception as e:
         db.session.rollback()
         traceback.print_exc()
+        print(f"❌ Error creating event: {str(e)}")
         return jsonify({'error': 'Failed to create event'}), 500
  
     return jsonify({'message': 'Event created', 'id': event.id}), 201
