@@ -5049,157 +5049,334 @@ def start_conversation():
         return jsonify({
             'error': str(e)
         }), 500
-    
-    
+
+
+  
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
 def get_messages(conversation_id):
     """
     Get message history for a conversation.
     """
     current_user = get_current_user_from_token()
+
     if not current_user:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+
     try:
-        conversation = Conversation.query.get(conversation_id)
+        # SQLAlchemy 2.x style
+        conversation = db.session.get(
+            Conversation,
+            conversation_id
+        )
+
         if not conversation:
-            return jsonify({'error': 'Conversation not found'}), 404
-        
+            return jsonify({
+                'error': 'Conversation not found'
+            }), 404
+
         # Verify user is part of this conversation
-        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        page = request.args.get('page', 1, type=int)
-        per_page = min(request.args.get('per_page', 50, type=int), 100)
-        
+        if (
+            conversation.parent_id != current_user.id
+            and conversation.other_user_id != current_user.id
+        ):
+            return jsonify({
+                'error': 'Unauthorized'
+            }), 403
+
+        page = request.args.get(
+            'page',
+            1,
+            type=int
+        )
+
+        per_page = min(
+            request.args.get(
+                'per_page',
+                50,
+                type=int
+            ),
+            100
+        )
+
         if page < 1:
             page = 1
-        
-        query = Message.query.filter_by(conversation_id=conversation_id)
+
+        query = Message.query.filter_by(
+            conversation_id=conversation_id
+        )
+
         total_count = query.count()
-        
-        messages_page = query.order_by(Message.timestamp.desc()).paginate(
+
+        messages_page = query.order_by(
+            Message.timestamp.desc()
+        ).paginate(
             page=page,
             per_page=per_page,
             error_out=False
         )
-        
+
         # Mark received messages as read
         for msg in messages_page.items:
-            if msg.receiver_id == current_user.id and not msg.is_read:
+            if (
+                msg.receiver_id == current_user.id
+                and not msg.is_read
+            ):
                 msg.is_read = True
-        
+
         db.session.commit()
-        
-        messages_data = [m.to_dict() for m in reversed(messages_page.items)]
-        
+
+        # Database query is newest -> oldest.
+        # Return oldest -> newest to the client.
+        messages_data = [
+            m.to_dict()
+            for m in reversed(messages_page.items)
+        ]
+
         return jsonify({
             'messages': messages_data,
             'total': total_count,
             'pages': messages_page.pages,
-            'currentPage': page,           # ✅ camelCase
-            'perPage': per_page            # ✅ camelCase
+            'currentPage': page,
+            'perPage': per_page
         }), 200
-    
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500   
+
+        print(f"ERROR in get_messages: {e}")
+
+        import traceback
+        traceback.print_exc()
+
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
 @app.route('/messages', methods=['POST'])
 def send_message():
-    
-    print(f"DEBUG: Received POST /messages request")
+
+    print("DEBUG: Received POST /messages request")
     print(f"DEBUG: Request JSON: {request.get_json()}")
-        
+
     current_user = get_current_user_from_token()
+
     print(f"🔍 DEBUG: current_user = {current_user}")
 
     if not current_user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
+        return jsonify({
+            'error': 'Unauthorized'
+        }), 401
+
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
+
         print(f"🔍 DEBUG: Request data: {data}")
 
-        # ✅ Changed to camelCase to match frontend
         conversation_id = data.get('conversationId')
         receiver_id = data.get('receiverId')
         message_text = data.get('message')
         reply_to_id = data.get('replyToId')
         image_url = data.get('imageUrl')
-        
-        print(f"🔍 DEBUG: conversationId={conversation_id}, receiverId={receiver_id}")
 
+        print(
+            f"🔍 DEBUG: conversationId={conversation_id}, "
+            f"receiverId={receiver_id}"
+        )
+
+        # ---------------------------------------------------------
         # Validate required fields
-        if not conversation_id or not receiver_id or not message_text:
-            print(f"🔍 DEBUG: FAILED - Missing required fields!")
-            # ✅ Updated error message to match camelCase
-            return jsonify({'error': 'conversationId, receiverId, and message are required'}), 400
-        
-        # Verify conversation exists and user is part of it
-        conversation = Conversation.query.get(conversation_id)
-        print(f"🔍 DEBUG: conversation = {conversation}")
+        # ---------------------------------------------------------
+
+        if (
+            conversation_id is None
+            or receiver_id is None
+            or not message_text
+        ):
+            print(
+                "🔍 DEBUG: FAILED - "
+                "Missing required fields!"
+            )
+
+            return jsonify({
+                'error': (
+                    'conversationId, receiverId, '
+                    'and message are required'
+                )
+            }), 400
+
+        # ---------------------------------------------------------
+        # Get conversation
+        # ---------------------------------------------------------
+
+        conversation = db.session.get(
+            Conversation,
+            conversation_id
+        )
+
+        print(
+            f"🔍 DEBUG: conversation = {conversation}"
+        )
 
         if not conversation:
-            print(f"🔍 DEBUG: FAILED - Conversation not found!")
-            return jsonify({'error': 'Conversation not found'}), 404
-        
-        if conversation.user_id != current_user.id and conversation.other_user_id != current_user.id:
-            print(f"🔍 DEBUG: FAILED - User not part of conversation!")
-            return jsonify({'error': 'Unauthorized - not part of this conversation'}), 403
-        
+            print(
+                "🔍 DEBUG: FAILED - "
+                "Conversation not found!"
+            )
+
+            return jsonify({
+                'error': 'Conversation not found'
+            }), 404
+
+        # ---------------------------------------------------------
+        # Verify current user belongs to conversation
+        # ---------------------------------------------------------
+
+        if (
+            conversation.parent_id != current_user.id
+            and conversation.other_user_id != current_user.id
+        ):
+            print(
+                "🔍 DEBUG: FAILED - "
+                "User not part of conversation!"
+            )
+
+            return jsonify({
+                'error': (
+                    'Unauthorized - '
+                    'not part of this conversation'
+                )
+            }), 403
+
+        # ---------------------------------------------------------
+        # Verify receiver is actually the other participant
+        # ---------------------------------------------------------
+
+        if current_user.id == conversation.parent_id:
+            expected_receiver_id = conversation.other_user_id
+        else:
+            expected_receiver_id = conversation.parent_id
+
+        if receiver_id != expected_receiver_id:
+            print(
+                "🔍 DEBUG: FAILED - "
+                f"Invalid receiver. "
+                f"Expected {expected_receiver_id}, "
+                f"got {receiver_id}"
+            )
+
+            return jsonify({
+                'error': (
+                    'Receiver is not a participant '
+                    'in this conversation'
+                )
+            }), 400
+
+        # ---------------------------------------------------------
         # Create message
+        # ---------------------------------------------------------
+
         message = Message(
             conversation_id=conversation_id,
             sender_id=current_user.id,
             receiver_id=receiver_id,
             message=message_text,
             reply_to_id=reply_to_id,
-            image_url=image_url,
+            image_url=image_url
         )
-        
+
         db.session.add(message)
+
+        # Keep conversation ordering current
+        conversation.updated_at = datetime.now(timezone.utc)
+
         db.session.commit()
-        
-        print(f"DEBUG: Message {message.id} sent from user {current_user.id} to {receiver_id}")
-        
-        # ✅ Response uses camelCase (matches frontend expectations)
+
+        print(
+            f"DEBUG: Message {message.id} sent "
+            f"from user {current_user.id} "
+            f"to {receiver_id}"
+        )
+
         return jsonify({
             'id': message.id,
             'message': message_text
         }), 201
-    
+
     except Exception as e:
         db.session.rollback()
+
         print(f"ERROR in send_message: {e}")
+
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
 def build_conversation_response(conv, target_user_id):
-    """Build the response DTO for a conversation"""
-    other_user = conv.other_user if conv.user_id == target_user_id else conv.user
-    
+    """
+    Build the response DTO for a conversation.
+    """
+
+    # Determine the other participant
+    if conv.parent_id == target_user_id:
+        other_user = conv.other_user
+    else:
+        other_user = conv.parent
+
+    if not other_user:
+        raise ValueError(
+            f"Could not resolve other user "
+            f"for conversation {conv.id}"
+        )
+
     other_name = ""
+
     if other_user.parent_profile:
-        first_name = other_user.parent_profile.first_name or ""
-        last_name = other_user.parent_profile.last_name or ""
-        other_name = f"{first_name} {last_name}".strip()
-    
+        first_name = (
+            other_user.parent_profile.first_name
+            or ""
+        )
+
+        last_name = (
+            other_user.parent_profile.last_name
+            or ""
+        )
+
+        other_name = (
+            f"{first_name} {last_name}"
+        ).strip()
+
     other_image = ""
-    if other_user.parent_profile and other_user.parent_profile.images:
+
+    if (
+        other_user.parent_profile
+        and other_user.parent_profile.images
+    ):
         if len(other_user.parent_profile.images) > 0:
-            other_image = other_user.parent_profile.images[0].image_url or ""
-    
+            other_image = (
+                other_user
+                .parent_profile
+                .images[0]
+                .image_url
+                or ""
+            )
+
     return {
-        'conversationId': conv.id,          # ✅ camelCase
-        'otherUserId': other_user.id,       # ✅ camelCase
-        'otherUserName': other_name or other_user.email,  # ✅ camelCase
-        'otherUserImage': other_image,      # ✅ camelCase
-        'eventId': conv.event_id            # ✅ camelCase
+        'conversationId': conv.id,
+        'otherUserId': other_user.id,
+        'otherUserName': (
+            other_name
+            or other_user.email
+        ),
+        'otherUserImage': other_image,
+        'eventId': conv.event_id
     }
+    
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER FUNCTIONS
