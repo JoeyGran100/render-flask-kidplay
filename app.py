@@ -42,8 +42,15 @@ app = Flask(__name__)
 app.config[
     'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_7_u8ig_user:hGWagISE1UrbGRAoB4vNzAtTh4O321tq@dpg-daiksgfqj5pc73ahl430-a.frankfurt-postgres.render.com/kidplay_render_database_7_u8ig"
 
-# ✅ FIX: Add CORS configuration
-socketio = SocketIO(app)
+# ✅ UPDATE Socket.IO INITIALIZATION
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",  # Update to specific domain in production
+    async_mode='threading'      # Use 'gevent' for production
+)
+ 
+# ✅ ADD GLOBAL ACTIVE CONNECTIONS TRACKER
+active_connections = {}  # Format: { user_id: sid, ... }
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
@@ -102,7 +109,7 @@ class ParentsProfile(db.Model):
     id = db.Column(db.Integer,primary_key=True,autoincrement=True)
 
     # Only ParentsProfile points to User
-    user_auth_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id',ondelete='CASCADE'),nullable=False,unique=True,index=True)
+    parents_id = db.Column(db.Integer,db.ForeignKey('user_credentials.id',ondelete='CASCADE'),nullable=False,unique=True,index=True)
 
     gender = db.Column(db.Enum(GenderEnum))
     first_name = db.Column(db.String(100))
@@ -141,8 +148,7 @@ class KidsProfile(db.Model):
     id = db.Column(db.Integer,primary_key=True,autoincrement=True)
     parent_profile_id = db.Column(db.Integer,db.ForeignKey('parents_profile.id',ondelete='CASCADE'),nullable=False,index=True)
     gender = db.Column(db.Enum(ChildEnum))
-    first_name = db.Column(db.String(100))
-    last_name = db.Column(db.String(100))
+    name = db.Column(db.String(150))
     date_of_birth = db.Column(db.Date)
     bio = db.Column(db.Text)
     grade_level = db.Column(db.String(100),nullable=True)
@@ -268,45 +274,17 @@ class EventCategory(db.Model):
     name = db.Column(db.String(100), unique=True, nullable=False)
 
 
-class Venue(db.Model):
+class EventCoordinates(db.Model):
     """The physical place. Reusable across events."""
-    __tablename__ = 'venues'
+    __tablename__ = 'event_coordinates'
 
     id        = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    name      = db.Column(db.String(200), nullable=False)
     address   = db.Column(db.String(300), nullable=True)
     latitude  = db.Column(db.Float)
     longitude = db.Column(db.Float)
 
     # Relationships
-    events = db.relationship('EventLocation', back_populates='venue')
-    images = db.relationship('VenueImage', back_populates='venue', lazy=True, cascade='all, delete-orphan')  # Delete images when venue is deleted
-
-
-class VenueImage(db.Model):
-    """Images for a venue (max 10 per venue)."""
-    __tablename__ = 'venue_images'
-
-    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    venue_id    = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
-    
-    # Store the image path/URL or base64 data
-    image_url   = db.Column(db.String(500), nullable=False)  # URL or file path
-    display_order = db.Column(db.Integer, default=0)  # For ordering images
-    created_at  = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
-    # Relationship
-    venue = db.relationship('Venue', back_populates='images')
-    
-    @validates('image_url')
-    def validate_image_count(self, key, value):
-        # Check if venue already has 10 images
-        if self.venue_id:
-            count = VenueImage.query.filter_by(venue_id=self.venue_id).count()
-            if count >= 10:
-                raise ValueError("Maximum 10 images per venue")
-        return value
-
+    events = db.relationship('EventLocation', back_populates='event_coordinates')
 
 
 # ✅ NEW: EventCoverImage (if you want event-specific cover images)
@@ -351,15 +329,16 @@ class EventLocationImage(db.Model):
 
 
 class EventLocation(db.Model):
-    """One specific event instance at a venue."""
+    """One specific event instance at a event coordinates."""
     __tablename__ = 'event_locations'
  
     id                = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    venue_id          = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
+    eventcoordinates_id          = db.Column(db.Integer, db.ForeignKey('event_coordinates.id'), nullable=False)
     event_category_id = db.Column(db.Integer, db.ForeignKey('event_categories.id'), nullable=False)
     event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id'), nullable=False)
  
     # Event config
+    event_name      = db.Column(db.String(300), nullable=False)
     start_time    = db.Column(db.DateTime(timezone=True), nullable=False)
     duration_minutes = db.Column(db.Integer, nullable=True)  # Duration in minutes (e.g., 60 for 1h, 80 for 1h 20min). NULL = undecided/open-ended
     event_description   = db.Column(db.String(500))
@@ -381,7 +360,7 @@ class EventLocation(db.Model):
  
     # ── Relationships ──────────────────────────────────────────────────────────
     
-    venue               = db.relationship('Venue', back_populates='events')
+    event_coordinates   = db.relationship('EventCoordinates', back_populates='events')
     event_category      = db.relationship('EventCategory', lazy='selectin')
     event_organizer     = db.relationship('EventOrganizer', back_populates='events', lazy='selectin')
     
@@ -475,8 +454,8 @@ class EventLocation(db.Model):
     def _count_by_gender(self, gender: GenderEnum) -> int:
         return (
             Attendance.query
-            .join(User, User.id == Attendance.user_id)
-            .join(ParentsProfile, ParentsProfile.user_auth_id == User.id)
+            .join(User, User.id == Attendance.parent_id)
+            .join(ParentsProfile, ParentsProfile.parents_id == User.id)
             .filter(Attendance.location_id == self.id, ParentsProfile.gender == gender)
             .count()
         )
@@ -533,7 +512,7 @@ class Ticket(db.Model):
     @property
     def is_checked_in(self) -> bool:
         return CheckIn.query.filter_by(
-            user_id=self.attendance.user_id,
+            parent_id=self.attendance.parent_id,
             location_id=self.attendance.location_id
         ).first() is not None
 
@@ -568,7 +547,7 @@ class Attendance(db.Model):
     __tablename__ = 'user_attendance'
 
     id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id     = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
+    parent_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
     location_id = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False)
     timestamp   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -577,7 +556,7 @@ class Attendance(db.Model):
     ticket   = db.relationship('Ticket', back_populates='attendance', uselist=False)
 
     __table_args__ = (
-        db.UniqueConstraint('user_id', 'location_id', name='unique_user_location_attendance'),
+        db.UniqueConstraint('parent_id', 'location_id', name='unique_parent_location_attendance'),
     )
 
 
@@ -591,7 +570,7 @@ class Conversation(db.Model):
     __tablename__ = 'conversations'
     
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id         = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
+    parent_id       = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     other_user_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     event_id        = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=True)
     created_at      = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -600,7 +579,7 @@ class Conversation(db.Model):
     # Relationships
     messages        = db.relationship('Message', back_populates='conversation', cascade='all, delete-orphan')
     event           = db.relationship('EventLocation', foreign_keys=[event_id])
-    user            = db.relationship('User', foreign_keys=[user_id])
+    parent          = db.relationship('User', foreign_keys=[parent_id])
     other_user      = db.relationship('User', foreign_keys=[other_user_id])
     
     @property
@@ -616,7 +595,7 @@ class Conversation(db.Model):
         """
         return Message.query.filter(
             Message.conversation_id == self.id,
-            Message.receiver_id == self.user_id,  # Messages received BY user_id
+            Message.receiver_id == self.parent_id,  # Messages received BY parent_id
             Message.is_read == False
         ).count()
     
@@ -1313,7 +1292,7 @@ def post_parents_profile():
     profile = user.parent_profile
 
     if not profile:
-        profile = ParentsProfile(user_auth_id=user.id)
+        profile = ParentsProfile(parents_id=user.id)
         db.session.add(profile)
 
     if 'first_name' in data:
@@ -1389,7 +1368,7 @@ def post_parents_image():
         return jsonify({'error': 'image_url is required'}), 400
  
     image = ParentsProfileImages(
-        user_auth_id=user.id,
+        parents_id=user.id,
         image_url=data['image_url'],
     )
     db.session.add(image)
@@ -1415,7 +1394,7 @@ def get_current_parent():
     if not user:
         return None
     
-    parent = ParentsProfile.query.filter_by(user_auth_id=user.id).first()
+    parent = ParentsProfile.query.filter_by(parents_id=user.id).first()
     return parent
 
 
@@ -1424,8 +1403,7 @@ def serialize_kids_profile(profile):
     """Serialize a KidsProfile object to JSON"""
     return {
         'id': profile.id,
-        'first_name': profile.first_name,
-        'last_name': profile.last_name,
+        'name': profile.name,
         'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
         'gender': profile.gender.value if profile.gender else None,
         'grade_level': profile.grade_level,
@@ -1516,9 +1494,9 @@ def create_kids_profile():
         logger.debug(f"Received payload: {data}")
 
         # Validate required fields
-        if not data.get('first_name'):
-            logger.warning(f"Missing required field 'first_name' for parent {parent.id}")
-            return jsonify({'error': 'first_name is required'}), 400
+        if not data.get('name'):
+            logger.warning(f"Missing required field 'name' for parent {parent.id}")
+            return jsonify({'error': 'name is required'}), 400
 
         # Parse date of birth - frontend sends YYYY/MM/DD format
         parsed_dob = None
@@ -1533,12 +1511,11 @@ def create_kids_profile():
                 logger.warning(f"Invalid date format for parent {parent.id}: {data['date_of_birth']}")
                 return jsonify({'error': 'Invalid date format. Expected YYYY/MM/DD'}), 400
 
-        logger.info(f"Creating profile for {data.get('first_name')} {data.get('last_name')}")
+        logger.info(f"Creating profile for {data.get('name')}")
         
         profile = KidsProfile(
             parent_profile_id=parent.id,
-            first_name=data.get('first_name'),
-            last_name=data.get('last_name'),
+            name=data.get('name'),
             date_of_birth=parsed_dob,
             gender=ChildEnum(data['gender']) if data.get('gender') else None,
             grade_level=data.get('grade_level'),
@@ -1584,10 +1561,8 @@ def update_kids_profile(kid_id):
         data = request.get_json()
 
         # Update fields
-        if 'first_name' in data:
-            profile.first_name = data['first_name']
-        if 'last_name' in data:
-            profile.last_name = data['last_name']
+        if 'name' in data:
+            profile.name = data['name']
         if 'date_of_birth' in data:
             profile.date_of_birth = datetime.fromisoformat(data['date_of_birth']) if data['date_of_birth'] else None
         if 'gender' in data:
@@ -2000,58 +1975,12 @@ def post_event_category():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# VENUES ✅
+# EVENT COORDINATES ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-# @app.route('/venues', methods=['GET'])
-# def get_venues():
-#     try:
-#         venues = Venue.query.order_by(Venue.name.asc()).all()
-#         return jsonify([
-#             {
-#                 'id':        v.id,
-#                 'name':      v.name,
-#                 'address':   v.address,
-#                 'latitude':  v.latitude,
-#                 'longitude': v.longitude,
-#             }
-#             for v in venues
-#         ]), 200
-#     except Exception:
-#         traceback.print_exc()
-#         return jsonify({'error': 'Internal server error'}), 500
  
- 
-# @app.route('/venues', methods=['POST'])
-# def post_venue():
-#     user = get_current_user_from_token()
-#     if not user:
-#         return jsonify({'error': 'Unauthorized'}), 401
- 
-#     data = request.get_json()
-#     if not data or 'name' not in data:
-#         return jsonify({'error': 'name is required'}), 400
- 
-#     venue = Venue(
-#         name=data['name'],
-#         address=data.get('address'),
-#         latitude=data.get('latitude'),
-#         longitude=data.get('longitude'),
-#     )
-#     db.session.add(venue)
- 
-#     try:
-#         db.session.commit()
-#     except Exception:
-#         db.session.rollback()
-#         traceback.print_exc()
-#         return jsonify({'error': 'Failed to create venue'}), 500
- 
-#     return jsonify({'message': 'Venue created', 'id': venue.id}), 201
- 
- 
-@app.route('/venues', methods=['POST'])
-def post_venue():
+@app.route('/eventcoordinates', methods=['POST'])
+def post_event_coordinates():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -2075,70 +2004,69 @@ def post_venue():
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
     
-    # Check if venue already exists (by coordinates or name + address)
-    existing_venue = Venue.query.filter_by(
+    # Check if event coordinates already exist (by coordinates)
+    existing_coordinates = EventCoordinates.query.filter_by(
         latitude=latitude,
         longitude=longitude
     ).first()
     
-    if existing_venue:
+    if existing_coordinates:
         return jsonify({
-            'message': 'Venue already exists',
-            'id': existing_venue.id,
-            'name': existing_venue.name
+            'message': 'Event coordinates already exist',
+            'id': existing_coordinates.id
         }), 200
     
-    venue = Venue(
+    event_coordinates = EventCoordinates(
         name=data['name'],
         address=data.get('address'),
         latitude=latitude,
         longitude=longitude
     )
     
-    db.session.add(venue)
+    db.session.add(event_coordinates)
     
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         traceback.print_exc()
-        return jsonify({'error': 'Failed to create venue'}), 500
+        return jsonify({'error': 'Failed to create event coordinates'}), 500
     
     return jsonify({
-        'message': 'Venue created successfully',
-        'id': venue.id,
-        'name': venue.name,
-        'latitude': venue.latitude,
-        'longitude': venue.longitude
+        'message': 'Event coordinates created successfully',
+        'id': event_coordinates.id,
+        'name': event_coordinates.name,
+        'latitude': event_coordinates.latitude,
+        'longitude': event_coordinates.longitude
     }), 201
 
 
-# Get all venues (for reference)
-@app.route('/venues', methods=['GET'])
-def get_venues():
-    venues = Venue.query.all()
+# Get all event coordinates (for reference)
+@app.route('/eventcoordinates', methods=['GET'])
+def get_event_coordinates():
+    event_coordinates = EventCoordinates.query.all()
     return jsonify([{
-        'id': v.id,
-        'name': v.name,
-        'address': v.address,
-        'latitude': v.latitude,
-        'longitude': v.longitude
-    } for v in venues]), 200
+        'id': ec.id,
+        'name': ec.name,
+        'address': ec.address,
+        'latitude': ec.latitude,
+        'longitude': ec.longitude
+    } for ec in event_coordinates]), 200
 
 
-# Get venue by ID
-@app.route('/venues/<int:venue_id>', methods=['GET'])
-def get_venue(venue_id):
-    venue = Venue.query.get(venue_id)
-    if not venue:
-        return jsonify({'error': 'Venue not found'}), 404
-    
+# Get event coordinates by ID
+@app.route('/eventcoordinates/<int:event_coordinates_id>', methods=['GET'])
+def get_event_coordinates_by_id(event_coordinates_id):
+    event_coordinates = EventCoordinates.query.get(event_coordinates_id)
+    if not event_coordinates:
+        return jsonify({'error': 'Event coordinates not found'}), 404
+
     return jsonify({
-        'id': venue.id,
-        'name': venue.name,
-        'address': venue.address,
-        'latitude': venue.latitude,
-        'longitude': venue.longitude
+        'id': event_coordinates.id,
+        'name': event_coordinates.name,
+        'address': event_coordinates.address,
+        'latitude': event_coordinates.latitude,
+        'longitude': event_coordinates.longitude
     }), 200
  
  
@@ -2157,7 +2085,7 @@ def get_event_details(event_id):
             EventLocation.query
             .filter_by(id=event_id)
             .options(
-                joinedload(EventLocation.venue),
+                joinedload(EventLocation.event_coordinates),
                 joinedload(EventLocation.event_organizer),
                 joinedload(EventLocation.event_category),
                 joinedload(EventLocation.cover_image),
@@ -2172,12 +2100,11 @@ def get_event_details(event_id):
         
         response = jsonify({
             'id': event.id,
-            'venue': {
-                'id': event.venue.id,
-                'name': event.venue.name,
-                'address': event.venue.address,
-                'latitude': float(event.venue.latitude) if event.venue.latitude else None,
-                'longitude': float(event.venue.longitude) if event.venue.longitude else None,
+            'event_coordinates': {
+                'id': event.event_coordinates.id,
+                'address': event.event_coordinates.address,
+                'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else None,
+                'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else None,
             },
             'event_category': {
                 'id': event.event_category.id,
@@ -2286,8 +2213,8 @@ def get_event_organizer_details(event_id):
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
 
-# When creating an event, the organizer can either select an existing venue by providing a venue_id or create a new venue by providing venue_data. 
-# The endpoint will handle both cases and ensure that the venue is valid before creating the event.
+# When creating an event, the organizer can either select an existing event coordinates by providing an event_coordinates_id or create new event coordinates by providing event_coordinates_data.
+# The endpoint will handle both cases and ensure that the event coordinates are valid before creating the event.
 @app.route('/events', methods=['POST'])
 def post_event():
     user = get_current_user_from_token()
@@ -2302,25 +2229,25 @@ def post_event():
     if not data:
         return jsonify({'error': 'No data provided'}), 400
  
-    # Handle venue - either existing venue_id OR new venue data
-    venue_id = None
+    # Handle event coordinates - either existing event_coordinates_id OR new event coordinates data
+    event_coordinates_id = None
     
-    if 'venue_id' in data:
-        venue_id = data['venue_id']
-        venue = Venue.query.get(venue_id)
-        if not venue:
-            return jsonify({'error': f'Venue with id {venue_id} not found'}), 404
+    if 'event_coordinates_id' in data:
+        event_coordinates_id = data['event_coordinates_id']
+        event_coordinates = EventCoordinates.query.get(event_coordinates_id)
+        if not event_coordinates:
+            return jsonify({'error': f'Event coordinates with id {event_coordinates_id} not found'}), 404
     
-    elif 'venue_data' in data:
-        venue_data = data['venue_data']
-        required_venue = ['name', 'latitude', 'longitude']
-        missing = [f for f in required_venue if f not in venue_data]
+    elif 'event_coordinates_data' in data:
+        event_coordinates_data = data['event_coordinates_data']
+        required_event_coordinates = ['name', 'latitude', 'longitude']
+        missing = [f for f in required_event_coordinates if f not in event_coordinates_data]
         if missing:
-            return jsonify({'error': f'Missing venue fields: {", ".join(missing)}'}), 400
+            return jsonify({'error': f'Missing event coordinates fields: {", ".join(missing)}'}), 400
         
         try:
-            latitude = float(venue_data['latitude'])
-            longitude = float(venue_data['longitude'])
+            latitude = float(event_coordinates_data['latitude'])
+            longitude = float(event_coordinates_data['longitude'])
         except (ValueError, TypeError):
             return jsonify({'error': 'Latitude and longitude must be valid numbers'}), 400
         
@@ -2328,33 +2255,32 @@ def post_event():
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
         
         tolerance = 0.0001
-        existing_venue = Venue.query.filter(
-            Venue.name.ilike(venue_data['name'].strip()),
-            Venue.latitude.between(latitude - tolerance, latitude + tolerance),
-            Venue.longitude.between(longitude - tolerance, longitude + tolerance)
+        existing_event_coordinates = EventCoordinates.query.filter(
+            EventCoordinates.name.ilike(event_coordinates_data['name'].strip()),
+            EventCoordinates.latitude.between(latitude - tolerance, latitude + tolerance),
+            EventCoordinates.longitude.between(longitude - tolerance, longitude + tolerance)
         ).first()
         
-        if existing_venue:
-            print(f"✅ Venue already exists: {existing_venue.id}")
-            venue_id = existing_venue.id
+        if existing_event_coordinates:
+            print(f"✅ Event coordinates already exist: {existing_event_coordinates.id}")
+            event_coordinates_id = existing_event_coordinates.id
         else:
             try:
-                new_venue = Venue(
-                    name=venue_data['name'],
-                    address=venue_data.get('address'),
+                new_event_coordinates = EventCoordinates(
+                    address=event_coordinates_data.get('address'),
                     latitude=latitude,
                     longitude=longitude
                 )
-                db.session.add(new_venue)
+                db.session.add(new_event_coordinates)
                 db.session.flush()
-                venue_id = new_venue.id
-                print(f"✅ New venue created with ID: {venue_id}")
+                event_coordinates_id = new_event_coordinates.id
+                print(f"✅ New event coordinates created with ID: {event_coordinates_id}")
             except Exception as e:
                 db.session.rollback()
-                print(f"❌ Error creating venue: {str(e)}")
-                return jsonify({'error': f'Failed to create venue: {str(e)}'}), 400
+                print(f"❌ Error creating event coordinates: {str(e)}")
+                return jsonify({'error': f'Failed to create event coordinates: {str(e)}'}), 400
     else:
-        return jsonify({'error': 'Must provide either venue_id or venue_data'}), 400
+        return jsonify({'error': 'Must provide either event_coordinates_id or event_coordinates_data'}), 400
  
     # Rest of event creation
     required = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
@@ -2378,9 +2304,10 @@ def post_event():
     print(f"⏱️ Event duration: {duration_minutes} minutes")
  
     event = EventLocation(
-        venue_id=venue_id,
+        event_coordinates_id=event_coordinates_id,
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
+        event_name=data.get('event_name', 'Untitled Event'),
         start_time=start_time,
         duration_minutes=duration_minutes,  # ✅ Use calculated duration
         event_description=data.get('event_description'),
@@ -2413,8 +2340,7 @@ def post_event():
  
  
  
- # My Created Events: Returns all events created by the logged-in organizer, including venue and category details, cover image, and other relevant information.
-
+ # My Created Events: Returns all events created by the logged-in organizer, including event coordinates and category details, cover image, and other relevant information.
 
 
 @app.route('/my_created_events', methods=['GET'])
@@ -2433,52 +2359,53 @@ def get_created_events():
         EventLocation.query
         .filter_by(event_organizer_id=organizer.id)
         .options(
-            db.joinedload(EventLocation.venue),
+            db.joinedload(EventLocation.event_coordinates),  # ✅ Fixed: event_coordinates
             db.joinedload(EventLocation.event_category),
-            db.joinedload(EventLocation.cover_image)
+            db.joinedload(EventLocation.cover_image),
+            db.joinedload(EventLocation.images)  # ✅ Added: event images
         )
         .all()
     )
 
     created_events = []
     for loc in created_locations:
-        venue = loc.venue
+        # ✅ Fixed: Use event_coordinates correctly
+        event_coords = loc.event_coordinates
         
-        # Get first venue image URL (or None if no images)
-        venue_image_url = None
-        if venue.images:
-            venue_image_url = venue.images[0].image_url
-        
-        # Get cover image URL (or None)
+        # ✅ Fixed: Cover image from EventCoverImage
         cover_image_url = loc.cover_image.image_url if loc.cover_image else None
         
+        # ✅ Fixed: Gallery images from EventLocationImage
+        gallery_images = [img.image_url for img in loc.images] if loc.images else []
+        
         created_events.append({
-            'id':                     loc.id,
-            'venue_id':               venue.id,
-            'venue_name':             venue.name,
-            'venue_address':          venue.address,
-            'venue_latitude':         float(venue.latitude) if venue.latitude else None,
-            'venue_longitude':        float(venue.longitude) if venue.longitude else None,
-            'venue_image_url':        venue_image_url,
-            'cover_image_url':        cover_image_url,
-            'category':               loc.event_category.name,
-            'start_time':             loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'end_time':               loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
-            'duration_minutes':       loc.duration_minutes,
-            'description':            loc.event_description,
-            'base_price':             float(loc.base_price) if loc.base_price else None,
-            'currency':               loc.currency,
-            'max_attendees':          loc.max_attendees,
-            'girls_attendees':        loc.girls_attendees,
-            'boys_attendees':         loc.boys_attendees,
-            'min_age':                loc.min_age,
-            'max_age':                loc.max_age,
-            'age_range':              loc.age_range,
-            'is_checkin_closed':      loc.is_checkin_closed,
-            'is_ongoing':             loc.is_ongoing,
-            'is_upcoming':            loc.is_upcoming,
-            'is_past':                loc.is_past,
-            'created_at':             loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'id':                        loc.id,
+            'event_name':                loc.event_name,
+            'event_coordinates_id':      loc.eventcoordinates_id,  # ✅ Fixed: correct field name
+            'event_coordinates_address': event_coords.address if event_coords else None,
+            'event_coordinates_latitude': float(event_coords.latitude) if event_coords and event_coords.latitude else None,
+            'event_coordinates_longitude': float(event_coords.longitude) if event_coords and event_coords.longitude else None,
+            'cover_image_url':           cover_image_url,
+            'gallery_images':            gallery_images,  # ✅ New: multiple gallery images
+            'category':                  loc.event_category.name,
+            'start_time':                loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'end_time':                  loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
+            'duration_minutes':          loc.duration_minutes,
+            'description':               loc.event_description,
+            'base_price':                float(loc.base_price) if loc.base_price else None,
+            'currency':                  loc.currency,
+            'max_attendees':             loc.max_attendees,
+            'girls_attendees':           loc.girls_attendees,
+            'boys_attendees':            loc.boys_attendees,
+            'min_age':                   loc.min_age,
+            'max_age':                   loc.max_age,
+            'age_range':                 loc.age_range,
+            'total_participants':        loc.total_participants,  # ✅ New: actual participant count
+            'is_checkin_closed':         loc.is_checkin_closed,
+            'is_ongoing':                loc.is_ongoing,
+            'is_upcoming':               loc.is_upcoming,
+            'is_past':                   loc.is_past,
+            'created_at':                loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
         })
 
     return jsonify({'created_events': created_events}), 200
@@ -2498,8 +2425,8 @@ Returns only what's needed for Google Maps clustering/markers
 def get_events_for_map():
     try:
         # Base query with explicit join for filtering
-        query = EventLocation.query.join(Venue).options(
-            joinedload(EventLocation.venue),
+        query = EventLocation.query.join(EventCoordinates).options(
+            joinedload(EventLocation.event_coordinates),
             joinedload(EventLocation.event_category),
         )
         
@@ -2509,8 +2436,8 @@ def get_events_for_map():
             try:
                 lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
                 query = query.filter(
-                    Venue.latitude.between(min(lat1, lat2), max(lat1, lat2)),
-                    Venue.longitude.between(min(lng1, lng2), max(lng1, lng2))
+                    EventCoordinates.latitude.between(min(lat1, lat2), max(lat1, lat2)),
+                    EventCoordinates.longitude.between(min(lng1, lng2), max(lng1, lng2))
                 )
             except (ValueError, IndexError):
                 pass
@@ -2534,13 +2461,14 @@ def get_events_for_map():
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'name': event.venue.name,
+                'name': event.event_coordinates.name if event.event_coordinates.name else 'Event',
+                'event_name': event.event_name,
                 'coordinate': {
-                    'latitude': float(event.venue.latitude) if event.venue.latitude else 0.0,
-                    'longitude': float(event.venue.longitude) if event.venue.longitude else 0.0,
+                    'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else 0.0,
+                    'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else 0.0,
                 },
-                'venue_name': event.venue.name,
-                'address': event.venue.address,
+                'event_name': event.event_name,
+                'address': event.event_coordinates.address if event.event_coordinates.address else 'Event',
                 'start_time': event.start_time.isoformat(),
                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
                 'max_attendees': event.max_attendees,
@@ -2586,8 +2514,8 @@ def get_events_in_bounds():
                 'error': 'Invalid bounds'
             }), 400
         
-        query = EventLocation.query.join(Venue).options(
-            joinedload(EventLocation.venue),
+        query = EventLocation.query.join(EventCoordinates).options(
+            joinedload(EventLocation.event_coordinates),
             joinedload(EventLocation.event_category),
         )
         
@@ -2595,8 +2523,8 @@ def get_events_in_bounds():
         lng_min, lng_max = min(ne['lng'], sw['lng']), max(ne['lng'], sw['lng'])
         
         query = query.filter(
-            Venue.latitude.between(lat_min, lat_max),
-            Venue.longitude.between(lng_min, lng_max),
+            EventCoordinates.latitude.between(lat_min, lat_max),
+            EventCoordinates.longitude.between(lng_min, lng_max),
         )
         
         categories = data.get('category_ids')
@@ -2615,13 +2543,13 @@ def get_events_in_bounds():
             {
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
-                'name': event.venue.name,
+                'name': event.name,
+                'event_name': event.event_name,
                 'coordinate': {
-                    'latitude': float(event.venue.latitude),
-                    'longitude': float(event.venue.longitude),
+                    'latitude': float(event.event_coordinates.latitude),
+                    'longitude': float(event.event_coordinates.longitude),
                 },
-                'venue_name': event.venue.name,
-                'address': event.venue.address,
+                'address': event.event_coordinates.address,
                 'start_time': event.start_time.isoformat(),
                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
                 'max_attendees': event.max_attendees,
@@ -2689,7 +2617,7 @@ def post_attendance():
         return jsonify({'error': 'Registration is closed for this event'}), 400
  
     # Check existing attendance
-    existing = Attendance.query.filter_by(user_id=user.id, location_id=event.id).first()
+    existing = Attendance.query.filter_by(parent_id=user.id, location_id=event.id).first()
     if existing:
         return jsonify({'error': 'Already registered for this event'}), 409
  
@@ -2700,7 +2628,7 @@ def post_attendance():
         if not can_register:
             return jsonify({'error': reason}), 400
  
-    attendance = Attendance(user_id=user.id, location_id=event.id)
+    attendance = Attendance(parent_id=user.id, location_id=event.id)
     db.session.add(attendance)
  
     try:
@@ -2754,7 +2682,7 @@ def post_checkin():
         return jsonify({'error': 'Check-in is closed for this event'}), 400
  
     # Must be registered
-    attendance = Attendance.query.filter_by(user_id=user.id, location_id=event.id).first()
+    attendance = Attendance.query.filter_by(parent_id=user.id, location_id=event.id).first()
     if not attendance:
         return jsonify({'error': 'Not registered for this event'}), 403
  
@@ -2794,7 +2722,7 @@ def get_tickets():
             .joinedload(Attendance.ticket),
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
-            .joinedload(EventLocation.venue),
+            .joinedload(EventLocation.event_coordinates),
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
             .joinedload(EventLocation.event_category),
@@ -2844,13 +2772,12 @@ def get_tickets():
                 'base_price':        float(t.attendance.location.base_price) if t.attendance.location.base_price else None,
             },
             
-            # Venue Details
-            'venue': {
-                'id':        t.attendance.location.venue.id,
-                'name':      t.attendance.location.venue.name,
-                'address':   t.attendance.location.venue.address,
-                'latitude':  t.attendance.location.venue.latitude,
-                'longitude': t.attendance.location.venue.longitude,
+            # Event Coordinates Details
+            'event_coordinates': {
+                'id':        t.attendance.location.event_coordinates.id,
+                'address':   t.attendance.location.event_coordinates.address,
+                'latitude':  t.attendance.location.event_coordinates.latitude,
+                'longitude': t.attendance.location.event_coordinates.longitude,
             },
             
             # Parent/User Profile Info
@@ -3045,7 +2972,7 @@ def post_ticket():
 #         .filter_by(location_id=location.id)
 #         .join(Ticket,       Ticket.attendance_id == Attendance.id)
 #         .join(User,         User.id == Attendance.user_id)
-#         .outerjoin(ParentsProfile, ParentsProfile.user_auth_id == User.id)  # ✅ Changed from UserProfile
+#         .outerjoin(ParentsProfile, ParentsProfile.parents_id == User.id)  # ✅ Changed from UserProfile
 #     )
 
 #     if ticket_code:
@@ -3127,7 +3054,7 @@ def get_ticket(ticket_uid: str):
         Ticket.query
         .filter_by(ticket_uid=ticket_uid)
         .join(Attendance)
-        .filter(Attendance.user_id == user.id)
+        .filter(Attendance.parent_id == user.id)
         .first_or_404()
     )
     
@@ -3149,7 +3076,7 @@ def get_qr_token(ticket_uid: str):
     if not ticket:
         return jsonify({'error': 'Ticket not found'}), 404
     
-    if ticket.attendance.user_id != user.id:
+    if ticket.attendance.parent_id != user.id:
         return jsonify({'error': 'Forbidden'}), 403
     
     if ticket.is_expired or ticket.status == 'cancelled':
@@ -3249,12 +3176,12 @@ def _ticket_to_json(ticket: Ticket) -> dict:
                 'name': location.event_organizer.name,
             },
         },
-        'venue': {
-            'id': location.venue.id,
-            'name': location.venue.name,
-            'address': location.venue.address,
-            'latitude': location.venue.latitude,
-            'longitude': location.venue.longitude,
+        'event_coordinates': {
+            'id': location.event_coordinates.id,
+            'name': location.event_coordinates.name,
+            'address': location.event_coordinates.address,
+            'latitude': location.event_coordinates.latitude,
+            'longitude': location.event_coordinates.longitude,
         },
         'links': {
             'self': f'/api/v1/tickets/{ticket.ticket_uid}',
@@ -3480,7 +3407,7 @@ def get_favourite_events():
                 
                 event_data = {
                     'id': e.id,
-                    'venue_id': e.venue_id,
+                    'event_coordinates_id': e.event_coordinates_id,
                     'event_category_id': e.event_category_id,
                     'event_organizer_id': e.event_organizer_id,
                     'start_time': e.start_time.isoformat(),
@@ -3500,17 +3427,17 @@ def get_favourite_events():
                     'is_past': e.is_past,
                 }
                 
-                # ── Venue ──
-                if e.venue:
-                    event_data['venue'] = {
-                        'id': e.venue.id,
-                        'name': e.venue.name,
-                        'address': e.venue.address,
-                        'latitude': e.venue.latitude,
-                        'longitude': e.venue.longitude,
+                # ── Event Coordinates ──
+                if e.event_coordinates:
+                    event_data['event_coordinates'] = {
+                        'id': e.event_coordinates.id,
+                        'name': e.event_coordinates.name,
+                        'address': e.event_coordinates.address,
+                        'latitude': e.event_coordinates.latitude,
+                        'longitude': e.event_coordinates.longitude,
                     }
                 else:
-                    event_data['venue'] = None
+                    event_data['event_coordinates'] = None
                 
                 # ── Category ──
                 if e.event_category:
@@ -4148,8 +4075,321 @@ def get_payout_status(event_id: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO EVENT HANDLERS - CONNECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@socketio.on('connect')
+def handle_connect():
+    """
+    Handle user connection to Socket.IO server.
+    Authenticates user via JWT token and tracks connection.
+    """
+    print(f"\n{'='*60}")
+    print(f"🔗 NEW CONNECTION REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get token from query params or headers
+        token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+        print(f"🔑 Token received: {token[:20]}..." if token else "❌ No token provided")
+        
+        if not token:
+            print(f"❌ REJECTED: No authentication token")
+            return False
+        
+        # Decode token to get user
+        try:
+            decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            user_id = decoded.get('user_id')
+            print(f"✅ Token decoded successfully, user_id: {user_id}")
+        except jwt.InvalidTokenError as e:
+            print(f"❌ REJECTED: Invalid token - {e}")
+            return False
+        
+        # Get user from database
+        user = User.query.get(user_id)
+        if not user:
+            print(f"❌ REJECTED: User not found (id: {user_id})")
+            return False
+        
+        # Track this connection
+        sid = request.sid
+        active_connections[user_id] = sid
+        print(f"✅ ACCEPTED: User {user_id} connected (sid: {sid})")
+        print(f"📊 Active connections: {len(active_connections)}")
+        print(f"{'='*60}\n")
+        
+        # Emit confirmation to client
+        emit('connection_response', {
+            'status': 'connected',
+            'userId': user_id,
+            'message': f'Successfully connected as user {user_id}'
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR during connect: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle user disconnection from Socket.IO server."""
+    sid = request.sid
+    
+    # Find which user this sid belongs to
+    disconnected_user = None
+    for user_id, user_sid in active_connections.items():
+        if user_sid == sid:
+            disconnected_user = user_id
+            break
+    
+    if disconnected_user:
+        del active_connections[disconnected_user]
+        print(f"🔌 User {disconnected_user} disconnected (sid: {sid})")
+        print(f"📊 Active connections: {len(active_connections)}")
+    else:
+        print(f"🔌 Unknown session {sid} disconnected")
+        
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO EVENT HANDLERS - MESSAGING
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    """
+    Handle real-time message sending via Socket.IO.
+    Saves to database and emits to recipient.
+    """
+    print(f"\n{'='*60}")
+    print(f"💬 MESSAGE SEND REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get current user from active connections
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown sender (sid: {sid})")
+            emit('error', {'message': 'Unauthorized - connection not authenticated'})
+            return
+        
+        print(f"👤 Sender: {current_user_id}")
+        
+        # Parse message data
+        conversation_id = data.get('conversationId')
+        receiver_id = data.get('receiverId')
+        message_text = data.get('message')
+        reply_to_id = data.get('replyToId')
+        image_url = data.get('imageUrl')
+        
+        print(f"📝 Data: convo={conversation_id}, receiver={receiver_id}, msg_len={len(message_text) if message_text else 0}")
+        
+        # Validate required fields
+        if not conversation_id or not receiver_id or not message_text:
+            print(f"❌ VALIDATION FAILED: Missing required fields")
+            emit('error', {'message': 'conversationId, receiverId, and message are required'})
+            return
+        
+        # Verify conversation exists and user is part of it
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            print(f"❌ FAILED: Conversation {conversation_id} not found")
+            emit('error', {'message': 'Conversation not found'})
+            return
+        
+        if (conversation.user_id != current_user_id and 
+            conversation.other_user_id != current_user_id):
+            print(f"❌ FAILED: User {current_user_id} not part of conversation")
+            emit('error', {'message': 'Unauthorized - not part of this conversation'})
+            return
+        
+        # Create message in database
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=current_user_id,
+            receiver_id=receiver_id,
+            message=message_text,
+            reply_to_id=reply_to_id,
+            image_url=image_url,
+        )
+        
+        db.session.add(message)
+        db.session.commit()
+        
+        print(f"✅ Message {message.id} saved to database")
+        
+        # Build message response object
+        message_response = {
+            'id': message.id,
+            'conversationId': conversation_id,
+            'senderId': current_user_id,
+            'receiverId': receiver_id,
+            'message': message_text,
+            'imageUrl': image_url,
+            'replyToId': reply_to_id,
+            'timestamp': message.timestamp.isoformat(),
+            'isRead': False
+        }
+        
+        # Emit to sender (confirmation)
+        emit('message_sent', message_response)
+        print(f"✅ Sent confirmation to sender")
+        
+        # Emit to receiver if they're online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            print(f"📤 Receiver {receiver_id} is online (sid: {receiver_sid})")
+            
+            socketio.emit('new_message', message_response, room=receiver_sid)
+            print(f"✅ Emitted new_message to receiver")
+        else:
+            print(f"⚠️  Receiver {receiver_id} is offline (message saved)")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_send_message: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('error', {'message': f'Error sending message: {str(e)}'})
+        db.session.rollback()
+ 
+ 
+@socketio.on('mark_as_read')
+def handle_mark_as_read(data):
+    """Mark a message as read."""
+    print(f"\n{'='*60}")
+    print(f"📖 MARK AS READ REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get current user from active connections
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown user")
+            return
+        
+        message_id = data.get('messageId')
+        conversation_id = data.get('conversationId')
+        
+        print(f"👤 User: {current_user_id}")
+        print(f"📝 Message: {message_id}, Conversation: {conversation_id}")
+        
+        # Get message
+        message = Message.query.get(message_id)
+        if not message:
+            print(f"❌ Message not found")
+            return
+        
+        # Verify user is the receiver
+        if message.receiver_id != current_user_id:
+            print(f"❌ User is not the receiver of this message")
+            return
+        
+        # Mark as read
+        message.is_read = True
+        db.session.commit()
+        
+        print(f"✅ Message marked as read")
+        
+        # Notify sender that message was read
+        if message.sender_id in active_connections:
+            sender_sid = active_connections[message.sender_id]
+            socketio.emit('message_read', {
+                'messageId': message_id,
+                'conversationId': conversation_id,
+                'readBy': current_user_id,
+                'readAt': datetime.utcnow().isoformat()
+            }, room=sender_sid)
+            print(f"✅ Notified sender that message was read")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_mark_as_read: {e}")
+        import traceback
+        traceback.print_exc()
+ 
+ 
+@socketio.on('user_typing')
+def handle_user_typing(data):
+    """Broadcast that a user is typing."""
+    try:
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            return
+        
+        receiver_id = data.get('receiverId')
+        conversation_id = data.get('conversationId')
+        
+        # Notify receiver if online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            socketio.emit('user_is_typing', {
+                'conversationId': conversation_id,
+                'typingUserId': current_user_id
+            }, room=receiver_sid)
+        
+    except Exception as e:
+        print(f"ERROR in handle_user_typing: {e}")
+ 
+ 
+@socketio.on('user_stopped_typing')
+def handle_user_stopped_typing(data):
+    """Broadcast that a user stopped typing."""
+    try:
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            return
+        
+        receiver_id = data.get('receiverId')
+        conversation_id = data.get('conversationId')
+        
+        # Notify receiver if online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            socketio.emit('user_stopped_typing', {
+                'conversationId': conversation_id,
+                'typingUserId': current_user_id
+            }, room=receiver_sid)
+        
+    except Exception as e:
+        print(f"ERROR in handle_user_stopped_typing: {e}")
+ 
+     
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
+ 
  
 @app.route('/conversations', methods=['GET'])
 def get_conversations():
@@ -4581,7 +4821,19 @@ def build_conversation_response(conv, target_user_id):
         'eventId': conv.event_id            # ✅ camelCase
     }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+def get_online_status(user_id):
+    """Check if a user is currently online."""
+    return user_id in active_connections
+ 
+ 
+def get_active_users_count():
+    """Get total count of active connections."""
+    return len(active_connections)
 
-
+    
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
