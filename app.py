@@ -2149,9 +2149,9 @@ def get_events_in_bounds():
         print(f"STATUS FILTER: {status}")
 
         if status == 'upcoming':
-            query = query.filter(EventLocation.is_upcoming == True)
+            query = query.filter(EventLocation.is_upcoming)  # ← Changed
         elif status == 'ongoing':
-            query = query.filter(EventLocation.is_ongoing == True)
+            query = query.filter(EventLocation.is_ongoing)   # ← Changed
 
         events = query.all()
         print(f"Events after status filter: {len(events)}")
