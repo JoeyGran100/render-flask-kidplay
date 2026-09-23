@@ -1,7 +1,7 @@
 import re, os
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, leave_room, join_room
 from werkzeug.utils import secure_filename
 from flask import request, jsonify
 import traceback
@@ -1973,105 +1973,323 @@ def post_event_category():
  
     return jsonify({'message': 'Category created', 'id': category.id}), 201
  
+
  
 # ─────────────────────────────────────────────────────────────────────────────
-# EVENT COORDINATES ✅
+# SOCKET.IO EVENT HANDLERS - MAPS & EVENTS
 # ─────────────────────────────────────────────────────────────────────────────
- 
- 
-@app.route('/eventcoordinates', methods=['POST'])
-def post_event_coordinates():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    required = ['name', 'latitude', 'longitude']
-    missing = [f for f in required if f not in data]
-    if missing:
-        return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
+
+# Track which users are viewing the map
+map_viewers = {}  # user_id -> sid
+
+@socketio.on('join_map')
+def handle_join_map(data):
+    """
+    User is viewing the map. Add them to the map room.
+    They'll receive real-time event updates.
+    """
+    print(f"\n{'='*60}")
+    print(f"🗺️  USER JOINED MAP")
+    print(f"{'='*60}")
     
     try:
-        latitude = float(data['latitude'])
-        longitude = float(data['longitude'])
-    except (ValueError, TypeError):
-        return jsonify({'error': 'Latitude and longitude must be valid numbers'}), 400
-    
-    # Validate coordinates
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-        return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
-    
-    # Check if event coordinates already exist (by coordinates)
-    existing_coordinates = EventCoordinates.query.filter_by(
-        latitude=latitude,
-        longitude=longitude
-    ).first()
-    
-    if existing_coordinates:
-        return jsonify({
-            'message': 'Event coordinates already exist',
-            'id': existing_coordinates.id
-        }), 200
-    
-    event_coordinates = EventCoordinates(
-        name=data['name'],
-        address=data.get('address'),
-        latitude=latitude,
-        longitude=longitude
-    )
-    
-    db.session.add(event_coordinates)
-    
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
+        sid = request.sid
+        current_user_id = None
+        
+        # Find current user from active connections
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown user")
+            emit('error', {'message': 'Unauthorized'})
+            return
+        
+        # Add user to map viewers
+        map_viewers[current_user_id] = sid
+        
+        # Join them to the 'map' room
+        join_room('map')
+        
+        print(f"✅ User {current_user_id} joined map room")
+        print(f"📊 Active map viewers: {len(map_viewers)}")
+        print(f"{'='*60}\n")
+        
+        emit('map_joined', {
+            'status': 'connected_to_map',
+            'userId': current_user_id
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_join_map: {e}")
+        import traceback
         traceback.print_exc()
-        return jsonify({'error': 'Failed to create event coordinates'}), 500
+
+
+@socketio.on('leave_map')
+def handle_leave_map():
+    """
+    User is leaving the map. Remove them from the map room.
+    """
+    print(f"\n{'='*60}")
+    print(f"🗺️  USER LEFT MAP")
+    print(f"{'='*60}")
     
-    return jsonify({
-        'message': 'Event coordinates created successfully',
-        'id': event_coordinates.id,
-        'name': event_coordinates.name,
-        'latitude': event_coordinates.latitude,
-        'longitude': event_coordinates.longitude
-    }), 201
+    try:
+        sid = request.sid
+        current_user_id = None
+        
+        # Find current user
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if current_user_id and current_user_id in map_viewers:
+            del map_viewers[current_user_id]
+            leave_room('map')
+            print(f"✅ User {current_user_id} left map room")
+            print(f"📊 Active map viewers: {len(map_viewers)}")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_leave_map: {e}")
+        import traceback
+        traceback.print_exc()
 
 
-# Get all event coordinates (for reference)
-@app.route('/eventcoordinates', methods=['GET'])
-def get_event_coordinates():
-    event_coordinates = EventCoordinates.query.all()
-    return jsonify([{
-        'id': ec.id,
-        'address': ec.address,
-        'latitude': ec.latitude,
-        'longitude': ec.longitude
-    } for ec in event_coordinates]), 200
+def broadcast_event_to_map(event_coordinates):
+    """
+    Tier 1: ULTRA-LIGHTWEIGHT
+    Only coordinates - no event details.
+    Full details loaded on-demand via REST API.
+    """
+    print(f"\n{'='*60}")
+    print(f"📡 BROADCASTING MARKER (Tier 1 - Ultra-light)")
+    print(f"{'='*60}")
+    
+    try:
+        event_payload = {
+            'id': event_coordinates.id,
+            'name': event_coordinates.name,
+            'address': event_coordinates.address or "",
+            'latitude': float(event_coordinates.latitude),
+            'longitude': float(event_coordinates.longitude),
+        }
+        
+        socketio.emit('new_event_on_map', event_payload, room='map')
+        
+        print(f"✅ Broadcasted marker {event_coordinates.id}")
+        print(f"   Size: ~200 bytes per marker")
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        traceback.print_exc()
+        
 
-
-# Get event coordinates by ID
-@app.route('/eventcoordinates/<int:event_coordinates_id>', methods=['GET'])
-def get_event_coordinates_by_id(event_coordinates_id):
-    event_coordinates = EventCoordinates.query.get(event_coordinates_id)
-    if not event_coordinates:
-        return jsonify({'error': 'Event coordinates not found'}), 404
-
-    return jsonify({
-        'id': event_coordinates.id,
-        'address': event_coordinates.address,
-        'latitude': event_coordinates.latitude,
-        'longitude': event_coordinates.longitude
-    }), 200
- 
- 
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT LOCATIONS ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+@app.route('/events/map/bounds', methods=['POST'])
+def get_events_in_bounds():
+    try:
+        data = request.get_json()
+
+        print("MAP BOUNDS REQUEST:", data)
+
+        ne = data.get('northeast', {})
+        sw = data.get('southwest', {})
+
+        print("NE:", ne)
+        print("SW:", sw)
+
+        if (
+            ne.get('lat') is None or
+            ne.get('lng') is None or
+            sw.get('lat') is None or
+            sw.get('lng') is None
+        ):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid bounds'
+            }), 400
+
+        lat_min = min(float(ne['lat']), float(sw['lat']))
+        lat_max = max(float(ne['lat']), float(sw['lat']))
+        lng_min = min(float(ne['lng']), float(sw['lng']))
+        lng_max = max(float(ne['lng']), float(sw['lng']))
+
+        print("LAT:", lat_min, lat_max)
+        print("LNG:", lng_min, lng_max)
+
+        query = EventLocation.query.join(EventCoordinates).options(
+            joinedload(EventLocation.event_coordinates),
+            joinedload(EventLocation.event_category),
+        )
+
+        query = query.filter(
+            EventCoordinates.latitude.between(lat_min, lat_max),
+            EventCoordinates.longitude.between(lng_min, lng_max),
+        )
+
+        categories = data.get('category_ids')
+
+        if categories:
+            print("CATEGORY FILTER:", categories)
+            query = query.filter(
+                EventLocation.event_category_id.in_(categories)
+            )
+
+        events = query.all()
+
+        print("EVENTS AFTER DATABASE QUERY:", len(events))
+
+        for event in events:
+            print(
+                "EVENT:",
+                event.id,
+                event.event_name,
+                "lat=", event.event_coordinates.latitude,
+                "lng=", event.event_coordinates.longitude,
+                "start=", event.start_time,
+                "end=", event.end_time,
+                "is_upcoming=", event.is_upcoming,
+                "is_ongoing=", event.is_ongoing,
+                "is_past=", event.is_past,
+            )
+
+        status = data.get('status_filter', 'upcoming')
+
+        print("STATUS FILTER:", status)
+
+        if status == 'upcoming':
+            events = [e for e in events if e.is_upcoming]
+
+        elif status == 'ongoing':
+            events = [e for e in events if e.is_ongoing]
+
+        print("EVENTS AFTER STATUS FILTER:", len(events))
+
+        map_events = [
+            {
+                'id': event.id,
+                'title': event.event_category.name
+                    if event.event_category else 'Event',
+                'event_name': event.event_name,
+                'coordinate': {
+                    'latitude': float(event.event_coordinates.latitude),
+                    'longitude': float(event.event_coordinates.longitude),
+                },
+                'address': event.event_coordinates.address,
+                'start_time': event.start_time.isoformat(),
+                'remaining_spots': max(
+                    0,
+                    event.max_attendees - event.total_participants
+                ),
+                'max_attendees': event.max_attendees,
+                'duration_minutes': event.duration_minutes,
+                'end_time': event.end_time.isoformat(),
+                'age_range': event.age_range,
+                'base_price': (
+                    float(event.base_price)
+                    if event.base_price else None
+                ),
+                'currency': event.currency,
+                'status': (
+                    'ongoing'
+                    if event.is_ongoing
+                    else 'upcoming'
+                ),
+            }
+            for event in events
+        ]
+
+        return jsonify({
+            'success': True,
+            'count': len(map_events),
+            'events': map_events
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error'
+        }), 500
+
+
+# Shows a lightweight summary of an event for use in marker info windows on the map. 
+# This endpoint returns only the essential fields needed for displaying event information without loading full details, making it efficient for map interactions.
+@app.route('/events/<int:event_id>/summary', methods=['GET'])
+def get_event_summary(event_id):
+    """
+    Lightweight event summary for marker info window.
+    Returns ONLY fields needed for the marker card/info window.
+    Tier 2 data - between coordinates and full details.
+    """
+    try:
+        event = (
+            EventLocation.query
+            .filter_by(id=event_id)
+            .options(
+                joinedload(EventLocation.event_coordinates),
+                joinedload(EventLocation.event_category),
+                joinedload(EventLocation.cover_image),  # Only cover image, not gallery
+            )
+            .first()
+        )
+        
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        response = jsonify({
+            'id': event.id,
+            'title': event.event_category.name if event.event_category else 'Event',
+            'event_name': event.event_name,
+            'coordinate': {
+                'latitude': float(event.event_coordinates.latitude),
+                'longitude': float(event.event_coordinates.longitude),
+            },
+            'address': event.event_coordinates.address,
+            'start_time': event.start_time.isoformat(),
+            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'duration_minutes': event.duration_minutes,
+            'remaining_spots': max(0, event.max_attendees - event.total_participants),
+            'max_attendees': event.max_attendees,
+            'age_range': event.age_range,
+            'base_price': float(event.base_price) if event.base_price else None,
+            'currency': event.currency,
+            'status': (
+                'ongoing' if event.is_ongoing
+                else 'upcoming' if event.is_upcoming
+                else 'past'
+            ),
+            'cover_image': event.cover_image.image_url if event.cover_image else None,
+            'total_attendees': event.total_participants,
+            'is_upcoming': event.is_upcoming,
+            'is_ongoing': event.is_ongoing,
+        })
+        
+        # Cache for 2 minutes - lightweight so can be cached
+        response.cache_control.max_age = 120
+        response.add_etag()
+        
+        return response, 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error'}), 500
+   
+
+# Shows full event details for a specific event, including organizer info, images, and attendance stats. 
+# This endpoint is used when a user taps on a marker on the map to view event details.
 @app.route('/events/<int:event_id>', methods=['GET'])
 def get_event_details(event_id):
     """
@@ -2211,6 +2429,7 @@ def get_event_organizer_details(event_id):
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
 
+
 # When creating an event, the organizer can either select an existing event coordinates by providing an event_coordinates_id or create new event coordinates by providing event_coordinates_data.
 # The endpoint will handle both cases and ensure that the event coordinates are valid before creating the event.
 @app.route('/events', methods=['POST'])
@@ -2262,16 +2481,19 @@ def post_event():
         if existing_event_coordinates:
             print(f"✅ Event coordinates already exist: {existing_event_coordinates.id}")
             event_coordinates_id = existing_event_coordinates.id
+            event_coordinates = existing_event_coordinates
         else:
             try:
                 new_event_coordinates = EventCoordinates(
                     address=event_coordinates_data.get('address'),
                     latitude=latitude,
-                    longitude=longitude
+                    longitude=longitude,
+                    name=event_coordinates_data['name']
                 )
                 db.session.add(new_event_coordinates)
                 db.session.flush()
                 event_coordinates_id = new_event_coordinates.id
+                event_coordinates = new_event_coordinates
                 print(f"✅ New event coordinates created with ID: {event_coordinates_id}")
             except Exception as e:
                 db.session.rollback()
@@ -2292,7 +2514,7 @@ def post_event():
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
     
-    # ✅ NEW: Calculate duration_minutes from start and end time
+    # Calculate duration_minutes from start and end time
     duration = end_time - start_time
     duration_minutes = int(duration.total_seconds() / 60)
     
@@ -2307,7 +2529,7 @@ def post_event():
         event_organizer_id=organizer.id,
         event_name=data.get('event_name', 'Untitled Event'),
         start_time=start_time,
-        duration_minutes=duration_minutes,  # ✅ Use calculated duration
+        duration_minutes=duration_minutes,
         event_description=data.get('event_description'),
         max_attendees=data['max_attendees'],
         girls_attendees=data.get('girls_attendees'),
@@ -2328,6 +2550,11 @@ def post_event():
     try:
         db.session.commit()
         print(f"✅ Event created with ID: {event.id}")
+        
+        # 🔴 NEW: Broadcast the event coordinates to all map viewers in real-time
+        if event_coordinates:
+            broadcast_event_to_map(event_coordinates)
+        
     except Exception as e:
         db.session.rollback()
         traceback.print_exc()
@@ -2335,80 +2562,9 @@ def post_event():
         return jsonify({'error': 'Failed to create event'}), 500
  
     return jsonify({'message': 'Event created', 'id': event.id}), 201
- 
- 
- 
- # My Created Events: Returns all events created by the logged-in organizer, including event coordinates and category details, cover image, and other relevant information.
 
 
-@app.route('/my_created_events', methods=['GET'])
-def get_created_events():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'message': 'Unauthorized'}), 401
 
-    # Get the organizer profile for this user
-    organizer = EventOrganizer.query.filter_by(user_id=user.id).first()
-    if not organizer:
-        return jsonify({'message': 'User is not an event organizer'}), 403
-
-    # Get all events created by this organizer
-    created_locations = (
-        EventLocation.query
-        .filter_by(event_organizer_id=organizer.id)
-        .options(
-            db.joinedload(EventLocation.event_coordinates),  # ✅ Fixed: event_coordinates
-            db.joinedload(EventLocation.event_category),
-            db.joinedload(EventLocation.cover_image),
-            db.joinedload(EventLocation.images)  # ✅ Added: event images
-        )
-        .all()
-    )
-
-    created_events = []
-    for loc in created_locations:
-        # ✅ Fixed: Use event_coordinates correctly
-        event_coords = loc.event_coordinates
-        
-        # ✅ Fixed: Cover image from EventCoverImage
-        cover_image_url = loc.cover_image.image_url if loc.cover_image else None
-        
-        # ✅ Fixed: Gallery images from EventLocationImage
-        gallery_images = [img.image_url for img in loc.images] if loc.images else []
-        
-        created_events.append({
-            'id':                        loc.id,
-            'event_name':                loc.event_name,
-            'event_coordinates_id':      loc.eventcoordinates_id,  # ✅ Fixed: correct field name
-            'event_coordinates_address': event_coords.address if event_coords else None,
-            'event_coordinates_latitude': float(event_coords.latitude) if event_coords and event_coords.latitude else None,
-            'event_coordinates_longitude': float(event_coords.longitude) if event_coords and event_coords.longitude else None,
-            'cover_image_url':           cover_image_url,
-            'gallery_images':            gallery_images,  # ✅ New: multiple gallery images
-            'category':                  loc.event_category.name,
-            'start_time':                loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'end_time':                  loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
-            'duration_minutes':          loc.duration_minutes,
-            'description':               loc.event_description,
-            'base_price':                float(loc.base_price) if loc.base_price else None,
-            'currency':                  loc.currency,
-            'max_attendees':             loc.max_attendees,
-            'girls_attendees':           loc.girls_attendees,
-            'boys_attendees':            loc.boys_attendees,
-            'min_age':                   loc.min_age,
-            'max_age':                   loc.max_age,
-            'age_range':                 loc.age_range,
-            'total_participants':        loc.total_participants,  # ✅ New: actual participant count
-            'is_checkin_closed':         loc.is_checkin_closed,
-            'is_ongoing':                loc.is_ongoing,
-            'is_upcoming':               loc.is_upcoming,
-            'is_past':                   loc.is_past,
-            'created_at':                loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
-        })
-
-    return jsonify({'created_events': created_events}), 200
- 
- 
 # ─────────────────────────────────────────────────────────────────────────────
 # GOOGLE MAPS  ✅
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2419,212 +2575,84 @@ NEW ENDPOINT: Lightweight map data
 Returns only what's needed for Google Maps clustering/markers
 """
 
-@app.route('/events/map', methods=['GET'])
-def get_events_for_map():
-    try:
-        # Base query with explicit join for filtering
-        query = EventLocation.query.join(EventCoordinates).options(
-            joinedload(EventLocation.event_coordinates),
-            joinedload(EventLocation.event_category),
-        )
+# Can be deleted!!!
+# @app.route('/events/map', methods=['GET'])
+# def get_events_for_map():
+#     try:
+#         # Base query with explicit join for filtering
+#         query = EventLocation.query.join(EventCoordinates).options(
+#             joinedload(EventLocation.event_coordinates),
+#             joinedload(EventLocation.event_category),
+#         )
         
-        # Optional: Filter by viewport bounds (database-level)
-        bounds = request.args.get('bounds')
-        if bounds:
-            try:
-                lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
-                query = query.filter(
-                    EventCoordinates.latitude.between(min(lat1, lat2), max(lat1, lat2)),
-                    EventCoordinates.longitude.between(min(lng1, lng2), max(lng1, lng2))
-                )
-            except (ValueError, IndexError):
-                pass
+#         # Optional: Filter by viewport bounds (database-level)
+#         bounds = request.args.get('bounds')
+#         if bounds:
+#             try:
+#                 lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
+#                 query = query.filter(
+#                     EventCoordinates.latitude.between(min(lat1, lat2), max(lat1, lat2)),
+#                     EventCoordinates.longitude.between(min(lng1, lng2), max(lng1, lng2))
+#                 )
+#             except (ValueError, IndexError):
+#                 pass
         
-        # Optional: Filter by category
-        category_ids = request.args.get('category_id')
-        if category_ids:
-            try:
-                ids = [int(x.strip()) for x in category_ids.split(',')]
-                query = query.filter(EventLocation.event_category_id.in_(ids))
-            except ValueError:
-                pass
+#         # Optional: Filter by category
+#         category_ids = request.args.get('category_id')
+#         if category_ids:
+#             try:
+#                 ids = [int(x.strip()) for x in category_ids.split(',')]
+#                 query = query.filter(EventLocation.event_category_id.in_(ids))
+#             except ValueError:
+#                 pass
         
-        all_events = query.all()
+#         all_events = query.all()
         
-        # Filter for ACTIVE events in Python
-        now = datetime.now(timezone.utc)
-        active_events = [event for event in all_events if not event.is_past]
+#         # Filter for ACTIVE events in Python
+#         now = datetime.now(timezone.utc)
+#         active_events = [event for event in all_events if not event.is_past]
         
-        map_events = [
-            {
-                'id': event.id,
-                'title': event.event_category.name if event.event_category else 'Event',
-                'name': event.event_coordinates.name if event.event_coordinates.name else 'Event',
-                'event_name': event.event_name,
-                'coordinate': {
-                    'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else 0.0,
-                    'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else 0.0,
-                },
-                'event_name': event.event_name,
-                'address': event.event_coordinates.address if event.event_coordinates.address else 'Event',
-                'start_time': event.start_time.isoformat(),
-                'remaining_spots': max(0, event.max_attendees - event.total_participants),
-                'max_attendees': event.max_attendees,
-                'duration_minutes': event.duration_minutes,
-                'end_time': event.end_time.isoformat(),
-                'age_range': event.age_range,
-                'base_price': float(event.base_price) if event.base_price else None,
-                'currency': event.currency,
-                'status': (
-                    'ongoing' if event.is_ongoing
-                    else 'upcoming' if event.is_upcoming
-                    else 'past'
-                ),
-            }
-            for event in active_events
-        ]
+#         map_events = [
+#             {
+#                 'id': event.id,
+#                 'title': event.event_category.name if event.event_category else 'Event',
+#                 'name': event.event_coordinates.name if event.event_coordinates.name else 'Event',
+#                 'event_name': event.event_name,
+#                 'coordinate': {
+#                     'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else 0.0,
+#                     'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else 0.0,
+#                 },
+#                 'event_name': event.event_name,
+#                 'address': event.event_coordinates.address if event.event_coordinates.address else 'Event',
+#                 'start_time': event.start_time.isoformat(),
+#                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
+#                 'max_attendees': event.max_attendees,
+#                 'duration_minutes': event.duration_minutes,
+#                 'end_time': event.end_time.isoformat(),
+#                 'age_range': event.age_range,
+#                 'base_price': float(event.base_price) if event.base_price else None,
+#                 'currency': event.currency,
+#                 'status': (
+#                     'ongoing' if event.is_ongoing
+#                     else 'upcoming' if event.is_upcoming
+#                     else 'past'
+#                 ),
+#             }
+#             for event in active_events
+#         ]
         
-        return jsonify({
-            'success': True,
-            'count': len(map_events),
-            'events': map_events
-        }), 200
+#         return jsonify({
+#             'success': True,
+#             'count': len(map_events),
+#             'events': map_events
+#         }), 200
         
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': 'Internal server error'
-        }), 500
-
-
-@app.route('/events/map/bounds', methods=['POST'])
-def get_events_in_bounds():
-    try:
-        data = request.get_json()
-
-        print("MAP BOUNDS REQUEST:", data)
-
-        ne = data.get('northeast', {})
-        sw = data.get('southwest', {})
-
-        print("NE:", ne)
-        print("SW:", sw)
-
-        if (
-            ne.get('lat') is None or
-            ne.get('lng') is None or
-            sw.get('lat') is None or
-            sw.get('lng') is None
-        ):
-            return jsonify({
-                'success': False,
-                'error': 'Invalid bounds'
-            }), 400
-
-        lat_min = min(float(ne['lat']), float(sw['lat']))
-        lat_max = max(float(ne['lat']), float(sw['lat']))
-        lng_min = min(float(ne['lng']), float(sw['lng']))
-        lng_max = max(float(ne['lng']), float(sw['lng']))
-
-        print("LAT:", lat_min, lat_max)
-        print("LNG:", lng_min, lng_max)
-
-        query = EventLocation.query.join(EventCoordinates).options(
-            joinedload(EventLocation.event_coordinates),
-            joinedload(EventLocation.event_category),
-        )
-
-        query = query.filter(
-            EventCoordinates.latitude.between(lat_min, lat_max),
-            EventCoordinates.longitude.between(lng_min, lng_max),
-        )
-
-        categories = data.get('category_ids')
-
-        if categories:
-            print("CATEGORY FILTER:", categories)
-            query = query.filter(
-                EventLocation.event_category_id.in_(categories)
-            )
-
-        events = query.all()
-
-        print("EVENTS AFTER DATABASE QUERY:", len(events))
-
-        for event in events:
-            print(
-                "EVENT:",
-                event.id,
-                event.event_name,
-                "lat=", event.event_coordinates.latitude,
-                "lng=", event.event_coordinates.longitude,
-                "start=", event.start_time,
-                "end=", event.end_time,
-                "is_upcoming=", event.is_upcoming,
-                "is_ongoing=", event.is_ongoing,
-                "is_past=", event.is_past,
-            )
-
-        status = data.get('status_filter', 'upcoming')
-
-        print("STATUS FILTER:", status)
-
-        if status == 'upcoming':
-            events = [e for e in events if e.is_upcoming]
-
-        elif status == 'ongoing':
-            events = [e for e in events if e.is_ongoing]
-
-        print("EVENTS AFTER STATUS FILTER:", len(events))
-
-        map_events = [
-            {
-                'id': event.id,
-                'title': event.event_category.name
-                    if event.event_category else 'Event',
-                'event_name': event.event_name,
-                'coordinate': {
-                    'latitude': float(event.event_coordinates.latitude),
-                    'longitude': float(event.event_coordinates.longitude),
-                },
-                'address': event.event_coordinates.address,
-                'start_time': event.start_time.isoformat(),
-                'remaining_spots': max(
-                    0,
-                    event.max_attendees - event.total_participants
-                ),
-                'max_attendees': event.max_attendees,
-                'duration_minutes': event.duration_minutes,
-                'end_time': event.end_time.isoformat(),
-                'age_range': event.age_range,
-                'base_price': (
-                    float(event.base_price)
-                    if event.base_price else None
-                ),
-                'currency': event.currency,
-                'status': (
-                    'ongoing'
-                    if event.is_ongoing
-                    else 'upcoming'
-                ),
-            }
-            for event in events
-        ]
-
-        return jsonify({
-            'success': True,
-            'count': len(map_events),
-            'events': map_events
-        }), 200
-
-    except Exception as e:
-        traceback.print_exc()
-
-        return jsonify({
-            'success': False,
-            'error': 'Internal server error'
-        }), 500
+#     except Exception as e:
+#         traceback.print_exc()
+#         return jsonify({
+#             'success': False,
+#             'error': 'Internal server error'
+#         }), 500
 
 
 
@@ -2887,6 +2915,74 @@ def post_ticket():
     return jsonify({'message': 'Ticket saved', 'ticket_code': ticket.ticket_code}), 201
  
  
+#Show all events created by the logged-in organizer in TICKET screen, including event coordinates and category details, cover image, and other relevant information.
+@app.route('/organizer/events/tickets', methods=['GET'])
+def get_created_events():
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'message': 'Unauthorized'}), 401
+
+    # Get the organizer profile for this user
+    organizer = EventOrganizer.query.filter_by(user_id=user.id).first()
+    if not organizer:
+        return jsonify({'message': 'User is not an event organizer'}), 403
+
+    # Get all events created by this organizer
+    created_locations = (
+        EventLocation.query
+        .filter_by(event_organizer_id=organizer.id)
+        .options(
+            db.joinedload(EventLocation.event_coordinates),  # ✅ Fixed: event_coordinates
+            db.joinedload(EventLocation.event_category),
+            db.joinedload(EventLocation.cover_image),
+            db.joinedload(EventLocation.images)  # ✅ Added: event images
+        )
+        .all()
+    )
+
+    created_events = []
+    for loc in created_locations:
+        # ✅ Fixed: Use event_coordinates correctly
+        event_coords = loc.event_coordinates
+        
+        # ✅ Fixed: Cover image from EventCoverImage
+        cover_image_url = loc.cover_image.image_url if loc.cover_image else None
+        
+        # ✅ Fixed: Gallery images from EventLocationImage
+        gallery_images = [img.image_url for img in loc.images] if loc.images else []
+        
+        created_events.append({
+            'id':                        loc.id,
+            'event_name':                loc.event_name,
+            'event_coordinates_id':      loc.eventcoordinates_id,  # ✅ Fixed: correct field name
+            'event_coordinates_address': event_coords.address if event_coords else None,
+            'event_coordinates_latitude': float(event_coords.latitude) if event_coords and event_coords.latitude else None,
+            'event_coordinates_longitude': float(event_coords.longitude) if event_coords and event_coords.longitude else None,
+            'cover_image_url':           cover_image_url,
+            'gallery_images':            gallery_images,  # ✅ New: multiple gallery images
+            'category':                  loc.event_category.name,
+            'start_time':                loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'end_time':                  loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
+            'duration_minutes':          loc.duration_minutes,
+            'description':               loc.event_description,
+            'base_price':                float(loc.base_price) if loc.base_price else None,
+            'currency':                  loc.currency,
+            'max_attendees':             loc.max_attendees,
+            'girls_attendees':           loc.girls_attendees,
+            'boys_attendees':            loc.boys_attendees,
+            'min_age':                   loc.min_age,
+            'max_age':                   loc.max_age,
+            'age_range':                 loc.age_range,
+            'total_participants':        loc.total_participants,  # ✅ New: actual participant count
+            'is_checkin_closed':         loc.is_checkin_closed,
+            'is_ongoing':                loc.is_ongoing,
+            'is_upcoming':               loc.is_upcoming,
+            'is_past':                   loc.is_past,
+            'created_at':                loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        })
+
+    return jsonify({'created_events': created_events}), 200
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4198,8 +4294,15 @@ def handle_disconnect():
     
     if disconnected_user:
         del active_connections[disconnected_user]
+        
+        # 🔴 NEW: Also remove from map viewers if they were viewing map
+        if disconnected_user in map_viewers:
+            del map_viewers[disconnected_user]
+            leave_room('map')
+        
         print(f"🔌 User {disconnected_user} disconnected (sid: {sid})")
         print(f"📊 Active connections: {len(active_connections)}")
+        print(f"📊 Active map viewers: {len(map_viewers)}")
     else:
         print(f"🔌 Unknown session {sid} disconnected")
         
