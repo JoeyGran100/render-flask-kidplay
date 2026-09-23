@@ -2099,6 +2099,10 @@ def get_events_in_bounds():
 
         ne = data.get('northeast', {})
         sw = data.get('southwest', {})
+        
+        print("MAP BOUNDS REQUEST:", data)
+        print("NE:", ne)
+        print("SW:", sw)
 
         if (ne.get('latitude') is None or ne.get('longitude') is None or
             sw.get('latitude') is None or sw.get('longitude') is None):
@@ -2108,6 +2112,13 @@ def get_events_in_bounds():
         lat_max = max(float(ne['latitude']), float(sw['latitude']))
         lng_min = min(float(ne['longitude']), float(sw['longitude']))
         lng_max = max(float(ne['longitude']), float(sw['longitude']))
+        
+        print(f"LAT RANGE: {lat_min} to {lat_max}")
+        print(f"LNG RANGE: {lng_min} to {lng_max}")
+        
+                # ✅ ADD THIS: Check total events before filters
+        total_events = EventLocation.query.join(EventCoordinates).count()
+        print(f"Total events in DB: {total_events}")
 
         query = EventLocation.query.join(EventCoordinates).options(
             joinedload(EventLocation.event_coordinates),
@@ -2116,6 +2127,16 @@ def get_events_in_bounds():
             EventCoordinates.latitude.between(lat_min, lat_max),
             EventCoordinates.longitude.between(lng_min, lng_max),
         )
+                
+        # Check after coordinates filter
+        coords_filtered = query.filter(
+            EventCoordinates.latitude.between(lat_min, lat_max),
+            EventCoordinates.longitude.between(lng_min, lng_max),
+        ).all()
+        print(f"Events after coords filter: {len(coords_filtered)}")
+
+        for e in coords_filtered:
+            print(f"  - Event {e.id}: lat={e.event_coordinates.latitude}, lng={e.event_coordinates.longitude}, is_upcoming={e.is_upcoming}")
 
         # Category filter
         if data.get('category_ids'):
@@ -2125,12 +2146,15 @@ def get_events_in_bounds():
 
         # Status filter (in query, not Python)
         status = data.get('status_filter', 'upcoming')
+        print(f"STATUS FILTER: {status}")
+
         if status == 'upcoming':
             query = query.filter(EventLocation.is_upcoming == True)
         elif status == 'ongoing':
             query = query.filter(EventLocation.is_ongoing == True)
 
         events = query.all()
+        print(f"Events after status filter: {len(events)}")
 
         # Build response (Tier 1 - lightweight)
         map_events = [
