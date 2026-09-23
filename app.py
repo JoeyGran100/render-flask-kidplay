@@ -4254,28 +4254,39 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle user disconnection from Socket.IO server."""
-    sid = request.sid
-    
-    # Find which user this sid belongs to
-    disconnected_user = None
-    for user_id, user_sid in active_connections.items():
-        if user_sid == sid:
-            disconnected_user = user_id
-            break
-    
-    if disconnected_user:
-        del active_connections[disconnected_user]
+    try:
+        sid = request.sid
+        print(f"\n{'='*60}")
+        print(f"🔌 USER DISCONNECTED")
+        print(f"{'='*60}")
         
-        # 🔴 NEW: Also remove from map viewers if they were viewing map
-        if disconnected_user in map_viewers:
-            del map_viewers[disconnected_user]
-            leave_room('map')
+        # Find which user this sid belongs to
+        disconnected_user = None
+        for user_id, user_sid in list(active_connections.items()):  # ← Use list() to avoid modification during iteration
+            if user_sid == sid:
+                disconnected_user = user_id
+                break
         
-        print(f"🔌 User {disconnected_user} disconnected (sid: {sid})")
-        print(f"📊 Active connections: {len(active_connections)}")
-        print(f"📊 Active map viewers: {len(map_viewers)}")
-    else:
-        print(f"🔌 Unknown session {sid} disconnected")
+        if disconnected_user:
+            del active_connections[disconnected_user]
+            
+            # Remove from map viewers if they were viewing map
+            if disconnected_user in map_viewers:
+                del map_viewers[disconnected_user]
+                leave_room('map')
+            
+            print(f"✅ User {disconnected_user} disconnected (sid: {sid})")
+            print(f"📊 Active connections: {len(active_connections)}")
+            print(f"📊 Active map viewers: {len(map_viewers)}")
+        else:
+            print(f"⚠️ Unknown session {sid} disconnected")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_disconnect: {e}")
+        import traceback
+        traceback.print_exc()
         
 
 # ─────────────────────────────────────────────────────────────────────────────
