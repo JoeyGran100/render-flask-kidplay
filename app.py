@@ -2029,7 +2029,7 @@ def handle_join_map(data):
 
 
 @socketio.on('leave_map')
-def handle_leave_map():
+def handle_leave_map(data):  # ← Add this parameter
     """
     User is leaving the map. Remove them from the map room.
     """
