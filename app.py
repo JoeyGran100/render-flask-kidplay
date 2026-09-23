@@ -1848,7 +1848,6 @@ def get_organizer_public(organizer_id):
     }), 200
 
 
-
 @app.route('/organizer/<int:organizer_id>/approve', methods=['POST'])
 def approve_event_organizer(organizer_id):
     user = get_current_user_from_token()
@@ -1873,7 +1872,8 @@ def approve_event_organizer(organizer_id):
         return jsonify({'error': 'Failed to approve organizer'}), 500
 
     return jsonify({'message': 'Organizer approved', 'id': organizer.id}), 200
- 
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT ORGANIZER IMAGES ✅
 # ─────────────────────────────────────────────────────────────────────────────
