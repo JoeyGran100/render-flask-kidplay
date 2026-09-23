@@ -2101,86 +2101,46 @@ def get_events_in_bounds():
     try:
         data = request.get_json()
 
-        print("MAP BOUNDS REQUEST:", data)
-
         ne = data.get('northeast', {})
         sw = data.get('southwest', {})
 
-        print("NE:", ne)
-        print("SW:", sw)
+        if (ne.get('latitude') is None or ne.get('longitude') is None or
+            sw.get('latitude') is None or sw.get('longitude') is None):
+            return jsonify({'success': False, 'error': 'Invalid bounds'}), 400
 
-        if (
-            ne.get('lat') is None or
-            ne.get('lng') is None or
-            sw.get('lat') is None or
-            sw.get('lng') is None
-        ):
-            return jsonify({
-                'success': False,
-                'error': 'Invalid bounds'
-            }), 400
-
-        lat_min = min(float(ne['lat']), float(sw['lat']))
-        lat_max = max(float(ne['lat']), float(sw['lat']))
-        lng_min = min(float(ne['lng']), float(sw['lng']))
-        lng_max = max(float(ne['lng']), float(sw['lng']))
-
-        print("LAT:", lat_min, lat_max)
-        print("LNG:", lng_min, lng_max)
+        lat_min = min(float(ne['latitude']), float(sw['latitude']))
+        lat_max = max(float(ne['latitude']), float(sw['latitude']))
+        lng_min = min(float(ne['longitude']), float(sw['longitude']))
+        lng_max = max(float(ne['longitude']), float(sw['longitude']))
 
         query = EventLocation.query.join(EventCoordinates).options(
             joinedload(EventLocation.event_coordinates),
             joinedload(EventLocation.event_category),
-        )
-
-        query = query.filter(
+        ).filter(
             EventCoordinates.latitude.between(lat_min, lat_max),
             EventCoordinates.longitude.between(lng_min, lng_max),
         )
 
-        categories = data.get('category_ids')
-
-        if categories:
-            print("CATEGORY FILTER:", categories)
+        # Category filter
+        if data.get('category_ids'):
             query = query.filter(
-                EventLocation.event_category_id.in_(categories)
+                EventLocation.event_category_id.in_(data.get('category_ids'))
             )
+
+        # Status filter (in query, not Python)
+        status = data.get('status_filter', 'upcoming')
+        if status == 'upcoming':
+            query = query.filter(EventLocation.is_upcoming == True)
+        elif status == 'ongoing':
+            query = query.filter(EventLocation.is_ongoing == True)
 
         events = query.all()
 
-        print("EVENTS AFTER DATABASE QUERY:", len(events))
-
-        for event in events:
-            print(
-                "EVENT:",
-                event.id,
-                event.event_name,
-                "lat=", event.event_coordinates.latitude,
-                "lng=", event.event_coordinates.longitude,
-                "start=", event.start_time,
-                "end=", event.end_time,
-                "is_upcoming=", event.is_upcoming,
-                "is_ongoing=", event.is_ongoing,
-                "is_past=", event.is_past,
-            )
-
-        status = data.get('status_filter', 'upcoming')
-
-        print("STATUS FILTER:", status)
-
-        if status == 'upcoming':
-            events = [e for e in events if e.is_upcoming]
-
-        elif status == 'ongoing':
-            events = [e for e in events if e.is_ongoing]
-
-        print("EVENTS AFTER STATUS FILTER:", len(events))
-
+        # Build response (Tier 1 - lightweight)
         map_events = [
             {
                 'id': event.id,
-                'title': event.event_category.name
-                    if event.event_category else 'Event',
+                'title': event.event_category.name if event.event_category else 'Event',
                 'event_name': event.event_name,
                 'coordinate': {
                     'latitude': float(event.event_coordinates.latitude),
@@ -2188,24 +2148,14 @@ def get_events_in_bounds():
                 },
                 'address': event.event_coordinates.address,
                 'start_time': event.start_time.isoformat(),
-                'remaining_spots': max(
-                    0,
-                    event.max_attendees - event.total_participants
-                ),
+                'remaining_spots': max(0, event.max_attendees - event.total_participants),
                 'max_attendees': event.max_attendees,
                 'duration_minutes': event.duration_minutes,
                 'end_time': event.end_time.isoformat(),
                 'age_range': event.age_range,
-                'base_price': (
-                    float(event.base_price)
-                    if event.base_price else None
-                ),
+                'base_price': float(event.base_price) if event.base_price else None,
                 'currency': event.currency,
-                'status': (
-                    'ongoing'
-                    if event.is_ongoing
-                    else 'upcoming'
-                ),
+                'status': 'ongoing' if event.is_ongoing else 'upcoming',
             }
             for event in events
         ]
@@ -2218,11 +2168,7 @@ def get_events_in_bounds():
 
     except Exception as e:
         traceback.print_exc()
-
-        return jsonify({
-            'success': False,
-            'error': 'Internal server error'
-        }), 500
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
 
 # Shows a lightweight summary of an event for use in marker info windows on the map. 
