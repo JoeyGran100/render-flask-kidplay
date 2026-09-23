@@ -2005,18 +2005,17 @@ def handle_join_map(data):
         if not current_user_id:
             print(f"❌ FAILED: Unknown user")
             emit('error', {'message': 'Unauthorized'})
-            return
+            return  # ← ADD THIS: Return early
         
         # Add user to map viewers
         map_viewers[current_user_id] = sid
-        
-        # Join them to the 'map' room
         join_room('map')
         
         print(f"✅ User {current_user_id} joined map room")
         print(f"📊 Active map viewers: {len(map_viewers)}")
         print(f"{'='*60}\n")
         
+        # ✅ EMIT SUCCESS RESPONSE
         emit('map_joined', {
             'status': 'connected_to_map',
             'userId': current_user_id
@@ -2026,6 +2025,7 @@ def handle_join_map(data):
         print(f"❌ ERROR in handle_join_map: {e}")
         import traceback
         traceback.print_exc()
+        emit('error', {'message': str(e)})  # ← Send error to client
 
 
 @socketio.on('leave_map')
@@ -2067,28 +2067,24 @@ def broadcast_event_to_map(event_coordinates):
     Only coordinates - no event details.
     Full details loaded on-demand via REST API.
     """
-    print(f"\n{'='*60}")
-    print(f"📡 BROADCASTING MARKER (Tier 1 - Ultra-light)")
-    print(f"{'='*60}")
-    
     try:
         event_payload = {
             'id': event_coordinates.id,
-            'name': event_coordinates.name,
+            'title': event_coordinates.name,
+            'event_name': event_coordinates.name,
+            'coordinate': {
+                'latitude': float(event_coordinates.latitude),
+                'longitude': float(event_coordinates.longitude),
+            },
             'address': event_coordinates.address or "",
-            'latitude': float(event_coordinates.latitude),
-            'longitude': float(event_coordinates.longitude),
         }
         
         socketio.emit('new_event_on_map', event_payload, room='map')
-        
         print(f"✅ Broadcasted marker {event_coordinates.id}")
-        print(f"   Size: ~200 bytes per marker")
-        print(f"{'='*60}\n")
         
     except Exception as e:
-        print(f"❌ ERROR: {e}")
-        traceback.print_exc()
+        print(f"❌ ERROR broadcasting event: {e}")
+        traceback.print_exc()  # ← Log full traceback
         
 
 # ─────────────────────────────────────────────────────────────────────────────
