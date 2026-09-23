@@ -2147,11 +2147,16 @@ def get_events_in_bounds():
         # Status filter (in query, not Python)
         status = data.get('status_filter', 'upcoming')
         print(f"STATUS FILTER: {status}")
+        
+        now = datetime.now(timezone.utc)
 
         if status == 'upcoming':
-            query = query.filter(EventLocation.is_upcoming)  # ← Changed
+            query = query.filter(EventLocation.start_time > now)  # ← Filter by column
         elif status == 'ongoing':
-            query = query.filter(EventLocation.is_ongoing)   # ← Changed
+            query = query.filter(
+                EventLocation.start_time <= now,
+                (EventLocation.end_time >= now) | (EventLocation.end_time == None)
+    )
 
         events = query.all()
         print(f"Events after status filter: {len(events)}")
