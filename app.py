@@ -535,7 +535,7 @@ class Ticket(db.Model):
     @property
     def is_checked_in(self) -> bool:
         return CheckIn.query.filter_by(
-            parent_id=self.attendance.parent_id,
+            user_id=self.attendance.parent_id, 
             location_id=self.attendance.location_id
         ).first() is not None
 
