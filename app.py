@@ -3282,6 +3282,7 @@ def get_tickets():
             # Event Location Details
             'event': {
                 'id':                t.attendance.location.id,
+                'event_name':        t.attendance.location.event_name,  # ✅ ADD THIS
                 'start_time':        t.attendance.location.start_time.isoformat(),
                 'end_time':          t.attendance.location.end_time.isoformat() if t.attendance.location.end_time else None,
                 'duration_minutes':  t.attendance.location.duration_minutes,
