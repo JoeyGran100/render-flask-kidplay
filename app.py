@@ -3238,12 +3238,14 @@ def get_tickets():
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    # Re-fetch user with all relationships eager-loaded to avoid N+1 queries
+    # Re-fetch user with all relationships eager-loaded
     user = (
         db.session.query(User)
         .options(
             db.joinedload(User.attendances)
             .joinedload(Attendance.ticket),
+            db.joinedload(User.attendances)
+            .joinedload(Attendance.location),
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
             .joinedload(EventLocation.event_coordinates),
@@ -3265,8 +3267,9 @@ def get_tickets():
     # Collect tickets through attendances
     tickets = [a.ticket for a in user.attendances if a.ticket]
     
-    return jsonify([
-        {
+    # Helper function to format ticket
+    def format_ticket(t):
+        return {
             # Ticket info
             'id':           t.id,
             'ticket_uid':   t.ticket_uid,
@@ -3282,7 +3285,7 @@ def get_tickets():
             # Event Location Details
             'event': {
                 'id':                t.attendance.location.id,
-                'event_name':        t.attendance.location.event_name,  # ✅ ADD THIS
+                'event_name':        t.attendance.location.event_name,
                 'start_time':        t.attendance.location.start_time.isoformat(),
                 'end_time':          t.attendance.location.end_time.isoformat() if t.attendance.location.end_time else None,
                 'duration_minutes':  t.attendance.location.duration_minutes,
@@ -3297,8 +3300,8 @@ def get_tickets():
                 'base_price':        float(t.attendance.location.base_price) if t.attendance.location.base_price else None,
             },
             
-            # Event Coordinates Details
-            'eventCoordinates': {
+            # Venue/Coordinates (renamed from event_coordinates) ✅
+            'venue': {
                 'id':        t.attendance.location.event_coordinates.id,
                 'address':   t.attendance.location.event_coordinates.address,
                 'latitude':  t.attendance.location.event_coordinates.latitude,
@@ -3314,8 +3317,17 @@ def get_tickets():
                 'gender':    user.parent_profile.gender.value if user.parent_profile and user.parent_profile.gender else None,
             }
         }
-        for t in tickets
-    ]), 200
+    
+    # Separate active and expired tickets ✅
+    active_tickets = [format_ticket(t) for t in tickets if t.status == "active"]
+    expired_tickets = [format_ticket(t) for t in tickets if t.status != "active"]
+    
+    # Return wrapped in MyTicketsResponseDto structure ✅
+    return jsonify({
+        'active_tickets': active_tickets,
+        'expired_tickets': expired_tickets,
+        'created_events': []  # TODO: Implement if needed
+    }), 200
  
  
 @app.route('/tickets', methods=['POST'])
