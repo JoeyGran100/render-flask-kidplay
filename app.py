@@ -1053,10 +1053,9 @@ def verify_rotating_token(token: str) -> tuple[bool, str | None]:
 def send_qr_to_ticket(ticket_uid: str):
     """
     Generate new token and push to subscribers.
-    QR code rendering is done by clients (best practice).
+    ✅ Only the token is sent - QR code rendering is done by clients.
     """
     try:
-        # Fetch ticket to verify it's still valid
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
         if not ticket or ticket.is_expired or ticket.status == 'cancelled':
             app.logger.warning(f"Cannot send QR: ticket {ticket_uid} is inactive")
@@ -1067,7 +1066,7 @@ def send_qr_to_ticket(ticket_uid: str):
             }, room=room)
             return
         
-        # Generate new token
+        # Generate new token (not QR bitmap)
         token = generate_rotating_token(ticket.ticket_uid)
         
         # Calculate time until expiry
@@ -1075,11 +1074,10 @@ def send_qr_to_ticket(ticket_uid: str):
         current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
         expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
         
-        # ✅ Send only token - frontend will generate QR
+        # ✅ Send only token - frontend generates QR bitmap
         room = f"ticket:{ticket_uid}"
         socketio.emit('qr/update', {
             'token': token,
-            # ❌ Removed 'qr_base64' - frontend generates it
             'expires_in_ms': expires_in_ms,
             'window_seconds': WINDOW_SECONDS,
             'generated_at': now
@@ -1089,11 +1087,6 @@ def send_qr_to_ticket(ticket_uid: str):
         
     except Exception as e:
         app.logger.exception(f"Error sending QR to {ticket_uid}: {e}")
-        room = f"ticket:{ticket_uid}"
-        socketio.emit('qr/error', {
-            'message': 'Failed to generate token',
-            'ticket_uid': ticket_uid
-        }, room=room)
 
 
 def refresh_qr_codes_background():
