@@ -3298,7 +3298,7 @@ def get_tickets():
             },
             
             # Event Coordinates Details
-            'event_coordinates': {
+            'eventCoordinates': {
                 'id':        t.attendance.location.event_coordinates.id,
                 'address':   t.attendance.location.event_coordinates.address,
                 'latitude':  t.attendance.location.event_coordinates.latitude,
