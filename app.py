@@ -1587,12 +1587,6 @@ def broadcast_event_to_map(event_coordinates):
 def handle_qr_subscribe(data):
     """
     Ticket holder: "Start sending me rotating QR codes for this ticket"
-    
-    Expected data:
-    {
-        'ticket_uid': 'uuid-of-ticket',
-        'auth_token': 'jwt-token' (optional, we can get it from headers)
-    }
     """
     print(f"\n{'='*60}")
     print(f"📲 QR SUBSCRIPTION REQUEST")
@@ -1628,7 +1622,8 @@ def handle_qr_subscribe(data):
             emit('error', {'message': 'Ticket not found'})
             return
         
-        if ticket.attendance.user_id != user_id:
+        # ✅ FIXED: Use parent_id instead of user_id
+        if ticket.attendance.parent_id != user_id:
             print(f"❌ REJECTED: User {user_id} does not own ticket {ticket_uid}")
             emit('error', {'message': 'Unauthorized'})
             return
