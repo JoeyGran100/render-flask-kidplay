@@ -3301,7 +3301,7 @@ def get_tickets():
             },
             
             # Venue/Coordinates (renamed from event_coordinates) ✅
-            'venue': {
+            'event_coordinates': {
                 'id':        t.attendance.location.event_coordinates.id,
                 'address':   t.attendance.location.event_coordinates.address,
                 'latitude':  t.attendance.location.event_coordinates.latitude,
