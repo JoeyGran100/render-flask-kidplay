@@ -1,4 +1,5 @@
 import re, os
+from threading import Thread
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit, leave_room, join_room
@@ -34,13 +35,32 @@ logging.basicConfig(
         logging.StreamHandler()  # Also print to console
     ]
 )
-
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# FLASK APP INITIALIZATION
+# ============================================================================
+
 app = Flask(__name__)
-app.config[
-    'SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_8_user:YozEdj5pE0zkZSKxajPhNV8I1M1mR7ov@dpg-dapbsvid0e5s73fae0mg-a.frankfurt-postgres.render.com/kidplay_render_database_8"
+
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_8_user:YozEdj5pE0zkZSKxajPhNV8I1M1mR7ov@dpg-dapbsvid0e5s73fae0mg-a.frankfurt-postgres.render.com/kidplay_render_database_8"
+
+app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
+
+
+# ============================================================================
+# DATABASE & EXTENSIONS
+# ============================================================================
+
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
+bcrypt = Bcrypt()
+
+
+# ============================================================================
+# SOCKETIO INITIALIZATION
+# ============================================================================
 
 # ✅ UPDATE Socket.IO INITIALIZATION
 socketio = SocketIO(
@@ -48,16 +68,11 @@ socketio = SocketIO(
     cors_allowed_origins="*",  # Update to specific domain in production
     async_mode='threading'      # Use 'gevent' for production
 )
- 
-# ✅ ADD GLOBAL ACTIVE CONNECTIONS TRACKER
-active_connections = {}  # Format: { user_id: sid, ... }
 
-db = SQLAlchemy(app)
-migrate = Migrate(app, db)  # 2️⃣ migrate second, now db exists
-bcrypt = Bcrypt()
-# Store active connections: user_id -> sid (session id)
 
-app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
+# ============================================================================
+# CONFIGURATION & CONSTANTS
+# ============================================================================
 SECRET_KEY = app.config['SECRET_KEY'].encode()
 
 def _derive_key(purpose: str) -> bytes:
@@ -65,8 +80,16 @@ def _derive_key(purpose: str) -> bytes:
     return hmac.new(SECRET_KEY, purpose.encode(), hashlib.sha256).digest()
 
 QR_KEY = _derive_key("qr_signing")   # isolated subkey, no separate env var needed
-
 WINDOW_SECONDS = 15
+
+
+# ============================================================================
+# GLOBAL STATE
+# ============================================================================
+active_connections = {}  # Format: { user_id: sid, ... }
+active_qr_subscriptions = {}  # ticket_uid -> [sids]
+map_viewers = {}  # user_id -> sid
+qr_refresh_thread = None  # Will be assigned after function is defined
 
 
 # SWISH_CERT          = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])
@@ -830,7 +853,10 @@ with app.app_context():
     db.create_all()
 
 
-# DEF FUNCTIONS
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
 
 def create_token(user):
     payload = {
@@ -1038,6 +1064,660 @@ def token_to_qr_base64(token: str) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+def send_qr_to_ticket(ticket_uid: str):
+    """
+    Generate new QR token and push to all subscribers of this ticket.
+    Can be called from background thread or on-demand.
+    """
+    try:
+        # Fetch ticket to verify it's still valid
+        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+        if not ticket or ticket.is_expired or ticket.status == 'cancelled':
+            app.logger.warning(f"Cannot send QR: ticket {ticket_uid} is inactive")
+            # Notify clients: your ticket is no longer valid
+            room = f"ticket:{ticket_uid}"
+            socketio.emit('qr/ticket_inactive', {
+                'ticket_uid': ticket_uid,
+                'reason': 'expired' if ticket and ticket.is_expired else 'cancelled'
+            }, room=room)
+            return
+        
+        # Generate new token
+        token = generate_rotating_token(ticket.ticket_uid)
+        
+        # Calculate time until expiry
+        now = time.time()
+        current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
+        expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+        
+        # Generate QR image as base64
+        qr_base64 = token_to_qr_base64(token)
+        
+        # Emit to all subscribers
+        room = f"ticket:{ticket_uid}"
+        socketio.emit('qr/update', {
+            'token': token,
+            'qr_base64': qr_base64,  # Base64-encoded PNG image
+            'expires_in_ms': expires_in_ms,
+            'window_seconds': WINDOW_SECONDS,
+            'generated_at': now
+        }, room=room)
+        
+        app.logger.info(f"Sent QR update to {ticket_uid} (expires in {expires_in_ms}ms)")
+        
+    except Exception as e:
+        app.logger.exception(f"Error sending QR to {ticket_uid}: {e}")
+        room = f"ticket:{ticket_uid}"
+        socketio.emit('qr/error', {
+            'message': 'Failed to generate QR code',
+            'ticket_uid': ticket_uid
+        }, room=room)
+
+
+def refresh_qr_codes_background():
+    """
+    Background task: Refresh all active QR codes before they expire.
+    
+    Window is 15 seconds, so we refresh every ~10 seconds to be safe.
+    This gives clients 5 seconds buffer before the current token expires.
+    """
+    print(f"\n{'='*60}")
+    print(f"🔄 QR Refresh Background Task Started")
+    print(f"{'='*60}\n")
+    
+    while True:
+        try:
+            time.sleep(10)  # Refresh every 10 seconds (15s window - 5s buffer)
+            
+            if not active_qr_subscriptions:
+                # No active subscriptions, skip this cycle
+                continue
+            
+            print(f"🔄 Refreshing {len(active_qr_subscriptions)} active QR codes...")
+            
+            # Refresh each ticket that has subscribers
+            for ticket_uid in list(active_qr_subscriptions.keys()):
+                send_qr_to_ticket(ticket_uid)
+            
+            print(f"✅ Refresh cycle complete\n")
+            
+        except Exception as e:
+            app.logger.exception(f"Error in QR refresh thread: {e}")
+            print(f"❌ Error in refresh cycle: {e}\n")
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO EVENT HANDLERS - CONNECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@socketio.on('connect')
+def handle_connect():
+    """
+    Handle user connection to Socket.IO server.
+    Authenticates user via JWT token and tracks connection.
+    """
+    print(f"\n{'='*60}")
+    print(f"🔗 NEW CONNECTION REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get token from query params or headers
+        token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+        print(f"🔑 Token received: {token[:20]}..." if token else "❌ No token provided")
+        
+        if not token:
+            print(f"❌ REJECTED: No authentication token")
+            return False
+        
+        # Decode token to get user
+        try:
+            decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            user_id = decoded.get('user_id')
+            print(f"✅ Token decoded successfully, user_id: {user_id}")
+        except jwt.InvalidTokenError as e:
+            print(f"❌ REJECTED: Invalid token - {e}")
+            return False
+        
+        # Get user from database
+        user = User.query.get(user_id)
+        if not user:
+            print(f"❌ REJECTED: User not found (id: {user_id})")
+            return False
+        
+        # Track this connection
+        sid = request.sid
+        active_connections[user_id] = sid
+        print(f"✅ ACCEPTED: User {user_id} connected (sid: {sid})")
+        print(f"📊 Active connections: {len(active_connections)}")
+        print(f"{'='*60}\n")
+        
+        # Emit confirmation to client
+        emit('connection_response', {
+            'status': 'connected',
+            'userId': user_id,
+            'message': f'Successfully connected as user {user_id}'
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR during connect: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle user disconnection from Socket.IO server."""
+    try:
+        sid = request.sid
+        print(f"\n{'='*60}")
+        print(f"🔌 USER DISCONNECTED")
+        print(f"{'='*60}")
+        
+        # Find which user this sid belongs to
+        disconnected_user = None
+        for user_id, user_sid in list(active_connections.items()):
+            if user_sid == sid:
+                disconnected_user = user_id
+                break
+        
+        if disconnected_user:
+            del active_connections[disconnected_user]
+            
+            # Remove from map viewers if they were viewing map
+            if disconnected_user in map_viewers:
+                del map_viewers[disconnected_user]
+                leave_room('map')
+            
+            print(f"✅ User {disconnected_user} disconnected (sid: {sid})")
+            print(f"📊 Active connections: {len(active_connections)}")
+        else:
+            print(f"⚠️ Unknown session {sid} disconnected")
+        
+        # ✅ NEW: Also remove from all QR subscriptions
+        for ticket_uid in list(active_qr_subscriptions.keys()):
+            if sid in active_qr_subscriptions[ticket_uid]:
+                active_qr_subscriptions[ticket_uid].remove(sid)
+                print(f"✅ Removed {sid} from QR subscriptions for {ticket_uid}")
+                
+                # Clean up empty subscriptions
+                if not active_qr_subscriptions[ticket_uid]:
+                    del active_qr_subscriptions[ticket_uid]
+                    print(f"🧹 No more subscribers for {ticket_uid}, cleaned up")
+        
+        print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        app.logger.exception(f"ERROR in handle_disconnect: {e}")
+        import traceback
+        traceback.print_exc()
+        
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO EVENT HANDLERS - MESSAGING
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    """
+    Handle real-time message sending via Socket.IO.
+    Saves to database and emits to recipient.
+    """
+    print(f"\n{'='*60}")
+    print(f"💬 MESSAGE SEND REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get current user from active connections
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown sender (sid: {sid})")
+            emit('error', {'message': 'Unauthorized - connection not authenticated'})
+            return
+        
+        print(f"👤 Sender: {current_user_id}")
+        
+        # Parse message data
+        conversation_id = data.get('conversationId')
+        receiver_id = data.get('receiverId')
+        message_text = data.get('message')
+        reply_to_id = data.get('replyToId')
+        image_url = data.get('imageUrl')
+        
+        print(f"📝 Data: convo={conversation_id}, receiver={receiver_id}, msg_len={len(message_text) if message_text else 0}")
+        
+        # Validate required fields
+        if not conversation_id or not receiver_id or not message_text:
+            print(f"❌ VALIDATION FAILED: Missing required fields")
+            emit('error', {'message': 'conversationId, receiverId, and message are required'})
+            return
+        
+        # Verify conversation exists and user is part of it
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            print(f"❌ FAILED: Conversation {conversation_id} not found")
+            emit('error', {'message': 'Conversation not found'})
+            return
+        
+        if (conversation.user_id != current_user_id and 
+            conversation.other_user_id != current_user_id):
+            print(f"❌ FAILED: User {current_user_id} not part of conversation")
+            emit('error', {'message': 'Unauthorized - not part of this conversation'})
+            return
+        
+        # Create message in database
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=current_user_id,
+            receiver_id=receiver_id,
+            message=message_text,
+            reply_to_id=reply_to_id,
+            image_url=image_url,
+        )
+        
+        db.session.add(message)
+        db.session.commit()
+        
+        print(f"✅ Message {message.id} saved to database")
+        
+        # Build message response object
+        message_response = {
+            'id': message.id,
+            'conversationId': conversation_id,
+            'senderId': current_user_id,
+            'receiverId': receiver_id,
+            'message': message_text,
+            'imageUrl': image_url,
+            'replyToId': reply_to_id,
+            'timestamp': message.timestamp.isoformat(),
+            'isRead': False
+        }
+        
+        # Emit to sender (confirmation)
+        emit('message_sent', message_response)
+        print(f"✅ Sent confirmation to sender")
+        
+        # Emit to receiver if they're online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            print(f"📤 Receiver {receiver_id} is online (sid: {receiver_sid})")
+            
+            socketio.emit('new_message', message_response, room=receiver_sid)
+            print(f"✅ Emitted new_message to receiver")
+        else:
+            print(f"⚠️  Receiver {receiver_id} is offline (message saved)")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_send_message: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('error', {'message': f'Error sending message: {str(e)}'})
+        db.session.rollback()
+ 
+ 
+@socketio.on('mark_as_read')
+def handle_mark_as_read(data):
+    """Mark a message as read."""
+    print(f"\n{'='*60}")
+    print(f"📖 MARK AS READ REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get current user from active connections
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown user")
+            return
+        
+        message_id = data.get('messageId')
+        conversation_id = data.get('conversationId')
+        
+        print(f"👤 User: {current_user_id}")
+        print(f"📝 Message: {message_id}, Conversation: {conversation_id}")
+        
+        # Get message
+        message = Message.query.get(message_id)
+        if not message:
+            print(f"❌ Message not found")
+            return
+        
+        # Verify user is the receiver
+        if message.receiver_id != current_user_id:
+            print(f"❌ User is not the receiver of this message")
+            return
+        
+        # Mark as read
+        message.is_read = True
+        db.session.commit()
+        
+        print(f"✅ Message marked as read")
+        
+        # Notify sender that message was read
+        if message.sender_id in active_connections:
+            sender_sid = active_connections[message.sender_id]
+            socketio.emit('message_read', {
+                'messageId': message_id,
+                'conversationId': conversation_id,
+                'readBy': current_user_id,
+                'readAt': datetime.utcnow().isoformat()
+            }, room=sender_sid)
+            print(f"✅ Notified sender that message was read")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_mark_as_read: {e}")
+        import traceback
+        traceback.print_exc()
+ 
+ 
+@socketio.on('user_typing')
+def handle_user_typing(data):
+    """Broadcast that a user is typing."""
+    try:
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            return
+        
+        receiver_id = data.get('receiverId')
+        conversation_id = data.get('conversationId')
+        
+        # Notify receiver if online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            socketio.emit('user_is_typing', {
+                'conversationId': conversation_id,
+                'typingUserId': current_user_id
+            }, room=receiver_sid)
+        
+    except Exception as e:
+        print(f"ERROR in handle_user_typing: {e}")
+ 
+ 
+@socketio.on('user_stopped_typing')
+def handle_user_stopped_typing(data):
+    """Broadcast that a user stopped typing."""
+    try:
+        sid = request.sid
+        current_user_id = None
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            return
+        
+        receiver_id = data.get('receiverId')
+        conversation_id = data.get('conversationId')
+        
+        # Notify receiver if online
+        if receiver_id in active_connections:
+            receiver_sid = active_connections[receiver_id]
+            socketio.emit('user_stopped_typing', {
+                'conversationId': conversation_id,
+                'typingUserId': current_user_id
+            }, room=receiver_sid)
+        
+    except Exception as e:
+        print(f"ERROR in handle_user_stopped_typing: {e}")
+ 
+     
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO EVENT HANDLERS - MAPS & EVENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@socketio.on('join_map')
+def handle_join_map(data):
+    """
+    User is viewing the map. Add them to the map room.
+    They'll receive real-time event updates.
+    """
+    print(f"\n{'='*60}")
+    print(f"🗺️  USER JOINED MAP")
+    print(f"{'='*60}")
+    
+    try:
+        sid = request.sid
+        current_user_id = None
+        
+        # Find current user from active connections
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if not current_user_id:
+            print(f"❌ FAILED: Unknown user")
+            emit('error', {'message': 'Unauthorized'})
+            return  # ← ADD THIS: Return early
+        
+        # Add user to map viewers
+        map_viewers[current_user_id] = sid
+        join_room('map')
+        
+        print(f"✅ User {current_user_id} joined map room")
+        print(f"📊 Active map viewers: {len(map_viewers)}")
+        print(f"{'='*60}\n")
+        
+        # ✅ EMIT SUCCESS RESPONSE
+        emit('map_joined', {
+            'status': 'connected_to_map',
+            'userId': current_user_id
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_join_map: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('error', {'message': str(e)})  # ← Send error to client
+
+
+@socketio.on('leave_map')
+def handle_leave_map(data):  # ← Add this parameter
+    """
+    User is leaving the map. Remove them from the map room.
+    """
+    print(f"\n{'='*60}")
+    print(f"🗺️  USER LEFT MAP")
+    print(f"{'='*60}")
+    
+    try:
+        sid = request.sid
+        current_user_id = None
+        
+        # Find current user
+        for user_id, user_sid in active_connections.items():
+            if user_sid == sid:
+                current_user_id = user_id
+                break
+        
+        if current_user_id and current_user_id in map_viewers:
+            del map_viewers[current_user_id]
+            leave_room('map')
+            print(f"✅ User {current_user_id} left map room")
+            print(f"📊 Active map viewers: {len(map_viewers)}")
+        
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"❌ ERROR in handle_leave_map: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def broadcast_event_to_map(event_coordinates):
+    """
+    Tier 1: ULTRA-LIGHTWEIGHT
+    Only coordinates - no event details.
+    Full details loaded on-demand via REST API.
+    """
+    try:
+        event_payload = {
+            'id': event_coordinates.id,
+            'title': event_coordinates.name,
+            'event_name': event_coordinates.name,
+            'coordinate': {
+                'latitude': float(event_coordinates.latitude),
+                'longitude': float(event_coordinates.longitude),
+            },
+            'address': event_coordinates.address or "",
+        }
+        
+        socketio.emit('new_event_on_map', event_payload, room='map')
+        print(f"✅ Broadcasted marker {event_coordinates.id}")
+        
+    except Exception as e:
+        print(f"❌ ERROR broadcasting event: {e}")
+        traceback.print_exc()  # ← Log full traceback
+        
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOCKET.IO QR CODE SUBSCRIPTION HANDLERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@socketio.on('qr/subscribe')
+def handle_qr_subscribe(data):
+    """
+    Ticket holder: "Start sending me rotating QR codes for this ticket"
+    
+    Expected data:
+    {
+        'ticket_uid': 'uuid-of-ticket',
+        'auth_token': 'jwt-token' (optional, we can get it from headers)
+    }
+    """
+    print(f"\n{'='*60}")
+    print(f"📲 QR SUBSCRIPTION REQUEST")
+    print(f"{'='*60}")
+    
+    try:
+        # Get auth from data or headers
+        auth_token = data.get('auth_token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+        ticket_uid = data.get('ticket_uid')
+        
+        if not ticket_uid or not auth_token:
+            print(f"❌ REJECTED: Missing ticket_uid or auth_token")
+            emit('error', {'message': 'Missing ticket_uid or auth_token'})
+            return
+        
+        print(f"🎟️  Ticket UID: {ticket_uid}")
+        
+        # Decode token to get user_id
+        try:
+            decoded = jwt.decode(auth_token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            user_id = decoded.get('user_id')
+        except jwt.InvalidTokenError as e:
+            print(f"❌ REJECTED: Invalid token - {e}")
+            emit('error', {'message': 'Invalid auth token'})
+            return
+        
+        print(f"👤 User ID: {user_id}")
+        
+        # Verify ticket exists and belongs to this user
+        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+        if not ticket:
+            print(f"❌ REJECTED: Ticket not found")
+            emit('error', {'message': 'Ticket not found'})
+            return
+        
+        if ticket.attendance.user_id != user_id:
+            print(f"❌ REJECTED: User {user_id} does not own ticket {ticket_uid}")
+            emit('error', {'message': 'Unauthorized'})
+            return
+        
+        if ticket.is_expired or ticket.status == 'cancelled':
+            print(f"❌ REJECTED: Ticket is inactive (expired={ticket.is_expired}, status={ticket.status})")
+            emit('error', {'message': 'Ticket is not active'})
+            return
+        
+        # Subscribe: join a room for this ticket
+        room = f"ticket:{ticket_uid}"
+        join_room(room)
+        
+        # Track this subscription
+        if ticket_uid not in active_qr_subscriptions:
+            active_qr_subscriptions[ticket_uid] = []
+        active_qr_subscriptions[ticket_uid].append(request.sid)
+        
+        print(f"✅ ACCEPTED: User {user_id} subscribed to QR updates for {ticket_uid}")
+        print(f"🔔 Active subscriptions on {ticket_uid}: {len(active_qr_subscriptions[ticket_uid])}")
+        print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
+        print(f"{'='*60}\n")
+        
+        # Immediately send current QR code (don't wait for refresh cycle)
+        send_qr_to_ticket(ticket_uid)
+        
+        # Confirm subscription
+        emit('qr/subscribed', {
+            'status': 'subscribed',
+            'ticket_uid': ticket_uid,
+            'message': f'Subscribed to QR updates for {ticket_uid}'
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR in qr/subscribe: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('error', {'message': 'Subscription failed'})
+
+
+@socketio.on('qr/unsubscribe')
+def handle_qr_unsubscribe(data):
+    """Ticket holder: Stop sending me QR codes"""
+    ticket_uid = data.get('ticket_uid')
+    
+    if not ticket_uid:
+        return
+    
+    room = f"ticket:{ticket_uid}"
+    leave_room(room)
+    
+    # Remove from tracking
+    if ticket_uid in active_qr_subscriptions:
+        try:
+            active_qr_subscriptions[ticket_uid].remove(request.sid)
+            if not active_qr_subscriptions[ticket_uid]:
+                del active_qr_subscriptions[ticket_uid]
+        except ValueError:
+            pass
+    
+    print(f"✅ User unsubscribed from {ticket_uid}")
+    print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
+
+
+# ============================================================================
+# START BACKGROUND THREAD (after function is defined!)
+# ============================================================================
+qr_refresh_thread = Thread(target=refresh_qr_codes_background, daemon=True)
+qr_refresh_thread.start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1974,121 +2654,8 @@ def post_event_category():
     return jsonify({'message': 'Category created', 'id': category.id}), 201
  
 
- 
 # ─────────────────────────────────────────────────────────────────────────────
-# SOCKET.IO EVENT HANDLERS - MAPS & EVENTS
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Track which users are viewing the map
-map_viewers = {}  # user_id -> sid
-
-@socketio.on('join_map')
-def handle_join_map(data):
-    """
-    User is viewing the map. Add them to the map room.
-    They'll receive real-time event updates.
-    """
-    print(f"\n{'='*60}")
-    print(f"🗺️  USER JOINED MAP")
-    print(f"{'='*60}")
-    
-    try:
-        sid = request.sid
-        current_user_id = None
-        
-        # Find current user from active connections
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if not current_user_id:
-            print(f"❌ FAILED: Unknown user")
-            emit('error', {'message': 'Unauthorized'})
-            return  # ← ADD THIS: Return early
-        
-        # Add user to map viewers
-        map_viewers[current_user_id] = sid
-        join_room('map')
-        
-        print(f"✅ User {current_user_id} joined map room")
-        print(f"📊 Active map viewers: {len(map_viewers)}")
-        print(f"{'='*60}\n")
-        
-        # ✅ EMIT SUCCESS RESPONSE
-        emit('map_joined', {
-            'status': 'connected_to_map',
-            'userId': current_user_id
-        })
-        
-    except Exception as e:
-        print(f"❌ ERROR in handle_join_map: {e}")
-        import traceback
-        traceback.print_exc()
-        emit('error', {'message': str(e)})  # ← Send error to client
-
-
-@socketio.on('leave_map')
-def handle_leave_map(data):  # ← Add this parameter
-    """
-    User is leaving the map. Remove them from the map room.
-    """
-    print(f"\n{'='*60}")
-    print(f"🗺️  USER LEFT MAP")
-    print(f"{'='*60}")
-    
-    try:
-        sid = request.sid
-        current_user_id = None
-        
-        # Find current user
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if current_user_id and current_user_id in map_viewers:
-            del map_viewers[current_user_id]
-            leave_room('map')
-            print(f"✅ User {current_user_id} left map room")
-            print(f"📊 Active map viewers: {len(map_viewers)}")
-        
-        print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"❌ ERROR in handle_leave_map: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-def broadcast_event_to_map(event_coordinates):
-    """
-    Tier 1: ULTRA-LIGHTWEIGHT
-    Only coordinates - no event details.
-    Full details loaded on-demand via REST API.
-    """
-    try:
-        event_payload = {
-            'id': event_coordinates.id,
-            'title': event_coordinates.name,
-            'event_name': event_coordinates.name,
-            'coordinate': {
-                'latitude': float(event_coordinates.latitude),
-                'longitude': float(event_coordinates.longitude),
-            },
-            'address': event_coordinates.address or "",
-        }
-        
-        socketio.emit('new_event_on_map', event_payload, room='map')
-        print(f"✅ Broadcasted marker {event_coordinates.id}")
-        
-    except Exception as e:
-        print(f"❌ ERROR broadcasting event: {e}")
-        traceback.print_exc()  # ← Log full traceback
-        
-
-# ─────────────────────────────────────────────────────────────────────────────
-# EVENT LOCATIONS ✅
+# EVENT LOCATIONS ✅ / GOOGLE MAPS ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -2535,98 +3102,6 @@ def post_event():
     return jsonify({'message': 'Event created', 'id': event.id}), 201
 
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GOOGLE MAPS  ✅
-# ─────────────────────────────────────────────────────────────────────────────
- 
- 
-"""
-NEW ENDPOINT: Lightweight map data
-Returns only what's needed for Google Maps clustering/markers
-"""
-
-# Can be deleted!!!
-# @app.route('/events/map', methods=['GET'])
-# def get_events_for_map():
-#     try:
-#         # Base query with explicit join for filtering
-#         query = EventLocation.query.join(EventCoordinates).options(
-#             joinedload(EventLocation.event_coordinates),
-#             joinedload(EventLocation.event_category),
-#         )
-        
-#         # Optional: Filter by viewport bounds (database-level)
-#         bounds = request.args.get('bounds')
-#         if bounds:
-#             try:
-#                 lat1, lng1, lat2, lng2 = map(float, bounds.split(','))
-#                 query = query.filter(
-#                     EventCoordinates.latitude.between(min(lat1, lat2), max(lat1, lat2)),
-#                     EventCoordinates.longitude.between(min(lng1, lng2), max(lng1, lng2))
-#                 )
-#             except (ValueError, IndexError):
-#                 pass
-        
-#         # Optional: Filter by category
-#         category_ids = request.args.get('category_id')
-#         if category_ids:
-#             try:
-#                 ids = [int(x.strip()) for x in category_ids.split(',')]
-#                 query = query.filter(EventLocation.event_category_id.in_(ids))
-#             except ValueError:
-#                 pass
-        
-#         all_events = query.all()
-        
-#         # Filter for ACTIVE events in Python
-#         now = datetime.now(timezone.utc)
-#         active_events = [event for event in all_events if not event.is_past]
-        
-#         map_events = [
-#             {
-#                 'id': event.id,
-#                 'title': event.event_category.name if event.event_category else 'Event',
-#                 'name': event.event_coordinates.name if event.event_coordinates.name else 'Event',
-#                 'event_name': event.event_name,
-#                 'coordinate': {
-#                     'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else 0.0,
-#                     'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else 0.0,
-#                 },
-#                 'event_name': event.event_name,
-#                 'address': event.event_coordinates.address if event.event_coordinates.address else 'Event',
-#                 'start_time': event.start_time.isoformat(),
-#                 'remaining_spots': max(0, event.max_attendees - event.total_participants),
-#                 'max_attendees': event.max_attendees,
-#                 'duration_minutes': event.duration_minutes,
-#                 'end_time': event.end_time.isoformat(),
-#                 'age_range': event.age_range,
-#                 'base_price': float(event.base_price) if event.base_price else None,
-#                 'currency': event.currency,
-#                 'status': (
-#                     'ongoing' if event.is_ongoing
-#                     else 'upcoming' if event.is_upcoming
-#                     else 'past'
-#                 ),
-#             }
-#             for event in active_events
-#         ]
-        
-#         return jsonify({
-#             'success': True,
-#             'count': len(map_events),
-#             'events': map_events
-#         }), 200
-        
-#     except Exception as e:
-#         traceback.print_exc()
-#         return jsonify({
-#             'success': False,
-#             'error': 'Internal server error'
-#         }), 500
-
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ATTENDANCE ✅
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2958,91 +3433,105 @@ def get_created_events():
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
-# @app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
-# def get_rotating_qr(ticket_uid: str):
-#     app.logger.debug(f"GET /ticket/{ticket_uid}/rotating_qr - Request received")
+@app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
+def get_rotating_qr(ticket_uid: str):
+    app.logger.debug(f"GET /ticket/{ticket_uid}/rotating_qr - Request received")
     
-#     user = get_current_user_from_token()
-#     if not user:
-#         app.logger.warning(f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}")
-#         return jsonify({'message': 'Unauthorized'}), 401
+    user = get_current_user_from_token()
+    if not user:
+        app.logger.warning(f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}")
+        return jsonify({'message': 'Unauthorized'}), 401
 
-#     app.logger.debug(f"User {user.id} requesting rotating QR for ticket={ticket_uid}")
+    app.logger.debug(f"User {user.id} requesting rotating QR for ticket={ticket_uid}")
 
-#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
-#     app.logger.debug(f"Ticket found: {ticket_uid}, attendance_user_id={ticket.attendance.user_id}")
+    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
+    app.logger.debug(f"Ticket found: {ticket_uid}, attendance_user_id={ticket.attendance.user_id}")
 
-#     if ticket.attendance.user_id != user.id:
-#         app.logger.warning(
-#             f"Forbidden: User {user.id} attempted to access ticket {ticket_uid} "
-#             f"owned by user {ticket.attendance.user_id}"
-#         )
-#         return jsonify({'message': 'Forbidden'}), 403
+    if ticket.attendance.user_id != user.id:
+        app.logger.warning(
+            f"Forbidden: User {user.id} attempted to access ticket {ticket_uid} "
+            f"owned by user {ticket.attendance.user_id}"
+        )
+        return jsonify({'message': 'Forbidden'}), 403
 
-#     if ticket.is_expired or ticket.status == 'cancelled':
-#         app.logger.info(
-#             f"Inactive ticket access: ticket={ticket_uid}, "
-#             f"is_expired={ticket.is_expired}, status={ticket.status}"
-#         )
-#         return jsonify({'message': 'Ticket is not active'}), 400
+    if ticket.is_expired or ticket.status == 'cancelled':
+        app.logger.info(
+            f"Inactive ticket access: ticket={ticket_uid}, "
+            f"is_expired={ticket.is_expired}, status={ticket.status}"
+        )
+        return jsonify({'message': 'Ticket is not active'}), 400
 
-#     try:
-#         app.logger.debug(f"Generating rotating token for ticket={ticket_uid}")
-#         token = generate_rotating_token(ticket.ticket_uid)
-#         app.logger.info(f"Successfully generated rotating token for ticket={ticket_uid}")
-#     except Exception as e:
-#         app.logger.exception(f"Failed to generate rotating token for ticket={ticket_uid}: {e}")
-#         return jsonify({'message': 'Failed to generate QR code'}), 500
+    try:
+        app.logger.debug(f"Generating rotating token for ticket={ticket_uid}")
+        token = generate_rotating_token(ticket.ticket_uid)
+        app.logger.info(f"Successfully generated rotating token for ticket={ticket_uid}")
+    except Exception as e:
+        app.logger.exception(f"Failed to generate rotating token for ticket={ticket_uid}: {e}")
+        return jsonify({'message': 'Failed to generate QR code'}), 500
 
-#     now = time.time()
-#     current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-#     expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+    now = time.time()
+    current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
+    expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
 
-#     app.logger.debug(
-#         f"Rotating QR response: ticket={ticket_uid}, expires_in_ms={expires_in_ms}, "
-#         f"window_seconds={WINDOW_SECONDS}"
-#     )
+    app.logger.debug(
+        f"Rotating QR response: ticket={ticket_uid}, expires_in_ms={expires_in_ms}, "
+        f"window_seconds={WINDOW_SECONDS}"
+    )
 
-#     return jsonify({
-#         'token':          token,
-#         'expires_in_ms':  expires_in_ms,
-#         'window_seconds': WINDOW_SECONDS,
-#     }), 200
+    return jsonify({
+        'token':          token,
+        'expires_in_ms':  expires_in_ms,
+        'window_seconds': WINDOW_SECONDS,
+    }), 200
 
 
-# @app.route('/ticket/verify_rotating_qr', methods=['POST'])
-# def verify_rotating_qr():
-#     user = get_current_user_from_token()
-#     if not user:
-#         return jsonify({'message': 'Unauthorized'}), 401
+@app.route('/ticket/verify_rotating_qr', methods=['POST'])
+def verify_rotating_qr():
+    """
+    Scanner app verifies QR code (REST endpoint).
+    If valid, also notify the ticket holder via Socket.IO.
+    """
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'message': 'Unauthorized'}), 401
 
-#     token    = request.json.get('token', '')
-#     event_id = request.json.get('event_id')
+    token    = request.json.get('token', '')
+    event_id = request.json.get('event_id')
 
-#     is_valid, ticket_uid = verify_rotating_token(token)
+    is_valid, ticket_uid = verify_rotating_token(token)
 
-#     if not is_valid:
-#         return jsonify({'valid': False, 'message': 'QR code expired or invalid'}), 200
+    if not is_valid:
+        return jsonify({'valid': False, 'message': 'QR code expired or invalid'}), 200
 
-#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-#     if not ticket or ticket.is_expired or ticket.status == 'cancelled':
-#         return jsonify({'valid': False, 'message': 'Ticket is not active'}), 200
+    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+    if not ticket or ticket.is_expired or ticket.status == 'cancelled':
+        return jsonify({'valid': False, 'message': 'Ticket is not active'}), 200
 
-#     if event_id and ticket.attendance.location_id != int(event_id):
-#         return jsonify({'valid': False, 'message': 'Ticket is for a different event'}), 200
+    if event_id and ticket.attendance.location_id != int(event_id):
+        return jsonify({'valid': False, 'message': 'Ticket is for a different event'}), 200
 
-#     attendance_user = ticket.attendance.user
-#     profile         = attendance_user.parent_profile  # ✅ Changed from .profile to .parent_profile
+    attendance_user = ticket.attendance.user
+    profile         = attendance_user.parent_profile
 
-#     return jsonify({
-#         'valid':       True,
-#         'ticket_uid':  ticket.ticket_uid,
-#         'ticket_code': ticket.ticket_code,
-#         'user':        attendance_user.email,
-#         'first_name':  profile.first_name if profile else None,
-#         'last_name':   profile.last_name  if profile else None,
-#         'status':      ticket.status,
-#     }), 200
+    # ✅ NEW: Notify ticket holder that their ticket was scanned
+    room = f"ticket:{ticket_uid}"
+    socketio.emit('qr/ticket_scanned', {
+        'ticket_uid': ticket_uid,
+        'scanned_at': time.time(),
+        'event_name': ticket.attendance.location.name if ticket.attendance.location else 'Unknown Event'
+    }, room=room)
+    
+    app.logger.info(f"Ticket {ticket_uid} scanned, notifying holder via Socket.IO")
+
+    return jsonify({
+        'valid':       True,
+        'ticket_uid':  ticket.ticket_uid,
+        'ticket_code': ticket.ticket_code,
+        'user':        attendance_user.email,
+        'first_name':  profile.first_name if profile else None,
+        'last_name':   profile.last_name  if profile else None,
+        'status':      ticket.status,
+    }), 200
 
 
 # @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
@@ -4191,335 +4680,6 @@ def get_payout_status(event_id: int):
     }), 200
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SOCKET.IO EVENT HANDLERS - CONNECTION
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@socketio.on('connect')
-def handle_connect():
-    """
-    Handle user connection to Socket.IO server.
-    Authenticates user via JWT token and tracks connection.
-    """
-    print(f"\n{'='*60}")
-    print(f"🔗 NEW CONNECTION REQUEST")
-    print(f"{'='*60}")
-    
-    try:
-        # Get token from query params or headers
-        token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
-        print(f"🔑 Token received: {token[:20]}..." if token else "❌ No token provided")
-        
-        if not token:
-            print(f"❌ REJECTED: No authentication token")
-            return False
-        
-        # Decode token to get user
-        try:
-            decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            user_id = decoded.get('user_id')
-            print(f"✅ Token decoded successfully, user_id: {user_id}")
-        except jwt.InvalidTokenError as e:
-            print(f"❌ REJECTED: Invalid token - {e}")
-            return False
-        
-        # Get user from database
-        user = User.query.get(user_id)
-        if not user:
-            print(f"❌ REJECTED: User not found (id: {user_id})")
-            return False
-        
-        # Track this connection
-        sid = request.sid
-        active_connections[user_id] = sid
-        print(f"✅ ACCEPTED: User {user_id} connected (sid: {sid})")
-        print(f"📊 Active connections: {len(active_connections)}")
-        print(f"{'='*60}\n")
-        
-        # Emit confirmation to client
-        emit('connection_response', {
-            'status': 'connected',
-            'userId': user_id,
-            'message': f'Successfully connected as user {user_id}'
-        })
-        
-    except Exception as e:
-        print(f"❌ ERROR during connect: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    """Handle user disconnection from Socket.IO server."""
-    try:
-        sid = request.sid
-        print(f"\n{'='*60}")
-        print(f"🔌 USER DISCONNECTED")
-        print(f"{'='*60}")
-        
-        # Find which user this sid belongs to
-        disconnected_user = None
-        for user_id, user_sid in list(active_connections.items()):  # ← Use list() to avoid modification during iteration
-            if user_sid == sid:
-                disconnected_user = user_id
-                break
-        
-        if disconnected_user:
-            del active_connections[disconnected_user]
-            
-            # Remove from map viewers if they were viewing map
-            if disconnected_user in map_viewers:
-                del map_viewers[disconnected_user]
-                leave_room('map')
-            
-            print(f"✅ User {disconnected_user} disconnected (sid: {sid})")
-            print(f"📊 Active connections: {len(active_connections)}")
-            print(f"📊 Active map viewers: {len(map_viewers)}")
-        else:
-            print(f"⚠️ Unknown session {sid} disconnected")
-        
-        print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"❌ ERROR in handle_disconnect: {e}")
-        import traceback
-        traceback.print_exc()
-        
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SOCKET.IO EVENT HANDLERS - MESSAGING
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@socketio.on('send_message')
-def handle_send_message(data):
-    """
-    Handle real-time message sending via Socket.IO.
-    Saves to database and emits to recipient.
-    """
-    print(f"\n{'='*60}")
-    print(f"💬 MESSAGE SEND REQUEST")
-    print(f"{'='*60}")
-    
-    try:
-        # Get current user from active connections
-        sid = request.sid
-        current_user_id = None
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if not current_user_id:
-            print(f"❌ FAILED: Unknown sender (sid: {sid})")
-            emit('error', {'message': 'Unauthorized - connection not authenticated'})
-            return
-        
-        print(f"👤 Sender: {current_user_id}")
-        
-        # Parse message data
-        conversation_id = data.get('conversationId')
-        receiver_id = data.get('receiverId')
-        message_text = data.get('message')
-        reply_to_id = data.get('replyToId')
-        image_url = data.get('imageUrl')
-        
-        print(f"📝 Data: convo={conversation_id}, receiver={receiver_id}, msg_len={len(message_text) if message_text else 0}")
-        
-        # Validate required fields
-        if not conversation_id or not receiver_id or not message_text:
-            print(f"❌ VALIDATION FAILED: Missing required fields")
-            emit('error', {'message': 'conversationId, receiverId, and message are required'})
-            return
-        
-        # Verify conversation exists and user is part of it
-        conversation = Conversation.query.get(conversation_id)
-        if not conversation:
-            print(f"❌ FAILED: Conversation {conversation_id} not found")
-            emit('error', {'message': 'Conversation not found'})
-            return
-        
-        if (conversation.user_id != current_user_id and 
-            conversation.other_user_id != current_user_id):
-            print(f"❌ FAILED: User {current_user_id} not part of conversation")
-            emit('error', {'message': 'Unauthorized - not part of this conversation'})
-            return
-        
-        # Create message in database
-        message = Message(
-            conversation_id=conversation_id,
-            sender_id=current_user_id,
-            receiver_id=receiver_id,
-            message=message_text,
-            reply_to_id=reply_to_id,
-            image_url=image_url,
-        )
-        
-        db.session.add(message)
-        db.session.commit()
-        
-        print(f"✅ Message {message.id} saved to database")
-        
-        # Build message response object
-        message_response = {
-            'id': message.id,
-            'conversationId': conversation_id,
-            'senderId': current_user_id,
-            'receiverId': receiver_id,
-            'message': message_text,
-            'imageUrl': image_url,
-            'replyToId': reply_to_id,
-            'timestamp': message.timestamp.isoformat(),
-            'isRead': False
-        }
-        
-        # Emit to sender (confirmation)
-        emit('message_sent', message_response)
-        print(f"✅ Sent confirmation to sender")
-        
-        # Emit to receiver if they're online
-        if receiver_id in active_connections:
-            receiver_sid = active_connections[receiver_id]
-            print(f"📤 Receiver {receiver_id} is online (sid: {receiver_sid})")
-            
-            socketio.emit('new_message', message_response, room=receiver_sid)
-            print(f"✅ Emitted new_message to receiver")
-        else:
-            print(f"⚠️  Receiver {receiver_id} is offline (message saved)")
-        
-        print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"❌ ERROR in handle_send_message: {e}")
-        import traceback
-        traceback.print_exc()
-        emit('error', {'message': f'Error sending message: {str(e)}'})
-        db.session.rollback()
- 
- 
-@socketio.on('mark_as_read')
-def handle_mark_as_read(data):
-    """Mark a message as read."""
-    print(f"\n{'='*60}")
-    print(f"📖 MARK AS READ REQUEST")
-    print(f"{'='*60}")
-    
-    try:
-        # Get current user from active connections
-        sid = request.sid
-        current_user_id = None
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if not current_user_id:
-            print(f"❌ FAILED: Unknown user")
-            return
-        
-        message_id = data.get('messageId')
-        conversation_id = data.get('conversationId')
-        
-        print(f"👤 User: {current_user_id}")
-        print(f"📝 Message: {message_id}, Conversation: {conversation_id}")
-        
-        # Get message
-        message = Message.query.get(message_id)
-        if not message:
-            print(f"❌ Message not found")
-            return
-        
-        # Verify user is the receiver
-        if message.receiver_id != current_user_id:
-            print(f"❌ User is not the receiver of this message")
-            return
-        
-        # Mark as read
-        message.is_read = True
-        db.session.commit()
-        
-        print(f"✅ Message marked as read")
-        
-        # Notify sender that message was read
-        if message.sender_id in active_connections:
-            sender_sid = active_connections[message.sender_id]
-            socketio.emit('message_read', {
-                'messageId': message_id,
-                'conversationId': conversation_id,
-                'readBy': current_user_id,
-                'readAt': datetime.utcnow().isoformat()
-            }, room=sender_sid)
-            print(f"✅ Notified sender that message was read")
-        
-        print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"❌ ERROR in handle_mark_as_read: {e}")
-        import traceback
-        traceback.print_exc()
- 
- 
-@socketio.on('user_typing')
-def handle_user_typing(data):
-    """Broadcast that a user is typing."""
-    try:
-        sid = request.sid
-        current_user_id = None
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if not current_user_id:
-            return
-        
-        receiver_id = data.get('receiverId')
-        conversation_id = data.get('conversationId')
-        
-        # Notify receiver if online
-        if receiver_id in active_connections:
-            receiver_sid = active_connections[receiver_id]
-            socketio.emit('user_is_typing', {
-                'conversationId': conversation_id,
-                'typingUserId': current_user_id
-            }, room=receiver_sid)
-        
-    except Exception as e:
-        print(f"ERROR in handle_user_typing: {e}")
- 
- 
-@socketio.on('user_stopped_typing')
-def handle_user_stopped_typing(data):
-    """Broadcast that a user stopped typing."""
-    try:
-        sid = request.sid
-        current_user_id = None
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
-        
-        if not current_user_id:
-            return
-        
-        receiver_id = data.get('receiverId')
-        conversation_id = data.get('conversationId')
-        
-        # Notify receiver if online
-        if receiver_id in active_connections:
-            receiver_sid = active_connections[receiver_id]
-            socketio.emit('user_stopped_typing', {
-                'conversationId': conversation_id,
-                'typingUserId': current_user_id
-            }, room=receiver_sid)
-        
-    except Exception as e:
-        print(f"ERROR in handle_user_stopped_typing: {e}")
- 
-     
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MESSAGES
