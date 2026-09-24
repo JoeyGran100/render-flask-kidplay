@@ -1052,10 +1052,11 @@ def verify_rotating_token(token: str) -> tuple[bool, str | None]:
 
 def send_qr_to_ticket(ticket_uid: str):
     """
-    Generate new token and push to subscribers.
-    ✅ Only the token is sent - QR code rendering is done by clients.
+    Verify ticket is valid and send initial QR token.
+    Only called during subscription (which has app context).
     """
     try:
+        # ✅ This query is safe - we're in app context from handle_qr_subscribe
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
         if not ticket or ticket.is_expired or ticket.status == 'cancelled':
             app.logger.warning(f"Cannot send QR: ticket {ticket_uid} is inactive")
@@ -1066,7 +1067,7 @@ def send_qr_to_ticket(ticket_uid: str):
             }, room=room)
             return
         
-        # Generate new token (not QR bitmap)
+        # Generate token
         token = generate_rotating_token(ticket.ticket_uid)
         
         # Calculate time until expiry
@@ -1074,7 +1075,7 @@ def send_qr_to_ticket(ticket_uid: str):
         current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
         expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
         
-        # ✅ Send only token - frontend generates QR bitmap
+        # Send token
         room = f"ticket:{ticket_uid}"
         socketio.emit('qr/update', {
             'token': token,
@@ -1083,18 +1084,21 @@ def send_qr_to_ticket(ticket_uid: str):
             'generated_at': now
         }, room=room)
         
-        app.logger.info(f"Sent QR token to {ticket_uid} (expires in {expires_in_ms}ms)")
+        app.logger.info(f"Sent QR token to {ticket_uid}")
         
     except Exception as e:
         app.logger.exception(f"Error sending QR to {ticket_uid}: {e}")
+        room = f"ticket:{ticket_uid}"
+        socketio.emit('qr/error', {
+            'message': 'Failed to generate token',
+            'ticket_uid': ticket_uid
+        }, room=room)
 
 
 def refresh_qr_codes_background():
     """
     Background task: Refresh all active QR codes before they expire.
-    
     Window is 15 seconds, so we refresh every ~10 seconds to be safe.
-    This gives clients 5 seconds buffer before the current token expires.
     """
     print(f"\n{'='*60}")
     print(f"🔄 QR Refresh Background Task Started")
@@ -1102,23 +1106,40 @@ def refresh_qr_codes_background():
     
     while True:
         try:
-            time.sleep(10)  # Refresh every 10 seconds (15s window - 5s buffer)
+            time.sleep(10)
             
             if not active_qr_subscriptions:
-                # No active subscriptions, skip this cycle
                 continue
             
             print(f"🔄 Refreshing {len(active_qr_subscriptions)} active QR codes...")
             
-            # Refresh each ticket that has subscribers
+            # ✅ Generate and emit tokens without database queries
             for ticket_uid in list(active_qr_subscriptions.keys()):
-                send_qr_to_ticket(ticket_uid)
+                # Generate new token (no DB needed)
+                token = generate_rotating_token(ticket_uid)
+                
+                # Calculate time until expiry
+                now = time.time()
+                current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
+                expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+                
+                # Emit to subscribers (no app context needed)
+                room = f"ticket:{ticket_uid}"
+                socketio.emit('qr/update', {
+                    'token': token,
+                    'expires_in_ms': expires_in_ms,
+                    'window_seconds': WINDOW_SECONDS,
+                    'generated_at': now
+                }, room=room)
+                
+                print(f"  ✅ Refreshed {ticket_uid} (expires in {expires_in_ms}ms)")
             
             print(f"✅ Refresh cycle complete\n")
             
         except Exception as e:
-            app.logger.exception(f"Error in QR refresh thread: {e}")
             print(f"❌ Error in refresh cycle: {e}\n")
+            import traceback
+            traceback.print_exc()
 
 
 
