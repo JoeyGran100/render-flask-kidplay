@@ -3259,7 +3259,7 @@ def get_qr_token(ticket_uid: str):
             'token': token,
             'expiresInMs': expires_in_ms,
             'eventId': event.id,
-            'eventName': event.name,
+            'eventName': event.event_name,
         }), 200
     except Exception as e:
         app.logger.exception(f"Failed to generate QR for {ticket_uid}")
