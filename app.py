@@ -3492,63 +3492,6 @@ def get_ticket(ticket_uid: str):
     return jsonify(_ticket_to_json(ticket)), 200
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# QR Token Management - Separate Endpoint
-# ═══════════════════════════════════════════════════════════════════════════
-
-@app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
-def get_qr_token(ticket_uid: str):
-    """Generate static QR token valid for entire event duration."""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-    if not ticket:
-        return jsonify({'error': 'Ticket not found'}), 404
-    
-    if ticket.attendance.parent_id != user.id:
-        return jsonify({'error': 'Forbidden'}), 403
-    
-    if ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'error': 'Ticket is not active'}), 410
-    
-    # ✅ NEW: Get event and check if already ended
-    event = ticket.attendance.location
-    if not event:
-        return jsonify({'error': 'Event not found'}), 500
-    
-    if event.end_time and datetime.utcnow() > event.end_time:
-        return jsonify({'error': 'Event has ended'}), 410
-    
-    try:
-        # ✅ Generates same token every time (deterministic)
-        token = generate_static_qr(
-            ticket_uid=ticket.ticket_uid,
-            event_id=event.id,
-            issued_at=ticket.created_at.timestamp()
-        )
-        
-        # ✅ Calculate time until EVENT ends (not 15 seconds)
-        now = time.time()
-        if event.end_time:
-            event_end = event.end_time.timestamp()
-            expires_in_ms = int((event_end - now) * 1000)
-        else:
-            expires_in_ms = None  # No expiry
-        
-        app.logger.info(f"Generated static QR for ticket {ticket_uid}, expires in {expires_in_ms}ms")
-        
-        return jsonify({
-            'token': token,
-            'expiresInMs': expires_in_ms,  # Time until event ends
-            'eventId': event.id,
-            'eventName': event.name,
-        }), 200
-    except Exception as e:
-        app.logger.exception(f"Failed to generate QR for {ticket_uid}")
-        return jsonify({'error': 'Failed to generate QR token'}), 500
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
