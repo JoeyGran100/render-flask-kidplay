@@ -3241,11 +3241,10 @@ def get_qr_token(ticket_uid: str):
         return jsonify({'error': 'Event has ended'}), 410
     
     try:
-        # ✅ FIXED: Changed ticket.created_at to ticket.issued_at
         token = generate_static_qr(
             ticket_uid=ticket.ticket_uid,
             event_id=event.id,
-            issued_at=ticket.issued_at.timestamp()  # ✅ Changed from created_at
+            issued_at=ticket.issued_at.timestamp()
         )
         
         now = time.time()
@@ -3257,6 +3256,8 @@ def get_qr_token(ticket_uid: str):
         
         return jsonify({
             'token': token,
+            'ticketCode': ticket.ticket_code,  # ✅ ADD THIS
+            'ticketUid': ticket.ticket_uid,    # ✅ ADD THIS too (good to have)
             'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.event_name,
