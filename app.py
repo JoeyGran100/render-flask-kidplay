@@ -3238,8 +3238,8 @@ def get_qr_token(ticket_uid: str):
     if not event:
         return jsonify({'error': 'Event not found'}), 500
     
-    # Check if event has already ended
-    if event.end_time and datetime.utcnow() > event.end_time:
+    # ✅ FIXED - Use timezone-aware datetime
+    if event.end_time and datetime.now(timezone.utc) > event.end_time:
         return jsonify({'error': 'Event has ended'}), 410
     
     try:
