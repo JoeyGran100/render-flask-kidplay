@@ -3256,12 +3256,16 @@ def get_qr_token(ticket_uid: str):
         
         return jsonify({
             'token': token,
-            'ticketCode': ticket.ticket_code,  # ✅ ADD THIS
-            'ticketUid': ticket.ticket_uid,    # ✅ ADD THIS too (good to have)
-            'isVoid': ticket.is_void,           # ✅ Add this
+            'ticketCode': ticket.ticket_code,
+            'ticketUid': ticket.ticket_uid,
+            'isVoid': ticket.is_void,
+            'status': ticket.status,
             'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.event_name,
+            'eventAddress': event.venue_address or event.address,  # ✅ ADD ADDRESS
+            'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
+            'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
         }), 200
     except Exception as e:
         app.logger.exception(f"Failed to generate QR for {ticket_uid}")
