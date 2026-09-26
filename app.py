@@ -80,14 +80,13 @@ def _derive_key(purpose: str) -> bytes:
     return hmac.new(SECRET_KEY, purpose.encode(), hashlib.sha256).digest()
 
 QR_KEY = _derive_key("qr_signing")   # isolated subkey, no separate env var needed
-WINDOW_SECONDS = 15
 
 
 # ============================================================================
 # GLOBAL STATE
 # ============================================================================
 active_connections = {}  # Format: { user_id: sid, ... }
-active_qr_subscriptions = {}  # ticket_uid -> [sids]
+active_scanners = {}  # {user_id: socket_id}
 map_viewers = {}  # user_id -> sid
 qr_refresh_thread = None  # Will be assigned after function is defined
 
@@ -1011,136 +1010,44 @@ def has_liked_event(user_id: int, event_id: int) -> bool:
     ).first() is not None
 
 
-def _current_window(offset: int = 0) -> int:
-    """Returns the current 15-second time window index."""
-    return int(time.time() // WINDOW_SECONDS) + offset
-
-
-def generate_rotating_token(ticket_uid: str) -> str:
-    """HMAC-signed token valid for the current 15-second window."""
-    window = _current_window()
-    message = f"{ticket_uid}:{window}".encode()
+def generate_static_qr(ticket_uid: str, event_id: int, issued_at: float) -> str:
+    """
+    Generate a single QR code valid for the entire event duration.
+    Signature includes ticket + event to prevent token reuse across events.
+    """
+    message = f"{ticket_uid}:{event_id}:{issued_at}".encode()
     signature = hmac.new(QR_KEY, message, hashlib.sha256).hexdigest()
-    payload = f"{ticket_uid}:{window}:{signature}"
+    payload = f"{ticket_uid}:{event_id}:{issued_at}:{signature}"
     return base64.urlsafe_b64encode(payload.encode()).decode()
 
 
-def verify_rotating_token(token: str) -> tuple[bool, str | None]:
+def verify_static_qr(token: str, event_id: int) -> tuple[bool, str | None]:
     """
-    Returns (is_valid, ticket_uid).
-    Accepts current window and ±1 for clock drift.
+    Verify QR code is valid and event is still running.
+    Returns (is_valid, ticket_uid)
     """
     try:
         decoded = base64.urlsafe_b64decode(token.encode()).decode()
-        parts = decoded.split(":")          # UUID4 has hyphens, not colons — safe to split on ":"
+        parts = decoded.split(":")
         ticket_uid = parts[0]
-        window     = int(parts[1])
-        signature  = parts[2]
+        token_event_id = int(parts[1])
+        issued_at = float(parts[2])
+        signature = parts[3]
+        
     except Exception:
         return False, None
-
-    for offset in [0, -1, 1]:
-        expected_window = _current_window(offset)
-        if window == expected_window:
-            message      = f"{ticket_uid}:{window}".encode()
-            expected_sig = hmac.new(QR_KEY, message, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(signature, expected_sig):
-                return True, ticket_uid
-
-    return False, None
-
-
-def send_qr_to_ticket(ticket_uid: str):
-    """
-    Verify ticket is valid and send initial QR token.
-    Only called during subscription (which has app context).
-    """
-    try:
-        # ✅ This query is safe - we're in app context from handle_qr_subscribe
-        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-        if not ticket or ticket.is_expired or ticket.status == 'cancelled':
-            app.logger.warning(f"Cannot send QR: ticket {ticket_uid} is inactive")
-            room = f"ticket:{ticket_uid}"
-            socketio.emit('qr/ticket_inactive', {
-                'ticket_uid': ticket_uid,
-                'reason': 'expired' if ticket and ticket.is_expired else 'cancelled'
-            }, room=room)
-            return
-        
-        # Generate token
-        token = generate_rotating_token(ticket.ticket_uid)
-        
-        # Calculate time until expiry
-        now = time.time()
-        current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-        expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
-        
-        # Send token
-        room = f"ticket:{ticket_uid}"
-        socketio.emit('qr/update', {
-            'token': token,
-            'expires_in_ms': expires_in_ms,
-            'window_seconds': WINDOW_SECONDS,
-            'generated_at': now
-        }, room=room)
-        
-        app.logger.info(f"Sent QR token to {ticket_uid}")
-        
-    except Exception as e:
-        app.logger.exception(f"Error sending QR to {ticket_uid}: {e}")
-        room = f"ticket:{ticket_uid}"
-        socketio.emit('qr/error', {
-            'message': 'Failed to generate token',
-            'ticket_uid': ticket_uid
-        }, room=room)
-
-
-def refresh_qr_codes_background():
-    """
-    Background task: Refresh all active QR codes before they expire.
-    Window is 15 seconds, so we refresh every ~10 seconds to be safe.
-    """
-    print(f"\n{'='*60}")
-    print(f"🔄 QR Refresh Background Task Started")
-    print(f"{'='*60}\n")
     
-    while True:
-        try:
-            time.sleep(10)
-            
-            if not active_qr_subscriptions:
-                continue
-            
-            print(f"🔄 Refreshing {len(active_qr_subscriptions)} active QR codes...")
-            
-            # ✅ Generate and emit tokens without database queries
-            for ticket_uid in list(active_qr_subscriptions.keys()):
-                # Generate new token (no DB needed)
-                token = generate_rotating_token(ticket_uid)
-                
-                # Calculate time until expiry
-                now = time.time()
-                current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-                expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
-                
-                # Emit to subscribers (no app context needed)
-                room = f"ticket:{ticket_uid}"
-                socketio.emit('qr/update', {
-                    'token': token,
-                    'expires_in_ms': expires_in_ms,
-                    'window_seconds': WINDOW_SECONDS,
-                    'generated_at': now
-                }, room=room)
-                
-                print(f"  ✅ Refreshed {ticket_uid} (expires in {expires_in_ms}ms)")
-            
-            print(f"✅ Refresh cycle complete\n")
-            
-        except Exception as e:
-            print(f"❌ Error in refresh cycle: {e}\n")
-            import traceback
-            traceback.print_exc()
-
+    # Token must be for THIS event (prevent reuse)
+    if token_event_id != event_id:
+        return False, None
+    
+    # Verify signature
+    message = f"{ticket_uid}:{event_id}:{issued_at}".encode()
+    expected_sig = hmac.new(QR_KEY, message, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected_sig):
+        return False, None
+    
+    return True, ticket_uid
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1205,45 +1112,33 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Handle user disconnection from Socket.IO server."""
+    """Handle scanner disconnection from Socket.IO server."""
     try:
         sid = request.sid
         print(f"\n{'='*60}")
-        print(f"🔌 USER DISCONNECTED")
+        print(f"🔌 SCANNER DISCONNECTED")
         print(f"{'='*60}")
         
-        # Find which user this sid belongs to
-        disconnected_user = None
-        for user_id, user_sid in list(active_connections.items()):
+        # Find which scanner this sid belongs to
+        disconnected_scanner = None
+        for user_id, user_sid in list(active_scanners.items()):
             if user_sid == sid:
-                disconnected_user = user_id
+                disconnected_scanner = user_id
                 break
         
-        if disconnected_user:
-            del active_connections[disconnected_user]
-            
-            # Remove from map viewers if they were viewing map
-            if disconnected_user in map_viewers:
-                del map_viewers[disconnected_user]
-                leave_room('map')
-            
-            print(f"✅ User {disconnected_user} disconnected (sid: {sid})")
-            print(f"📊 Active connections: {len(active_connections)}")
+        if disconnected_scanner:
+            del active_scanners[disconnected_scanner]
+            print(f"✅ Scanner {disconnected_scanner} disconnected (sid: {sid})")
+            print(f"📊 Active scanners: {len(active_scanners)}")
         else:
             print(f"⚠️ Unknown session {sid} disconnected")
         
-        # ✅ NEW: Also remove from all QR subscriptions
-        for ticket_uid in list(active_qr_subscriptions.keys()):
-            if sid in active_qr_subscriptions[ticket_uid]:
-                active_qr_subscriptions[ticket_uid].remove(sid)
-                print(f"✅ Removed {sid} from QR subscriptions for {ticket_uid}")
-                
-                # Clean up empty subscriptions
-                if not active_qr_subscriptions[ticket_uid]:
-                    del active_qr_subscriptions[ticket_uid]
-                    print(f"🧹 No more subscribers for {ticket_uid}, cleaned up")
+        # Remove from map viewers if they were viewing map
+        if disconnected_scanner and disconnected_scanner in map_viewers:
+            del map_viewers[disconnected_scanner]
+            leave_room('map')
+            print(f"✅ Removed scanner {disconnected_scanner} from map viewers")
         
-        print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
         print(f"{'='*60}\n")
         
     except Exception as e:
@@ -1592,121 +1487,6 @@ def broadcast_event_to_map(event_coordinates):
         print(f"❌ ERROR broadcasting event: {e}")
         traceback.print_exc()  # ← Log full traceback
         
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SOCKET.IO QR CODE SUBSCRIPTION HANDLERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-@socketio.on('qr/subscribe')
-def handle_qr_subscribe(data):
-    """
-    Ticket holder: "Start sending me rotating QR codes for this ticket"
-    """
-    print(f"\n{'='*60}")
-    print(f"📲 QR SUBSCRIPTION REQUEST")
-    print(f"{'='*60}")
-    
-    try:
-        # Get auth from data or headers
-        auth_token = data.get('auth_token') or request.headers.get('Authorization', '').replace('Bearer ', '')
-        ticket_uid = data.get('ticket_uid')
-        
-        if not ticket_uid or not auth_token:
-            print(f"❌ REJECTED: Missing ticket_uid or auth_token")
-            emit('error', {'message': 'Missing ticket_uid or auth_token'})
-            return
-        
-        print(f"🎟️  Ticket UID: {ticket_uid}")
-        
-        # Decode token to get user_id
-        try:
-            decoded = jwt.decode(auth_token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            user_id = decoded.get('user_id')
-        except jwt.InvalidTokenError as e:
-            print(f"❌ REJECTED: Invalid token - {e}")
-            emit('error', {'message': 'Invalid auth token'})
-            return
-        
-        print(f"👤 User ID: {user_id}")
-        
-        # Verify ticket exists and belongs to this user
-        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-        if not ticket:
-            print(f"❌ REJECTED: Ticket not found")
-            emit('error', {'message': 'Ticket not found'})
-            return
-        
-        # ✅ FIXED: Use parent_id instead of user_id
-        if ticket.attendance.parent_id != user_id:
-            print(f"❌ REJECTED: User {user_id} does not own ticket {ticket_uid}")
-            emit('error', {'message': 'Unauthorized'})
-            return
-        
-        if ticket.is_expired or ticket.status == 'cancelled':
-            print(f"❌ REJECTED: Ticket is inactive (expired={ticket.is_expired}, status={ticket.status})")
-            emit('error', {'message': 'Ticket is not active'})
-            return
-        
-        # Subscribe: join a room for this ticket
-        room = f"ticket:{ticket_uid}"
-        join_room(room)
-        
-        # Track this subscription
-        if ticket_uid not in active_qr_subscriptions:
-            active_qr_subscriptions[ticket_uid] = []
-        active_qr_subscriptions[ticket_uid].append(request.sid)
-        
-        print(f"✅ ACCEPTED: User {user_id} subscribed to QR updates for {ticket_uid}")
-        print(f"🔔 Active subscriptions on {ticket_uid}: {len(active_qr_subscriptions[ticket_uid])}")
-        print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
-        print(f"{'='*60}\n")
-        
-        # Immediately send current QR code (don't wait for refresh cycle)
-        send_qr_to_ticket(ticket_uid)
-        
-        # Confirm subscription
-        emit('qr/subscribed', {
-            'status': 'subscribed',
-            'ticket_uid': ticket_uid,
-            'message': f'Subscribed to QR updates for {ticket_uid}'
-        })
-        
-    except Exception as e:
-        print(f"❌ ERROR in qr/subscribe: {e}")
-        import traceback
-        traceback.print_exc()
-        emit('error', {'message': 'Subscription failed'})
-
-
-@socketio.on('qr/unsubscribe')
-def handle_qr_unsubscribe(data):
-    """Ticket holder: Stop sending me QR codes"""
-    ticket_uid = data.get('ticket_uid')
-    
-    if not ticket_uid:
-        return
-    
-    room = f"ticket:{ticket_uid}"
-    leave_room(room)
-    
-    # Remove from tracking
-    if ticket_uid in active_qr_subscriptions:
-        try:
-            active_qr_subscriptions[ticket_uid].remove(request.sid)
-            if not active_qr_subscriptions[ticket_uid]:
-                del active_qr_subscriptions[ticket_uid]
-        except ValueError:
-            pass
-    
-    print(f"✅ User unsubscribed from {ticket_uid}")
-    print(f"📊 Total active tickets: {len(active_qr_subscriptions)}")
-
-
-# ============================================================================
-# START BACKGROUND THREAD (after function is defined!)
-# ============================================================================
-qr_refresh_thread = Thread(target=refresh_qr_codes_background, daemon=True)
-qr_refresh_thread.start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3431,163 +3211,152 @@ def get_created_events():
 
     return jsonify({'created_events': created_events}), 200
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.route('/ticket/<string:ticket_uid>/rotating_qr', methods=['GET'])
-def get_rotating_qr(ticket_uid: str):
-    app.logger.debug(
-        f"GET /ticket/{ticket_uid}/rotating_qr - Request received"
-    )
-
-    # Get authenticated user
-    user = get_current_user_from_token()
-
-    if not user:
-        app.logger.warning(
-            f"Unauthorized access attempt to rotating_qr for ticket={ticket_uid}"
-        )
-        return jsonify({'message': 'Unauthorized'}), 401
-
-    app.logger.debug(
-        f"User {user.id} requesting rotating QR for ticket={ticket_uid}"
-    )
-
-    # Find ticket
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first_or_404()
-
-    # Get attendance associated with the ticket
-    attendance = ticket.attendance
-
-    if not attendance:
-        app.logger.error(
-            f"Ticket {ticket_uid} has no associated attendance record"
-        )
-        return jsonify({
-            'message': 'Ticket has no attendance record'
-        }), 500
-
-    # Attendance uses parent_id, not user_id
-    attendance_parent_id = attendance.parent_id
-
-    app.logger.debug(
-        f"Ticket found: {ticket_uid}, "
-        f"attendance_parent_id={attendance_parent_id}"
-    )
-
-    # Make sure the ticket belongs to the authenticated user
-    if attendance_parent_id != user.id:
-        app.logger.warning(
-            f"Forbidden: User {user.id} attempted to access "
-            f"ticket {ticket_uid} owned by parent {attendance_parent_id}"
-        )
-        return jsonify({'message': 'Forbidden'}), 403
-
-    # Check whether ticket is still active
-    if ticket.is_expired or ticket.status == 'cancelled':
-        app.logger.info(
-            f"Inactive ticket access: ticket={ticket_uid}, "
-            f"is_expired={ticket.is_expired}, "
-            f"status={ticket.status}"
-        )
-        return jsonify({
-            'message': 'Ticket is not active'
-        }), 400
-
-    # Generate rotating QR token
-    try:
-        app.logger.debug(
-            f"Generating rotating token for ticket={ticket_uid}"
-        )
-
-        token = generate_rotating_token(ticket.ticket_uid)
-
-        app.logger.info(
-            f"Successfully generated rotating token for ticket={ticket_uid}"
-        )
-
-    except Exception as e:
-        app.logger.exception(
-            f"Failed to generate rotating token "
-            f"for ticket={ticket_uid}: {e}"
-        )
-
-        return jsonify({
-            'message': 'Failed to generate QR code'
-        }), 500
-
-    # Calculate remaining lifetime of the current QR window
-    now = time.time()
-
-    current_window_start = (
-        int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-    )
-
-    expires_in_ms = int(
-        (current_window_start + WINDOW_SECONDS - now) * 1000
-    )
-
-    app.logger.debug(
-        f"Rotating QR response: ticket={ticket_uid}, "
-        f"expires_in_ms={expires_in_ms}, "
-        f"window_seconds={WINDOW_SECONDS}"
-    )
-
-    return jsonify({
-        'token': token,
-        'expires_in_ms': expires_in_ms,
-        'window_seconds': WINDOW_SECONDS,
-    }), 200
-
-
-@app.route('/ticket/verify_rotating_qr', methods=['POST'])
-def verify_rotating_qr():
-    """
-    Scanner app verifies QR code (REST endpoint).
-    If valid, also notify the ticket holder via Socket.IO.
-    """
+@app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
+def get_qr_token(ticket_uid: str):
+    """Generate static QR token valid for entire event duration."""
     user = get_current_user_from_token()
     if not user:
-        return jsonify({'message': 'Unauthorized'}), 401
-
-    token    = request.json.get('token', '')
-    event_id = request.json.get('event_id')
-
-    is_valid, ticket_uid = verify_rotating_token(token)
-
-    if not is_valid:
-        return jsonify({'valid': False, 'message': 'QR code expired or invalid'}), 200
-
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-    if not ticket or ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'valid': False, 'message': 'Ticket is not active'}), 200
-
-    if event_id and ticket.attendance.location_id != int(event_id):
-        return jsonify({'valid': False, 'message': 'Ticket is for a different event'}), 200
-
-    attendance_user = ticket.attendance.user
-    profile         = attendance_user.parent_profile
-
-    # ✅ NEW: Notify ticket holder that their ticket was scanned
-    room = f"ticket:{ticket_uid}"
-    socketio.emit('qr/ticket_scanned', {
-        'ticket_uid': ticket_uid,
-        'scanned_at': time.time(),
-        'event_name': ticket.attendance.location.name if ticket.attendance.location else 'Unknown Event'
-    }, room=room)
+        return jsonify({'error': 'Unauthorized'}), 401
     
-    app.logger.info(f"Ticket {ticket_uid} scanned, notifying holder via Socket.IO")
+    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+    if not ticket:
+        return jsonify({'error': 'Ticket not found'}), 404
+    
+    if ticket.attendance.parent_id != user.id:
+        return jsonify({'error': 'Forbidden'}), 403
+    
+    if ticket.is_expired or ticket.status == 'cancelled':
+        return jsonify({'error': 'Ticket is not active'}), 410  # 410 Gone
+    
+    # Get event
+    event = ticket.attendance.location
+    if not event:
+        return jsonify({'error': 'Event not found'}), 500
+    
+    # Check if event has already ended
+    if event.end_time and datetime.utcnow() > event.end_time:
+        return jsonify({'error': 'Event has ended'}), 410
+    
+    try:
+        # Generate static QR (valid for entire event duration)
+        token = generate_static_qr(
+            ticket_uid=ticket.ticket_uid,
+            event_id=event.id,
+            issued_at=ticket.created_at.timestamp()
+        )
+        
+        # Calculate time until event ends
+        now = time.time()
+        if event.end_time:
+            event_end = event.end_time.timestamp()
+            expires_in_ms = int((event_end - now) * 1000)
+        else:
+            expires_in_ms = None  # No expiry
+        
+        return jsonify({
+            'token': token,
+            'expiresInMs': expires_in_ms,  # Time until event ends
+            'eventId': event.id,
+            'eventName': event.name,
+        }), 200
+    except Exception as e:
+        app.logger.exception(f"Failed to generate QR for {ticket_uid}")
+        return jsonify({'error': 'Failed to generate QR token'}), 500
 
-    return jsonify({
-        'valid':       True,
-        'ticket_uid':  ticket.ticket_uid,
-        'ticket_code': ticket.ticket_code,
-        'user':        attendance_user.email,
-        'first_name':  profile.first_name if profile else None,
-        'last_name':   profile.last_name  if profile else None,
-        'status':      ticket.status,
-    }), 200
+
+# ═══════════════════════════════════════════════════════════════════════════
+# QR Verification - Socket.IO (scanner app only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@socketio.on('verify_qr')
+def handle_verify_qr(data):
+    """
+    Scanner verifies QR token via Socket.IO.
+    Returns result in real-time.
+    """
+    try:
+        user = get_current_user_from_token()
+        if not user:
+            emit('error', {'message': 'Unauthorized'})
+            return
+        
+        token = data.get('token')
+        event_id = data.get('eventId')
+        
+        if not token or not event_id:
+            emit('verify_result', {
+                'valid': False,
+                'message': 'token and eventId are required'
+            })
+            return
+        
+        # Verify static QR signature
+        is_valid, ticket_uid = verify_static_qr(token, event_id)
+        if not is_valid:
+            emit('verify_result', {
+                'valid': False,
+                'message': 'QR code invalid or tampered'
+            })
+            return
+        
+        # Get ticket
+        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+        if not ticket or ticket.is_expired or ticket.status == 'cancelled':
+            emit('verify_result', {
+                'valid': False,
+                'message': 'Ticket is no longer valid'
+            })
+            return
+        
+        # Verify event is still running
+        event = ticket.attendance.location
+        if not event or (event.end_time and datetime.utcnow() > event.end_time):
+            emit('verify_result', {
+                'valid': False,
+                'message': 'Event has ended'
+            })
+            return
+        
+        # Verify ticket is for correct event
+        if event.id != event_id:
+            emit('verify_result', {
+                'valid': False,
+                'message': 'Ticket is for a different event'
+            })
+            return
+        
+        # ✅ Valid ticket - send result to scanner
+        attendance_user = ticket.attendance.user
+        profile = attendance_user.parent_profile
+        
+        emit('verify_result', {
+            'valid': True,
+            'ticketUid': ticket.ticket_uid,
+            'ticketCode': ticket.ticket_code,
+            'user': attendance_user.email,
+            'firstName': profile.first_name if profile else None,
+            'lastName': profile.last_name if profile else None,
+            'status': ticket.status,
+            'scannedAt': time.time()
+        })
+        
+        # ✅ OPTIONAL: Notify ticket holder via Socket.IO that their ticket was scanned
+        ticket_holder_room = f"ticket:{ticket_uid}"
+        socketio.emit('ticket_scanned', {
+            'scannedAt': time.time(),
+            'eventName': event.name
+        }, room=ticket_holder_room, skip_sid=request.sid)
+        
+        app.logger.info(f"Ticket {ticket_uid} verified by scanner {user.id} at event {event_id}")
+        
+    except Exception as e:
+        app.logger.exception(f"Error verifying QR: {e}")
+        emit('error', {'message': 'Verification failed'})
 
 
 # @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
@@ -3729,7 +3498,7 @@ def get_ticket(ticket_uid: str):
 
 @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
 def get_qr_token(ticket_uid: str):
-    """Generate rotating QR token for ticket."""
+    """Generate static QR token valid for entire event duration."""
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -3742,71 +3511,44 @@ def get_qr_token(ticket_uid: str):
         return jsonify({'error': 'Forbidden'}), 403
     
     if ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'error': 'Ticket is not active'}), 410  # 410 Gone
+        return jsonify({'error': 'Ticket is not active'}), 410
+    
+    # ✅ NEW: Get event and check if already ended
+    event = ticket.attendance.location
+    if not event:
+        return jsonify({'error': 'Event not found'}), 500
+    
+    if event.end_time and datetime.utcnow() > event.end_time:
+        return jsonify({'error': 'Event has ended'}), 410
     
     try:
-        token = generate_rotating_token(ticket.ticket_uid)
+        # ✅ Generates same token every time (deterministic)
+        token = generate_static_qr(
+            ticket_uid=ticket.ticket_uid,
+            event_id=event.id,
+            issued_at=ticket.created_at.timestamp()
+        )
+        
+        # ✅ Calculate time until EVENT ends (not 15 seconds)
         now = time.time()
-        current_window_start = int(now // WINDOW_SECONDS) * WINDOW_SECONDS
-        expires_in_ms = int((current_window_start + WINDOW_SECONDS - now) * 1000)
+        if event.end_time:
+            event_end = event.end_time.timestamp()
+            expires_in_ms = int((event_end - now) * 1000)
+        else:
+            expires_in_ms = None  # No expiry
+        
+        app.logger.info(f"Generated static QR for ticket {ticket_uid}, expires in {expires_in_ms}ms")
         
         return jsonify({
             'token': token,
-            'expiresInMs': expires_in_ms,  # camelCase per Google API design
-            'windowSeconds': WINDOW_SECONDS,
+            'expiresInMs': expires_in_ms,  # Time until event ends
+            'eventId': event.id,
+            'eventName': event.name,
         }), 200
     except Exception as e:
         app.logger.exception(f"Failed to generate QR for {ticket_uid}")
         return jsonify({'error': 'Failed to generate QR token'}), 500
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# QR Verification - POST with validation
-# ═══════════════════════════════════════════════════════════════════════════
-
-@app.route('/tickets/verify-qr', methods=['POST'])
-def verify_qr_token():
-    """Verify a QR token. Returns 200 for valid, 400 for invalid."""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    data = request.get_json()
-    if not data or 'token' not in data:
-        return jsonify({'error': 'token is required'}), 400
-    
-    token = data['token']
-    event_id = data.get('eventId')  # camelCase
-    
-    is_valid, ticket_uid = verify_rotating_token(token)
-    if not is_valid:
-        return jsonify({
-            'valid': False,
-            'message': 'QR code expired or invalid'
-        }), 400  # ✅ 400 instead of 200
-    
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-    if not ticket or ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({
-            'valid': False,
-            'message': 'Ticket is no longer valid'
-        }), 400
-    
-    if event_id and ticket.attendance.location_id != int(event_id):
-        return jsonify({
-            'valid': False,
-            'message': 'Ticket is for a different event'
-        }), 400
-    
-    return jsonify({
-        'valid': True,
-        'ticketUid': ticket.ticket_uid,
-        'ticketCode': ticket.ticket_code,
-        'user': ticket.attendance.user.email,
-        'firstName': ticket.attendance.user.parent_profile.first_name,
-        'lastName': ticket.attendance.user.parent_profile.last_name,
-        'status': ticket.status,
-    }), 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════
