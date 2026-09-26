@@ -3231,36 +3231,33 @@ def get_qr_token(ticket_uid: str):
         return jsonify({'error': 'Forbidden'}), 403
     
     if ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'error': 'Ticket is not active'}), 410  # 410 Gone
+        return jsonify({'error': 'Ticket is not active'}), 410
     
-    # Get event
     event = ticket.attendance.location
     if not event:
         return jsonify({'error': 'Event not found'}), 500
     
-    # ✅ FIXED - Use timezone-aware datetime
     if event.end_time and datetime.now(timezone.utc) > event.end_time:
         return jsonify({'error': 'Event has ended'}), 410
     
     try:
-        # Generate static QR (valid for entire event duration)
+        # ✅ FIXED: Changed ticket.created_at to ticket.issued_at
         token = generate_static_qr(
             ticket_uid=ticket.ticket_uid,
             event_id=event.id,
-            issued_at=ticket.created_at.timestamp()
+            issued_at=ticket.issued_at.timestamp()  # ✅ Changed from created_at
         )
         
-        # Calculate time until event ends
         now = time.time()
         if event.end_time:
             event_end = event.end_time.timestamp()
             expires_in_ms = int((event_end - now) * 1000)
         else:
-            expires_in_ms = None  # No expiry
+            expires_in_ms = None
         
         return jsonify({
             'token': token,
-            'expiresInMs': expires_in_ms,  # Time until event ends
+            'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.name,
         }), 200
