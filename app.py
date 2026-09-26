@@ -497,7 +497,7 @@ class EventLocation(db.Model):
 
 def generate_short_code() -> str:
     """Human-readable fallback code printed on tickets. e.g. TKT-A3FX92"""
-    return "TKT-" + secrets.token_hex(3).upper()
+    return "TKT - " + secrets.token_hex(3).upper()
 
 
 class Ticket(db.Model):
