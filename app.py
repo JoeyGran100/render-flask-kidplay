@@ -3258,6 +3258,7 @@ def get_qr_token(ticket_uid: str):
             'token': token,
             'ticketCode': ticket.ticket_code,  # ✅ ADD THIS
             'ticketUid': ticket.ticket_uid,    # ✅ ADD THIS too (good to have)
+            'isVoid': ticket.is_void,           # ✅ Add this
             'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.event_name,
@@ -3340,6 +3341,7 @@ def handle_verify_qr(data):
             'firstName': profile.first_name if profile else None,
             'lastName': profile.last_name if profile else None,
             'status': ticket.status,
+            'isVoid': ticket.is_void,
             'scannedAt': time.time()
         })
         
