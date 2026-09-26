@@ -3263,7 +3263,7 @@ def get_qr_token(ticket_uid: str):
             'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.event_name,
-            'eventAddress': event.venue_address or event.address,  # ✅ ADD ADDRESS
+            'eventAddress': event.event_coordinates.address if event.event_coordinates else None,
             'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
             'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
         }), 200
