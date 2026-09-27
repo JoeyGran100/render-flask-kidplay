@@ -1133,54 +1133,59 @@ def socketio_auth_required(f):
     return decorated_function
 
 
-def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str]:
+def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str, str]:
     """
     Create a check-in record for a ticket at an event.
     Handles race conditions with unique constraint.
+
+    Returns:
+        (success, message, reason_code)
+        reason_code is one of:
+            'SUCCESS', 'ALREADY_CHECKED_IN', 'CHECKIN_CLOSED', 'CHECKIN_FAILED'
     """
     try:
         # Verify event allows check-ins
         if location.is_checkin_closed:
-            return False, "Check-in is closed for this event"
-        
+            return False, "Check-in is closed for this event", "CHECKIN_CLOSED"
+
         user_id = ticket.attendance.parent_id
-        
+
         # Check if already checked in
         existing_checkin = CheckIn.query.filter_by(
             user_id=user_id,
             location_id=location.id
         ).first()
-        
+
         if existing_checkin:
             checkin_time = existing_checkin.timestamp.strftime('%H:%M:%S')
-            return False, f"Already checked in at {checkin_time}"
-        
+            return False, f"Already checked in at {checkin_time}", "ALREADY_CHECKED_IN"
+
         # Create check-in record
         checkin = CheckIn(
             user_id=user_id,
             location_id=location.id,
             timestamp=datetime.now(timezone.utc)
         )
-        
+
         db.session.add(checkin)
         db.session.commit()
-        
+
         app.logger.info(f"✓ Check-in created: User {user_id} at Event {location.id}")
-        
-        return True, "Check-in successful"
-        
+
+        return True, "Check-in successful", "SUCCESS"
+
     except IntegrityError as e:
         # Handle race condition - another request created check-in between our check and insert
         db.session.rollback()
         if "unique_user_location_checkin" in str(e):
             app.logger.info(f"Check-in already exists for user {ticket.attendance.parent_id} at event {location.id}")
-            return False, "Already checked in"
+            return False, "Already checked in", "ALREADY_CHECKED_IN"
         raise
-    
+
     except Exception as e:
         db.session.rollback()
         app.logger.exception(f"Error during check-in: {e}")
-        return False, "Check-in failed"
+        return False, "Check-in failed", "CHECKIN_FAILED"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3525,13 +3530,18 @@ def handle_verify_qr(user: User, data: dict):
         # ─────────────────────────────────────────────────────────────────
         # STEP 5: Auto check-in
         # ─────────────────────────────────────────────────────────────────
-        success, checkin_msg = perform_checkin(ticket, event)
+        success, checkin_msg, reason_code = perform_checkin(ticket, event)
+
         
         if not success:
+            profile = ticket.attendance.user.parent_profile if hasattr(ticket.attendance.user, 'parent_profile') else None
             emit('verify_result', {
                 'valid': False,
-                'code': 'CHECKIN_FAILED',
-                'message': checkin_msg
+                'code': reason_code,  # 'ALREADY_CHECKED_IN', 'CHECKIN_CLOSED', or 'CHECKIN_FAILED'
+                'message': checkin_msg,
+                'firstName': profile.first_name if profile else 'N/A',
+                'lastName': profile.last_name if profile else 'N/A',
+                'ticketCode': ticket.ticket_code
             })
             return
         
