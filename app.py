@@ -11,7 +11,7 @@ from flask_migrate import Migrate
 import enum
 from sqlalchemy.orm import validates, joinedload
 from PIL import Image                    # ✅ NEW: For image resizing
-from functools import lru_cache
+from functools import lru_cache, wraps
 from xml.etree.ElementTree import Comment
 import secrets       # built-in (used for qr_token generation)
 from flask_bcrypt import Bcrypt
@@ -76,8 +76,12 @@ socketio = SocketIO(
 SECRET_KEY = app.config['SECRET_KEY'].encode()
 
 def _derive_key(purpose: str) -> bytes:
-    """Derive a purpose-specific subkey so each use is cryptographically isolated."""
-    return hmac.new(SECRET_KEY, purpose.encode(), hashlib.sha256).digest()
+    """
+    Derive a purpose-specific key from the Flask SECRET_KEY.
+    Ensures cryptographic isolation - each use gets its own key.
+    """
+    secret = app.config['SECRET_KEY'].encode() if isinstance(app.config['SECRET_KEY'], str) else app.config['SECRET_KEY']
+    return hmac.new(secret, purpose.encode(), hashlib.sha256).digest()
 
 QR_KEY = _derive_key("qr_signing")   # isolated subkey, no separate env var needed
 
@@ -1023,31 +1027,129 @@ def generate_static_qr(ticket_uid: str, event_id: int, issued_at: float) -> str:
 
 def verify_static_qr(token: str, event_id: int) -> tuple[bool, str | None]:
     """
-    Verify QR code is valid and event is still running.
-    Returns (is_valid, ticket_uid)
+    Verify QR code signature and extract ticket UID.
+    
+    Security checks:
+    1. Valid base64 encoding
+    2. Contains 4 parts (uid, event_id, timestamp, signature)
+    3. Event ID matches (prevents token reuse across events)
+    4. HMAC signature is valid (prevents tampering)
+    
+    Args:
+        token: The signed token from QR code
+        event_id: Expected event ID for this scan
+        
+    Returns:
+        (is_valid: bool, ticket_uid: str | None)
     """
     try:
+        # Decode base64
         decoded = base64.urlsafe_b64decode(token.encode()).decode()
         parts = decoded.split(":")
-        ticket_uid = parts[0]
-        token_event_id = int(parts[1])
-        issued_at = float(parts[2])
-        signature = parts[3]
         
-    except Exception:
+        if len(parts) != 4:
+            app.logger.warning(f"Invalid token structure: expected 4 parts, got {len(parts)}")
+            return False, None
+        
+        ticket_uid, token_event_id, issued_at_str, signature = parts
+        
+        # Verify event ID matches
+        try:
+            token_event_id = int(token_event_id)
+        except ValueError:
+            return False, None
+        
+        if token_event_id != event_id:
+            app.logger.warning(f"Event ID mismatch: token={token_event_id}, scanning={event_id}")
+            return False, None
+        
+        # Verify signature
+        try:
+            issued_at = float(issued_at_str)
+        except ValueError:
+            return False, None
+        
+        message = f"{ticket_uid}:{event_id}:{issued_at_str}".encode()
+        expected_sig = hmac.new(QR_KEY, message, hashlib.sha256).hexdigest()
+        
+        # Constant-time comparison (prevents timing attacks)
+        if not hmac.compare_digest(signature, expected_sig):
+            app.logger.warning(f"Signature verification failed for {ticket_uid}")
+            return False, None
+        
+        return True, ticket_uid
+        
+    except Exception as e:
+        app.logger.exception(f"Error verifying QR token: {e}")
         return False, None
+
+
+def socketio_auth_required(f):
+    """Decorator to verify Socket.IO event requires authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user = get_current_user_from_token()
+        if not user:
+            emit('error', {
+                'code': 'UNAUTHORIZED',
+                'message': 'Authentication token invalid or expired'
+            })
+            return
+        return f(user, *args, **kwargs)
+    return decorated_function
+
+
+def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str]:
+    """
+    Create a check-in record for a ticket at an event.
     
-    # Token must be for THIS event (prevent reuse)
-    if token_event_id != event_id:
-        return False, None
+    Validates:
+    - Check-in not disabled for this event
+    - User hasn't already checked in
+    - Database constraints
     
-    # Verify signature
-    message = f"{ticket_uid}:{event_id}:{issued_at}".encode()
-    expected_sig = hmac.new(QR_KEY, message, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected_sig):
-        return False, None
-    
-    return True, ticket_uid
+    Args:
+        ticket: The Ticket to check in
+        location: The EventLocation for check-in
+        
+    Returns:
+        (success: bool, message: str)
+    """
+    try:
+        # Verify event allows check-ins
+        if location.is_checkin_closed:
+            return False, "Check-in is closed for this event"
+        
+        user_id = ticket.attendance.parent_id
+        
+        # Check if already checked in
+        existing_checkin = CheckIn.query.filter_by(
+            user_id=user_id,
+            location_id=location.id
+        ).first()
+        
+        if existing_checkin:
+            checkin_time = existing_checkin.timestamp.strftime('%H:%M:%S')
+            return False, f"Already checked in at {checkin_time}"
+        
+        # Create check-in record
+        checkin = CheckIn(
+            user_id=user_id,
+            location_id=location.id,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        db.session.add(checkin)
+        db.session.commit()
+        
+        app.logger.info(f"✓ Check-in created: User {user_id} at Event {location.id}")
+        
+        return True, "Check-in successful"
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception(f"Error during check-in: {e}")
+        return False, "Check-in failed"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3216,43 +3318,123 @@ def get_created_events():
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
+# @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
+# def get_qr_token(ticket_uid: str):
+#     """Generate static QR token valid for entire event duration."""
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({'error': 'Unauthorized'}), 401
+    
+#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+#     if not ticket:
+#         return jsonify({'error': 'Ticket not found'}), 404
+    
+#     if ticket.attendance.parent_id != user.id:
+#         return jsonify({'error': 'Forbidden'}), 403
+    
+#     if ticket.is_expired or ticket.status == 'cancelled':
+#         return jsonify({'error': 'Ticket is not active'}), 410
+    
+#     event = ticket.attendance.location
+#     if not event:
+#         return jsonify({'error': 'Event not found'}), 500
+    
+#     if event.end_time and datetime.now(timezone.utc) > event.end_time:
+#         return jsonify({'error': 'Event has ended'}), 410
+    
+#     try:
+#         token = generate_static_qr(
+#             ticket_uid=ticket.ticket_uid,
+#             event_id=event.id,
+#             issued_at=ticket.issued_at.timestamp()
+#         )
+        
+#         now = time.time()
+#         if event.end_time:
+#             event_end = event.end_time.timestamp()
+#             expires_in_ms = int((event_end - now) * 1000)
+#         else:
+#             expires_in_ms = None
+        
+#         return jsonify({
+#             'token': token,
+#             'ticketCode': ticket.ticket_code,
+#             'ticketUid': ticket.ticket_uid,
+#             'isVoid': ticket.is_void,
+#             'status': ticket.status,
+#             'expiresInMs': expires_in_ms,
+#             'eventId': event.id,
+#             'eventName': event.event_name,
+#             'eventAddress': event.event_coordinates.address if event.event_coordinates else None,
+#             'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
+#             'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
+#         }), 200
+#     except Exception as e:
+#         app.logger.exception(f"Failed to generate QR for {ticket_uid}")
+#         return jsonify({'error': 'Failed to generate QR token'}), 500
+    
+
 @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
 def get_qr_token(ticket_uid: str):
-    """Generate static QR token valid for entire event duration."""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
+    """
+    Generate QR token for a ticket.
     
-    ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-    if not ticket:
-        return jsonify({'error': 'Ticket not found'}), 404
+    Called by ticket holder to get their QR code for display.
+    Token is static and valid for the entire event duration.
     
-    if ticket.attendance.parent_id != user.id:
-        return jsonify({'error': 'Forbidden'}), 403
-    
-    if ticket.is_expired or ticket.status == 'cancelled':
-        return jsonify({'error': 'Ticket is not active'}), 410
-    
-    event = ticket.attendance.location
-    if not event:
-        return jsonify({'error': 'Event not found'}), 500
-    
-    if event.end_time and datetime.now(timezone.utc) > event.end_time:
-        return jsonify({'error': 'Event has ended'}), 410
-    
+    Returns:
+        {
+            'token': 'base64-encoded-signed-token',
+            'ticketCode': 'TKT-XXXXX',
+            'ticketUid': 'uuid',
+            'status': 'active|used|void|expired',
+            'eventId': int,
+            'eventName': string,
+            'eventStartTime': ISO timestamp,
+            'eventEndTime': ISO timestamp or null
+        }
+    """
     try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized', 'code': 'NO_AUTH'}), 401
+        
+        # Fetch ticket
+        ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
+        if not ticket:
+            return jsonify({'error': 'Ticket not found', 'code': 'NOT_FOUND'}), 404
+        
+        # Verify ownership
+        if ticket.attendance.parent_id != user.id:
+            return jsonify({'error': 'Forbidden', 'code': 'FORBIDDEN'}), 403
+        
+        # Verify ticket is valid
+        if ticket.is_void:
+            return jsonify({'error': 'Ticket is void', 'code': 'TICKET_VOID'}), 410
+        
+        if ticket.cancelled_at:
+            return jsonify({'error': 'Ticket was cancelled', 'code': 'TICKET_CANCELLED'}), 410
+        
+        if ticket.is_expired:
+            return jsonify({'error': 'Event has ended', 'code': 'EVENT_EXPIRED'}), 410
+        
+        # Get event
+        event = ticket.attendance.location
+        if not event:
+            return jsonify({'error': 'Event not found', 'code': 'NO_EVENT'}), 500
+        
+        # Check event hasn't ended
+        if event.end_time and datetime.now(timezone.utc) > event.end_time:
+            return jsonify({'error': 'Event has ended', 'code': 'EVENT_ENDED'}), 410
+        
+        # Generate QR token
         token = generate_static_qr(
             ticket_uid=ticket.ticket_uid,
             event_id=event.id,
             issued_at=ticket.issued_at.timestamp()
         )
         
-        now = time.time()
-        if event.end_time:
-            event_end = event.end_time.timestamp()
-            expires_in_ms = int((event_end - now) * 1000)
-        else:
-            expires_in_ms = None
+        app.logger.info(f"QR token generated for ticket {ticket_uid}")
         
         return jsonify({
             'token': token,
@@ -3260,16 +3442,15 @@ def get_qr_token(ticket_uid: str):
             'ticketUid': ticket.ticket_uid,
             'isVoid': ticket.is_void,
             'status': ticket.status,
-            'expiresInMs': expires_in_ms,
             'eventId': event.id,
             'eventName': event.event_name,
-            'eventAddress': event.event_coordinates.address if event.event_coordinates else None,
             'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
             'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
         }), 200
+        
     except Exception as e:
-        app.logger.exception(f"Failed to generate QR for {ticket_uid}")
-        return jsonify({'error': 'Failed to generate QR token'}), 500
+        app.logger.exception(f"Error generating QR token: {e}")
+        return jsonify({'error': 'Internal server error', 'code': 'SERVER_ERROR'}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3277,90 +3458,319 @@ def get_qr_token(ticket_uid: str):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @socketio.on('verify_qr')
-def handle_verify_qr(data):
+@socketio_auth_required
+def handle_verify_qr(user: User, data: dict):
     """
-    Scanner verifies QR token via Socket.IO.
-    Returns result in real-time.
-    """
-    try:
-        user = get_current_user_from_token()
-        if not user:
-            emit('error', {'message': 'Unauthorized'})
-            return
+    Verify a scanned QR code and automatically check in the ticket holder.
+    
+    Performs:
+    1. QR signature verification
+    2. Ticket validity check
+    3. Event validation
+    4. Auto check-in
+    5. Broadcasts check-in to event room
+    
+    Expected data:
+        - token: str - Signed QR token from scanned code
+        - eventId: int - Event being scanned at
         
-        token = data.get('token')
+    Emits:
+        - verify_result: Success with user details or error code
+        - error: General error message
+    """
+    start_time = time.time()
+    
+    try:
+        # Validate input
+        token = data.get('token', '').strip()
         event_id = data.get('eventId')
         
         if not token or not event_id:
             emit('verify_result', {
                 'valid': False,
+                'code': 'MISSING_PARAMS',
                 'message': 'token and eventId are required'
             })
             return
         
-        # Verify static QR signature
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 1: Verify QR token signature
+        # ─────────────────────────────────────────────────────────────────
         is_valid, ticket_uid = verify_static_qr(token, event_id)
         if not is_valid:
             emit('verify_result', {
                 'valid': False,
-                'message': 'QR code invalid or tampered'
+                'code': 'INVALID_SIGNATURE',
+                'message': 'QR code is invalid or tampered'
             })
             return
         
-        # Get ticket
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 2: Fetch and validate ticket
+        # ─────────────────────────────────────────────────────────────────
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-        if not ticket or ticket.is_expired or ticket.status == 'cancelled':
+        
+        if not ticket:
             emit('verify_result', {
                 'valid': False,
-                'message': 'Ticket is no longer valid'
+                'code': 'TICKET_NOT_FOUND',
+                'message': 'Ticket not found'
             })
             return
         
-        # Verify event is still running
+        # Check ticket lifecycle
+        if ticket.is_void:
+            emit('verify_result', {
+                'valid': False,
+                'code': 'TICKET_VOID',
+                'message': 'This ticket has been voided'
+            })
+            return
+        
+        if ticket.cancelled_at:
+            emit('verify_result', {
+                'valid': False,
+                'code': 'TICKET_CANCELLED',
+                'message': 'This ticket was cancelled'
+            })
+            return
+        
+        if ticket.is_expired:
+            emit('verify_result', {
+                'valid': False,
+                'code': 'TICKET_EXPIRED',
+                'message': 'This ticket has expired'
+            })
+            return
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 3: Validate event
+        # ─────────────────────────────────────────────────────────────────
         event = ticket.attendance.location
-        if not event or (event.end_time and datetime.utcnow() > event.end_time):
+        
+        if not event:
             emit('verify_result', {
                 'valid': False,
-                'message': 'Event has ended'
+                'code': 'EVENT_NOT_FOUND',
+                'message': 'Event not found'
             })
             return
         
-        # Verify ticket is for correct event
+        # Check event hasn't ended
+        if event.end_time and datetime.now(timezone.utc) > event.end_time:
+            emit('verify_result', {
+                'valid': False,
+                'code': 'EVENT_ENDED',
+                'message': 'This event has ended'
+            })
+            return
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 4: Verify ticket is for the scanned event
+        # ─────────────────────────────────────────────────────────────────
         if event.id != event_id:
             emit('verify_result', {
                 'valid': False,
+                'code': 'EVENT_MISMATCH',
                 'message': 'Ticket is for a different event'
             })
             return
         
-        # ✅ Valid ticket - send result to scanner
-        attendance_user = ticket.attendance.user
-        profile = attendance_user.parent_profile
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 5: Auto check-in
+        # ─────────────────────────────────────────────────────────────────
+        success, checkin_msg = perform_checkin(ticket, event)
+        
+        if not success:
+            emit('verify_result', {
+                'valid': False,
+                'code': 'CHECKIN_FAILED',
+                'message': checkin_msg
+            })
+            return
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 6: Extract user information
+        # ─────────────────────────────────────────────────────────────────
+        ticket_holder = ticket.attendance.user
+        profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
+        
+        user_info = {
+            'userId': ticket_holder.id,
+            'firstName': profile.first_name if profile else 'N/A',
+            'lastName': profile.last_name if profile else 'N/A',
+            'email': ticket_holder.email,
+            'ticketCode': ticket.ticket_code,
+            'checkedInAt': time.time()
+        }
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 7: Send success result to scanner
+        # ─────────────────────────────────────────────────────────────────
+        elapsed_ms = (time.time() - start_time) * 1000
         
         emit('verify_result', {
             'valid': True,
-            'ticketUid': ticket.ticket_uid,
-            'ticketCode': ticket.ticket_code,
-            'user': attendance_user.email,
-            'firstName': profile.first_name if profile else None,
-            'lastName': profile.last_name if profile else None,
-            'status': ticket.status,
-            'isVoid': ticket.is_void,
-            'scannedAt': time.time()
+            'code': 'SUCCESS',
+            'user': user_info,
+            'processingTimeMs': elapsed_ms
         })
         
-        # ✅ OPTIONAL: Notify ticket holder via Socket.IO that their ticket was scanned
-        ticket_holder_room = f"ticket:{ticket_uid}"
-        socketio.emit('ticket_scanned', {
-            'scannedAt': time.time(),
-            'eventName': event.name
-        }, room=ticket_holder_room, skip_sid=request.sid)
+        # ─────────────────────────────────────────────────────────────────
+        # STEP 8: Broadcast check-in to event organizer room
+        # ─────────────────────────────────────────────────────────────────
+        room = f"event:{event_id}"
+        socketio.emit('user_checked_in', {
+            'userId': user_info['userId'],
+            'firstName': user_info['firstName'],
+            'lastName': user_info['lastName'],
+            'email': user_info['email'],
+            'ticketCode': user_info['ticketCode'],
+            'checkedInAt': user_info['checkedInAt']
+        }, room=room)
         
-        app.logger.info(f"Ticket {ticket_uid} verified by scanner {user.id} at event {event_id}")
+        app.logger.info(
+            f"✓ QR verified & checked in: {ticket_uid[:8]}... | "
+            f"User: {ticket_holder.id} | Event: {event_id} | Time: {elapsed_ms:.0f}ms"
+        )
         
     except Exception as e:
-        app.logger.exception(f"Error verifying QR: {e}")
-        emit('error', {'message': 'Verification failed'})
+        app.logger.exception(f"Error in verify_qr: {e}")
+        emit('error', {
+            'code': 'SERVER_ERROR',
+            'message': 'Internal error during verification'
+        })
+
+
+@app.route('/api/events/<int:event_id>/attendees', methods=['GET'])
+def get_event_attendees(event_id: int):
+    """
+    Get list of all attendees for an event with check-in status.
+    
+    Only accessible to the event organizer.
+    
+    Returns:
+        [
+            {
+                'userId': int,
+                'firstName': string,
+                'lastName': string,
+                'email': string,
+                'ticketCode': string,
+                'isCheckedIn': boolean,
+                'checkedInAt': timestamp or null
+            },
+            ...
+        ]
+    """
+    try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        # Get event
+        event = EventLocation.query.get(event_id)
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        # Verify user is organizer
+        if event.event_organizer_id != user.id:
+            return jsonify({'error': 'Forbidden'}), 403
+        
+        # Get all attendances for this event
+        attendances = Attendance.query.filter_by(location_id=event_id).all()
+        
+        # Build attendee list with check-in status
+        attendees = []
+        for attendance in attendances:
+            ticket_holder = attendance.user
+            profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
+            
+            # Check if this person is checked in
+            checkin = CheckIn.query.filter_by(
+                user_id=ticket_holder.id,
+                location_id=event_id
+            ).first()
+            
+            attendee = {
+                'userId': ticket_holder.id,
+                'firstName': profile.first_name if profile else 'N/A',
+                'lastName': profile.last_name if profile else 'N/A',
+                'email': ticket_holder.email,
+                'ticketCode': attendance.ticket.ticket_code if attendance.ticket else 'N/A',
+                'isCheckedIn': checkin is not None,
+                'checkedInAt': checkin.timestamp.timestamp() if checkin else None
+            }
+            attendees.append(attendee)
+        
+        app.logger.info(f"Attendee list fetched for event {event_id}")
+        
+        return jsonify(attendees), 200
+        
+    except Exception as e:
+        app.logger.exception(f"Error fetching attendees: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@socketio.on('join_event_room')
+@socketio_auth_required
+def handle_join_event_room(user: User, data: dict):
+    """
+    Join the event room to receive real-time check-in updates.
+    
+    Called by organizer when they click "View Attendees".
+    Organizer must be the event creator.
+    
+    Expected data:
+        - eventId: int - Event to join room for
+    """
+    try:
+        event_id = data.get('eventId')
+        
+        if not event_id:
+            emit('error', {
+                'code': 'MISSING_EVENT_ID',
+                'message': 'eventId is required'
+            })
+            return
+        
+        # Verify event exists
+        event = EventLocation.query.get(event_id)
+        if not event:
+            emit('error', {
+                'code': 'EVENT_NOT_FOUND',
+                'message': 'Event not found'
+            })
+            return
+        
+        # Verify user is organizer
+        if event.event_organizer_id != user.id:
+            emit('error', {
+                'code': 'UNAUTHORIZED',
+                'message': 'You are not the organizer of this event'
+            })
+            return
+        
+        # Join event room
+        room = f"event:{event_id}"
+        join_room(room)
+        
+        emit('room_joined', {
+            'room': room,
+            'eventId': event_id,
+            'eventName': event.event_name,
+            'message': 'Joined event room - receiving live updates'
+        })
+        
+        app.logger.info(f"Organizer {user.id} joined event room: {room}")
+        
+    except Exception as e:
+        app.logger.exception(f"Error in join_event_room: {e}")
+        emit('error', {
+            'code': 'SERVER_ERROR',
+            'message': 'Error joining room'
+        })
+
 
 
 # @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
