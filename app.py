@@ -3,6 +3,7 @@ from threading import Thread
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit, leave_room, join_room
+from psycopg2 import IntegrityError
 from werkzeug.utils import secure_filename
 from flask import request, jsonify
 import traceback
@@ -1135,18 +1136,7 @@ def socketio_auth_required(f):
 def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str]:
     """
     Create a check-in record for a ticket at an event.
-    
-    Validates:
-    - Check-in not disabled for this event
-    - User hasn't already checked in
-    - Database constraints
-    
-    Args:
-        ticket: The Ticket to check in
-        location: The EventLocation for check-in
-        
-    Returns:
-        (success: bool, message: str)
+    Handles race conditions with unique constraint.
     """
     try:
         # Verify event allows check-ins
@@ -1179,6 +1169,14 @@ def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str]
         
         return True, "Check-in successful"
         
+    except IntegrityError as e:
+        # Handle race condition - another request created check-in between our check and insert
+        db.session.rollback()
+        if "unique_user_location_checkin" in str(e):
+            app.logger.info(f"Check-in already exists for user {ticket.attendance.parent_id} at event {location.id}")
+            return False, "Already checked in"
+        raise
+    
     except Exception as e:
         db.session.rollback()
         app.logger.exception(f"Error during check-in: {e}")
