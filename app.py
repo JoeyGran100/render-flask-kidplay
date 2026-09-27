@@ -1643,35 +1643,6 @@ def broadcast_event_to_map(event_coordinates):
 
 # ALL ENDPOINTS 
 
-# USER SIGNIN METHOD
-# @app.route('/sign-in', methods=['POST'])
-# def sign_in():
-#     try:
-#         data = request.get_json()
-#         email = data.get('email')
-#         password = data.get('password')  # ← Plaintext password from client
-
-#         if not email or not password:
-#             return jsonify({'error': 'Email and password are required'}), 400
-
-#         user = User.query.filter_by(email=email).first()
-#         if not user or not bcrypt.check_password_hash(user.password_hash, password):
-#             return jsonify({'message': 'Invalid credentials'}), 401
-
-#         payload = {
-#             'user_id': user.id,
-#             'exp': datetime.utcnow() + timedelta(days=7)
-#         }
-#         token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
-#         if isinstance(token, bytes):
-#             token = token.decode('utf-8')
-
-#         return jsonify({'message': 'Sign in successful', 'token': token}), 200
-
-#     except Exception as e:
-#         print("Sign-in error:", e)
-#         return jsonify({'error': str(e)}), 500
-    
     
 @app.route('/log-in', methods=['POST'])
 def sign_in():
@@ -3349,62 +3320,6 @@ def get_created_events():
 # Qr CODE SCANNER/GENERATOR ✅
 # ─────────────────────────────────────────────────────────────────────────────
 
-# @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
-# def get_qr_token(ticket_uid: str):
-#     """Generate static QR token valid for entire event duration."""
-#     user = get_current_user_from_token()
-#     if not user:
-#         return jsonify({'error': 'Unauthorized'}), 401
-    
-#     ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-#     if not ticket:
-#         return jsonify({'error': 'Ticket not found'}), 404
-    
-#     if ticket.attendance.parent_id != user.id:
-#         return jsonify({'error': 'Forbidden'}), 403
-    
-#     if ticket.is_expired or ticket.status == 'cancelled':
-#         return jsonify({'error': 'Ticket is not active'}), 410
-    
-#     event = ticket.attendance.location
-#     if not event:
-#         return jsonify({'error': 'Event not found'}), 500
-    
-#     if event.end_time and datetime.now(timezone.utc) > event.end_time:
-#         return jsonify({'error': 'Event has ended'}), 410
-    
-#     try:
-#         token = generate_static_qr(
-#             ticket_uid=ticket.ticket_uid,
-#             event_id=event.id,
-#             issued_at=ticket.issued_at.timestamp()
-#         )
-        
-#         now = time.time()
-#         if event.end_time:
-#             event_end = event.end_time.timestamp()
-#             expires_in_ms = int((event_end - now) * 1000)
-#         else:
-#             expires_in_ms = None
-        
-#         return jsonify({
-#             'token': token,
-#             'ticketCode': ticket.ticket_code,
-#             'ticketUid': ticket.ticket_uid,
-#             'isVoid': ticket.is_void,
-#             'status': ticket.status,
-#             'expiresInMs': expires_in_ms,
-#             'eventId': event.id,
-#             'eventName': event.event_name,
-#             'eventAddress': event.event_coordinates.address if event.event_coordinates else None,
-#             'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
-#             'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
-#         }), 200
-#     except Exception as e:
-#         app.logger.exception(f"Failed to generate QR for {ticket_uid}")
-#         return jsonify({'error': 'Failed to generate QR token'}), 500
-    
-
 @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
 def get_qr_token(ticket_uid: str):
     """
@@ -3643,7 +3558,14 @@ def handle_verify_qr(user: User, data: dict):
         emit('verify_result', {
             'valid': True,
             'code': 'SUCCESS',
-            'user': user_info,
+            'userId': ticket_holder.id,
+            'firstName': profile.first_name if profile else 'N/A',
+            'lastName': profile.last_name if profile else 'N/A',
+            'email': ticket_holder.email,
+            'ticketCode': ticket.ticket_code,
+            'ticketUid': ticket_uid,  # ✅ ADD
+            'status': ticket.status,   # ✅ ADD
+            'checkedInAt': time.time(),
             'processingTimeMs': elapsed_ms
         })
         
@@ -4397,441 +4319,6 @@ def post_report():
     return jsonify({'message': 'Report submitted', 'id': report.id}), 201
  
 
-
-# SWISH_CERT = ("/path/to/swish.crt", "/path/to/swish.key")  # from your bank
-# SWISH_HANDEL_URL = "https://cpc.getswish.net/swish-cpcapi/api/v2/paymentrequests"
-# YOUR_SWISH_NUMBER = "1231234567"  # your platform's Swish number
-
-# @app.route("/ticket/pay", methods=["POST"])
-# def pay_for_ticket():
-#     data = request.json
-#     event = EventLocation.query.get(data["event_id"])
-#     payment_ref = uuid.uuid4().hex.upper()  # unique reference
-
-#     payload = {
-#         "payeePaymentReference": payment_ref,
-#         "callbackUrl": "https://yourapp.com/swish/callback",  # Swish calls this
-#         "payeeAlias": YOUR_SWISH_NUMBER,
-#         "currency": "SEK",
-#         "amount": str(event.ticket_price),
-#         "message": f"Ticket: {event.name}"[:50],  # max 50 chars
-#     }
-
-#     response = requests.put(
-#         f"{SWISH_HANDEL_URL}/{payment_ref}",
-#         json=payload,
-#         cert=SWISH_CERT,
-#         verify=True
-#     )
-
-#     if response.status_code == 201:
-#         # Save pending transaction
-#         transaction = EventTransaction(
-#             event_id=event.id,
-#             attendee_user_id=current_user.id,
-#             amount=event.ticket_price,
-#             swish_reference=payment_ref,
-#             status='pending'
-#         )
-#         db.session.add(transaction)
-#         db.session.commit()
-#         return jsonify({"payment_reference": payment_ref}), 201
-
-#     return jsonify({"error": "Payment initiation failed"}), 400
-
-
-# @app.route("/swish/callback", methods=["POST"])
-# def swish_callback():
-#     data = request.json
-#     ref = data.get("payeePaymentReference")
-
-#     transaction = EventTransaction.query.filter_by(swish_reference=ref).first()
-#     if not transaction:
-#         return "", 404
-
-#     if data.get("status") == "PAID":
-#         transaction.status = "paid"
-#         db.session.commit()
-#         # Optionally: confirm ticket, send confirmation email, etc.
-
-#     elif data.get("status") == "DECLINED":
-#         transaction.status = "declined"
-#         db.session.commit()
-
-#     return "", 200  # Always return 200 to Swish
-
-
-
-
-# SWISH_PAYOUT_URL = "https://cpc.getswish.net/swish-cpcapi/api/v1/payouts"
-# PLATFORM_FEE_PERCENT = 0.10  # your 10% cut
-
-# @app.route("/event/<int:event_id>/payout", methods=["POST"])
-# def trigger_payout(event_id):
-#     event = EventLocation.query.get_or_404(event_id)
-#     organizer = event.event_organizer
-#     payment_details = organizer.payment_details
-
-#     if not payment_details or not payment_details.swish_verified:
-#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
-
-#     # Sum all paid transactions for this event
-#     paid_transactions = EventTransaction.query.filter_by(
-#         event_id=event_id,
-#         status="paid"
-#     ).all()
-
-#     gross = sum(t.amount for t in paid_transactions)
-#     fee = round(gross * PLATFORM_FEE_PERCENT, 2)
-#     payout_amount = round(gross - fee, 2)
-
-#     if payout_amount <= 0:
-#         return jsonify({"error": "Nothing to pay out"}), 400
-
-#     payout_ref = uuid.uuid4().hex.upper()
-
-#     payload = {
-#         "payoutInstructionUUID": payout_ref,
-#         "payerPaymentReference":  payout_ref,
-#         "payerAlias":  YOUR_SWISH_NUMBER,      # your platform
-#         "payeeAlias":  payment_details.swish_number,  # organizer's number
-#         "amount":      str(payout_amount),
-#         "currency":    "SEK",
-#         "message":     f"Payout: {event.name}"[:50],
-#     }
-
-#     response = requests.post(
-#         SWISH_PAYOUT_URL,
-#         json=payload,
-#         cert=SWISH_CERT,
-#         verify=True
-#     )
-
-#     if response.status_code in (200, 201):
-#         payout = EventPayout(
-#             event_id=event_id,
-#             event_organizer_id=organizer.id,
-#             gross_amount=gross,
-#             platform_fee=fee,
-#             payout_amount=payout_amount,
-#             swish_reference=payout_ref,
-#             status="processing"
-#         )
-#         db.session.add(payout)
-#         db.session.commit()
-#         return jsonify({"payout_reference": payout_ref}), 200
-
-#     return jsonify({"error": "Payout failed"}), 400
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /ticket/pay  —  initiate Swish payment for an event ticket
-# ─────────────────────────────────────────────────────────────────────────────
- 
-# @app.route("/ticket/pay", methods=["POST"])
-# def pay_for_ticket():
-#     """
-#     Initiates a Swish payment request for a registered attendee.
- 
-#     Expected JSON body:
-#         { "event_id": <int> }
- 
-#     Flow:
-#         1. Verify the caller is authenticated and has an attendance record.
-#         2. Ensure no paid/pending transaction already exists (idempotency guard).
-#         3. PUT the payment request to Swish.
-#         4. Persist a pending EventTransaction row.
-#         5. Return the payment_reference so the client can poll status.
-#     """
-#     user = get_current_user_from_token()
-#     if not user:
-#         return jsonify({"error": "Unauthorized"}), 401
- 
-#     data = request.get_json()
-#     if not data or "event_id" not in data:
-#         return jsonify({"error": "event_id is required"}), 400
- 
-#     event = EventLocation.query.get(data["event_id"])
-#     if not event:
-#         return jsonify({"error": "Event not found"}), 404
- 
-#     if event.base_price is None or event.base_price <= 0:
-#         return jsonify({"error": "This event has no ticket price"}), 400
- 
-#     # Must be registered before paying
-#     attendance = Attendance.query.filter_by(
-#         user_id=user.id, location_id=event.id
-#     ).first()
-#     if not attendance:
-#         return jsonify({"error": "You are not registered for this event"}), 403
- 
-#     # Idempotency — block duplicate payments
-#     existing = EventTransaction.query.filter_by(
-#         event_id=event.id,
-#         attendee_user_id=user.id,
-#     ).filter(
-#         EventTransaction.status.in_([
-#             TransactionStatus.pending.value,
-#             TransactionStatus.paid.value,
-#         ])
-#     ).first()
-#     if existing:
-#         return jsonify({
-#             "error": "A payment already exists for this registration",
-#             "status": existing.status,
-#             "payment_reference": existing.swish_reference,
-#         }), 409
- 
-#     payment_ref = _make_payment_ref()
- 
-#     swish_payload = {
-#         "payeePaymentReference": payment_ref,
-#         "callbackUrl":           SWISH_CALLBACK_URL + "/swish/callback",
-#         "payeeAlias":            YOUR_SWISH_NUMBER,
-#         "currency":              event.currency or "SEK",
-#         "amount":                str(event.base_price),
-#         "message":               f"Ticket event {event.id}"[:50],
-#     }
- 
-#     try:
-#         response = _swish_put(
-#             f"{SWISH_PAYMENT_URL}/{payment_ref}",
-#             swish_payload,
-#         )
-#     except requests.RequestException as exc:
-#         traceback.print_exc()
-#         return jsonify({"error": "Could not reach Swish", "details": str(exc)}), 502
- 
-#     if response.status_code != 201:
-#         return jsonify({
-#             "error": "Swish rejected the payment request",
-#             "swish_status": response.status_code,
-#             "swish_body":   response.text,
-#         }), 400
- 
-#     # Persist pending transaction
-#     transaction = EventTransaction(
-#         event_id=event.id,
-#         attendee_user_id=user.id,
-#         amount=event.base_price,
-#         currency=event.currency or "SEK",
-#         swish_reference=payment_ref,
-#         status=TransactionStatus.pending.value,
-#     )
-#     db.session.add(transaction)
- 
-#     try:
-#         db.session.commit()
-#     except Exception:
-#         db.session.rollback()
-#         traceback.print_exc()
-#         return jsonify({"error": "Payment initiated but failed to persist transaction"}), 500
- 
-#     return jsonify({"payment_reference": payment_ref}), 201
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /swish/callback  —  Swish server-to-server webhook
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@app.route("/swish/callback", methods=["POST"])
-def swish_callback():
-    """
-    Swish calls this endpoint after every status change.
-    Must always return 200; Swish retries on non-200 responses.
- 
-    Swish payload shape:
-        {
-          "payeePaymentReference": "...",
-          "status": "PAID" | "DECLINED" | "ERROR",
-          ...
-        }
-    """
-    data = request.get_json(silent=True)
-    if not data:
-        # Still return 200 — log and move on
-        print("swish_callback: empty or non-JSON body")
-        return "", 200
- 
-    ref    = data.get("payeePaymentReference")
-    status = data.get("status", "").upper()
- 
-    transaction = EventTransaction.query.filter_by(swish_reference=ref).first()
-    if not transaction:
-        print(f"swish_callback: unknown reference {ref!r}")
-        return "", 200  # unknown ref — still 200 so Swish stops retrying
- 
-    if status == "PAID" and transaction.status != TransactionStatus.paid.value:
-        transaction.status = TransactionStatus.paid.value
- 
-        # Stamp the ticket as paid
-        attendance = Attendance.query.filter_by(
-            user_id=transaction.attendee_user_id,
-            location_id=transaction.event_id,
-        ).first()
-        if attendance and attendance.ticket:
-            attendance.ticket.amount_paid  = transaction.amount
-            attendance.ticket.currency     = transaction.currency
-            attendance.ticket.payment_ref  = ref
-            attendance.ticket.paid_at      = datetime.now(timezone.utc)
- 
-    elif status == "DECLINED":
-        transaction.status = TransactionStatus.declined.value
- 
-    elif status == "ERROR":
-        # Treat ERROR the same as DECLINED for now; adjust as needed
-        transaction.status = TransactionStatus.declined.value
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        # Still return 200 — a retry won't help a DB error, log it instead
- 
-    return "", 200
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /ticket/pay/status/<payment_ref>  —  client polls payment outcome
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@app.route("/ticket/pay/status/<string:payment_ref>", methods=["GET"])
-def get_payment_status(payment_ref: str):
-    """
-    Lets the frontend poll for the outcome of a Swish payment without
-    waiting for the callback to fire.
-    """
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({"error": "Unauthorized"}), 401
- 
-    transaction = EventTransaction.query.filter_by(
-        swish_reference=payment_ref,
-        attendee_user_id=user.id,          # users can only see their own
-    ).first()
-    if not transaction:
-        return jsonify({"error": "Transaction not found"}), 404
- 
-    return jsonify({
-        "payment_reference": transaction.swish_reference,
-        "status":            transaction.status,
-        "amount":            float(transaction.amount),
-        "currency":          transaction.currency,
-    }), 200
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST /event/<event_id>/payout  —  trigger organizer payout after event ends
-# ─────────────────────────────────────────────────────────────────────────────
- 
-# @app.route("/event/<int:event_id>/payout", methods=["POST"])
-# def trigger_payout(event_id: int):
-#     """
-#     Calculates the organizer's payout from all paid transactions for the event,
-#     deducts the platform fee, and initiates a Swish payout.
- 
-#     Guard rails:
-#         - Caller must be the event's organizer (or an admin — extend as needed).
-#         - Event must have ended before a payout is allowed.
-#         - Organizer must have a verified Swish number.
-#         - A payout can only be triggered once per event.
-#     """
-#     user = get_current_user_from_token()
-#     if not user:
-#         return jsonify({"error": "Unauthorized"}), 401
- 
-#     event = EventLocation.query.get_or_404(event_id)
-#     organizer = event.event_organizer
- 
-#     # Only the owning organizer may trigger their own payout
-#     if not organizer or organizer.user_id != user.id:
-#         return jsonify({"error": "Forbidden — you are not the organizer of this event"}), 403
- 
-#     if not event.is_past:
-#         return jsonify({"error": "Payout can only be triggered after the event has ended"}), 400
- 
-#     payment_details = organizer.payment_details
-#     if not payment_details or not payment_details.swish_verified:
-#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
- 
-#     # Idempotency — one payout per event
-#     existing_payout = EventPayout.query.filter_by(event_id=event_id).first()
-#     if existing_payout:
-#         return jsonify({
-#             "error":           "Payout already exists for this event",
-#             "status":          existing_payout.status,
-#             "payout_reference": existing_payout.swish_reference,
-#         }), 409
- 
-#     # Sum all confirmed paid transactions for this event
-#     paid_transactions = EventTransaction.query.filter_by(
-#         event_id=event_id,
-#         status=TransactionStatus.paid.value,
-#     ).all()
- 
-#     if not paid_transactions:
-#         return jsonify({"error": "No paid transactions found for this event"}), 400
- 
-#     gross         = sum(t.amount for t in paid_transactions)
-#     platform_fee  = round(float(gross) * PLATFORM_FEE_RATE, 2)
-#     payout_amount = round(float(gross) - platform_fee, 2)
- 
-#     if payout_amount <= 0:
-#         return jsonify({"error": "Payout amount is zero after fee deduction"}), 400
- 
-#     payout_ref = _make_payment_ref()
- 
-#     swish_payload = {
-#         "payoutInstructionUUID":  payout_ref,
-#         "payerPaymentReference":  payout_ref,
-#         "payerAlias":             YOUR_SWISH_NUMBER,
-#         "payeeAlias":             payment_details.swish_number,
-#         "amount":                 str(payout_amount),
-#         "currency":               "SEK",
-#         "message":                f"Payout event {event_id}"[:50],
-#     }
- 
-#     try:
-#         response = _swish_post(SWISH_PAYOUT_URL, swish_payload)
-#     except requests.RequestException as exc:
-#         traceback.print_exc()
-#         return jsonify({"error": "Could not reach Swish", "details": str(exc)}), 502
- 
-#     if response.status_code not in (200, 201):
-#         return jsonify({
-#             "error":        "Swish rejected the payout request",
-#             "swish_status": response.status_code,
-#             "swish_body":   response.text,
-#         }), 400
- 
-#     payout = EventPayout(
-#         event_id=event_id,
-#         event_organizer_id=organizer.id,
-#         gross_amount=gross,
-#         platform_fee=platform_fee,
-#         payout_amount=payout_amount,
-#         currency="SEK",
-#         swish_reference=payout_ref,
-#         status=PayoutStatus.processing.value,
-#     )
-#     db.session.add(payout)
- 
-#     try:
-#         db.session.commit()
-#     except Exception:
-#         db.session.rollback()
-#         traceback.print_exc()
-#         return jsonify({"error": "Payout initiated but failed to persist record"}), 500
- 
-#     return jsonify({
-#         "payout_reference": payout_ref,
-#         "gross_amount":     float(gross),
-#         "platform_fee":     platform_fee,
-#         "payout_amount":    payout_amount,
-#     }), 200
- 
- 
 # ─────────────────────────────────────────────────────────────────────────────
 # GET /event/<event_id>/payout  —  check payout status
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5857,6 +5344,445 @@ def get_online_status(user_id):
 def get_active_users_count():
     """Get total count of active connections."""
     return len(active_connections)
+
+
+
+
+# SWISH_CERT = ("/path/to/swish.crt", "/path/to/swish.key")  # from your bank
+# SWISH_HANDEL_URL = "https://cpc.getswish.net/swish-cpcapi/api/v2/paymentrequests"
+# YOUR_SWISH_NUMBER = "1231234567"  # your platform's Swish number
+
+# @app.route("/ticket/pay", methods=["POST"])
+# def pay_for_ticket():
+#     data = request.json
+#     event = EventLocation.query.get(data["event_id"])
+#     payment_ref = uuid.uuid4().hex.upper()  # unique reference
+
+#     payload = {
+#         "payeePaymentReference": payment_ref,
+#         "callbackUrl": "https://yourapp.com/swish/callback",  # Swish calls this
+#         "payeeAlias": YOUR_SWISH_NUMBER,
+#         "currency": "SEK",
+#         "amount": str(event.ticket_price),
+#         "message": f"Ticket: {event.name}"[:50],  # max 50 chars
+#     }
+
+#     response = requests.put(
+#         f"{SWISH_HANDEL_URL}/{payment_ref}",
+#         json=payload,
+#         cert=SWISH_CERT,
+#         verify=True
+#     )
+
+#     if response.status_code == 201:
+#         # Save pending transaction
+#         transaction = EventTransaction(
+#             event_id=event.id,
+#             attendee_user_id=current_user.id,
+#             amount=event.ticket_price,
+#             swish_reference=payment_ref,
+#             status='pending'
+#         )
+#         db.session.add(transaction)
+#         db.session.commit()
+#         return jsonify({"payment_reference": payment_ref}), 201
+
+#     return jsonify({"error": "Payment initiation failed"}), 400
+
+
+# @app.route("/swish/callback", methods=["POST"])
+# def swish_callback():
+#     data = request.json
+#     ref = data.get("payeePaymentReference")
+
+#     transaction = EventTransaction.query.filter_by(swish_reference=ref).first()
+#     if not transaction:
+#         return "", 404
+
+#     if data.get("status") == "PAID":
+#         transaction.status = "paid"
+#         db.session.commit()
+#         # Optionally: confirm ticket, send confirmation email, etc.
+
+#     elif data.get("status") == "DECLINED":
+#         transaction.status = "declined"
+#         db.session.commit()
+
+#     return "", 200  # Always return 200 to Swish
+
+
+
+
+# SWISH_PAYOUT_URL = "https://cpc.getswish.net/swish-cpcapi/api/v1/payouts"
+# PLATFORM_FEE_PERCENT = 0.10  # your 10% cut
+
+# @app.route("/event/<int:event_id>/payout", methods=["POST"])
+# def trigger_payout(event_id):
+#     event = EventLocation.query.get_or_404(event_id)
+#     organizer = event.event_organizer
+#     payment_details = organizer.payment_details
+
+#     if not payment_details or not payment_details.swish_verified:
+#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
+
+#     # Sum all paid transactions for this event
+#     paid_transactions = EventTransaction.query.filter_by(
+#         event_id=event_id,
+#         status="paid"
+#     ).all()
+
+#     gross = sum(t.amount for t in paid_transactions)
+#     fee = round(gross * PLATFORM_FEE_PERCENT, 2)
+#     payout_amount = round(gross - fee, 2)
+
+#     if payout_amount <= 0:
+#         return jsonify({"error": "Nothing to pay out"}), 400
+
+#     payout_ref = uuid.uuid4().hex.upper()
+
+#     payload = {
+#         "payoutInstructionUUID": payout_ref,
+#         "payerPaymentReference":  payout_ref,
+#         "payerAlias":  YOUR_SWISH_NUMBER,      # your platform
+#         "payeeAlias":  payment_details.swish_number,  # organizer's number
+#         "amount":      str(payout_amount),
+#         "currency":    "SEK",
+#         "message":     f"Payout: {event.name}"[:50],
+#     }
+
+#     response = requests.post(
+#         SWISH_PAYOUT_URL,
+#         json=payload,
+#         cert=SWISH_CERT,
+#         verify=True
+#     )
+
+#     if response.status_code in (200, 201):
+#         payout = EventPayout(
+#             event_id=event_id,
+#             event_organizer_id=organizer.id,
+#             gross_amount=gross,
+#             platform_fee=fee,
+#             payout_amount=payout_amount,
+#             swish_reference=payout_ref,
+#             status="processing"
+#         )
+#         db.session.add(payout)
+#         db.session.commit()
+#         return jsonify({"payout_reference": payout_ref}), 200
+
+#     return jsonify({"error": "Payout failed"}), 400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /ticket/pay  —  initiate Swish payment for an event ticket
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+# @app.route("/ticket/pay", methods=["POST"])
+# def pay_for_ticket():
+#     """
+#     Initiates a Swish payment request for a registered attendee.
+ 
+#     Expected JSON body:
+#         { "event_id": <int> }
+ 
+#     Flow:
+#         1. Verify the caller is authenticated and has an attendance record.
+#         2. Ensure no paid/pending transaction already exists (idempotency guard).
+#         3. PUT the payment request to Swish.
+#         4. Persist a pending EventTransaction row.
+#         5. Return the payment_reference so the client can poll status.
+#     """
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({"error": "Unauthorized"}), 401
+ 
+#     data = request.get_json()
+#     if not data or "event_id" not in data:
+#         return jsonify({"error": "event_id is required"}), 400
+ 
+#     event = EventLocation.query.get(data["event_id"])
+#     if not event:
+#         return jsonify({"error": "Event not found"}), 404
+ 
+#     if event.base_price is None or event.base_price <= 0:
+#         return jsonify({"error": "This event has no ticket price"}), 400
+ 
+#     # Must be registered before paying
+#     attendance = Attendance.query.filter_by(
+#         user_id=user.id, location_id=event.id
+#     ).first()
+#     if not attendance:
+#         return jsonify({"error": "You are not registered for this event"}), 403
+ 
+#     # Idempotency — block duplicate payments
+#     existing = EventTransaction.query.filter_by(
+#         event_id=event.id,
+#         attendee_user_id=user.id,
+#     ).filter(
+#         EventTransaction.status.in_([
+#             TransactionStatus.pending.value,
+#             TransactionStatus.paid.value,
+#         ])
+#     ).first()
+#     if existing:
+#         return jsonify({
+#             "error": "A payment already exists for this registration",
+#             "status": existing.status,
+#             "payment_reference": existing.swish_reference,
+#         }), 409
+ 
+#     payment_ref = _make_payment_ref()
+ 
+#     swish_payload = {
+#         "payeePaymentReference": payment_ref,
+#         "callbackUrl":           SWISH_CALLBACK_URL + "/swish/callback",
+#         "payeeAlias":            YOUR_SWISH_NUMBER,
+#         "currency":              event.currency or "SEK",
+#         "amount":                str(event.base_price),
+#         "message":               f"Ticket event {event.id}"[:50],
+#     }
+ 
+#     try:
+#         response = _swish_put(
+#             f"{SWISH_PAYMENT_URL}/{payment_ref}",
+#             swish_payload,
+#         )
+#     except requests.RequestException as exc:
+#         traceback.print_exc()
+#         return jsonify({"error": "Could not reach Swish", "details": str(exc)}), 502
+ 
+#     if response.status_code != 201:
+#         return jsonify({
+#             "error": "Swish rejected the payment request",
+#             "swish_status": response.status_code,
+#             "swish_body":   response.text,
+#         }), 400
+ 
+#     # Persist pending transaction
+#     transaction = EventTransaction(
+#         event_id=event.id,
+#         attendee_user_id=user.id,
+#         amount=event.base_price,
+#         currency=event.currency or "SEK",
+#         swish_reference=payment_ref,
+#         status=TransactionStatus.pending.value,
+#     )
+#     db.session.add(transaction)
+ 
+#     try:
+#         db.session.commit()
+#     except Exception:
+#         db.session.rollback()
+#         traceback.print_exc()
+#         return jsonify({"error": "Payment initiated but failed to persist transaction"}), 500
+ 
+#     return jsonify({"payment_reference": payment_ref}), 201
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /swish/callback  —  Swish server-to-server webhook
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+# @app.route("/swish/callback", methods=["POST"])
+# def swish_callback():
+#     """
+#     Swish calls this endpoint after every status change.
+#     Must always return 200; Swish retries on non-200 responses.
+ 
+#     Swish payload shape:
+#         {
+#           "payeePaymentReference": "...",
+#           "status": "PAID" | "DECLINED" | "ERROR",
+#           ...
+#         }
+#     """
+#     data = request.get_json(silent=True)
+#     if not data:
+#         # Still return 200 — log and move on
+#         print("swish_callback: empty or non-JSON body")
+#         return "", 200
+ 
+#     ref    = data.get("payeePaymentReference")
+#     status = data.get("status", "").upper()
+ 
+#     transaction = EventTransaction.query.filter_by(swish_reference=ref).first()
+#     if not transaction:
+#         print(f"swish_callback: unknown reference {ref!r}")
+#         return "", 200  # unknown ref — still 200 so Swish stops retrying
+ 
+#     if status == "PAID" and transaction.status != TransactionStatus.paid.value:
+#         transaction.status = TransactionStatus.paid.value
+ 
+#         # Stamp the ticket as paid
+#         attendance = Attendance.query.filter_by(
+#             user_id=transaction.attendee_user_id,
+#             location_id=transaction.event_id,
+#         ).first()
+#         if attendance and attendance.ticket:
+#             attendance.ticket.amount_paid  = transaction.amount
+#             attendance.ticket.currency     = transaction.currency
+#             attendance.ticket.payment_ref  = ref
+#             attendance.ticket.paid_at      = datetime.now(timezone.utc)
+ 
+#     elif status == "DECLINED":
+#         transaction.status = TransactionStatus.declined.value
+ 
+#     elif status == "ERROR":
+#         # Treat ERROR the same as DECLINED for now; adjust as needed
+#         transaction.status = TransactionStatus.declined.value
+ 
+#     try:
+#         db.session.commit()
+#     except Exception:
+#         db.session.rollback()
+#         traceback.print_exc()
+#         # Still return 200 — a retry won't help a DB error, log it instead
+ 
+#     return "", 200
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /ticket/pay/status/<payment_ref>  —  client polls payment outcome
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+# @app.route("/ticket/pay/status/<string:payment_ref>", methods=["GET"])
+# def get_payment_status(payment_ref: str):
+#     """
+#     Lets the frontend poll for the outcome of a Swish payment without
+#     waiting for the callback to fire.
+#     """
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({"error": "Unauthorized"}), 401
+ 
+#     transaction = EventTransaction.query.filter_by(
+#         swish_reference=payment_ref,
+#         attendee_user_id=user.id,          # users can only see their own
+#     ).first()
+#     if not transaction:
+#         return jsonify({"error": "Transaction not found"}), 404
+ 
+#     return jsonify({
+#         "payment_reference": transaction.swish_reference,
+#         "status":            transaction.status,
+#         "amount":            float(transaction.amount),
+#         "currency":          transaction.currency,
+#     }), 200
+ 
+ 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /event/<event_id>/payout  —  trigger organizer payout after event ends
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+# @app.route("/event/<int:event_id>/payout", methods=["POST"])
+# def trigger_payout(event_id: int):
+#     """
+#     Calculates the organizer's payout from all paid transactions for the event,
+#     deducts the platform fee, and initiates a Swish payout.
+ 
+#     Guard rails:
+#         - Caller must be the event's organizer (or an admin — extend as needed).
+#         - Event must have ended before a payout is allowed.
+#         - Organizer must have a verified Swish number.
+#         - A payout can only be triggered once per event.
+#     """
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({"error": "Unauthorized"}), 401
+ 
+#     event = EventLocation.query.get_or_404(event_id)
+#     organizer = event.event_organizer
+ 
+#     # Only the owning organizer may trigger their own payout
+#     if not organizer or organizer.user_id != user.id:
+#         return jsonify({"error": "Forbidden — you are not the organizer of this event"}), 403
+ 
+#     if not event.is_past:
+#         return jsonify({"error": "Payout can only be triggered after the event has ended"}), 400
+ 
+#     payment_details = organizer.payment_details
+#     if not payment_details or not payment_details.swish_verified:
+#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
+ 
+#     # Idempotency — one payout per event
+#     existing_payout = EventPayout.query.filter_by(event_id=event_id).first()
+#     if existing_payout:
+#         return jsonify({
+#             "error":           "Payout already exists for this event",
+#             "status":          existing_payout.status,
+#             "payout_reference": existing_payout.swish_reference,
+#         }), 409
+ 
+#     # Sum all confirmed paid transactions for this event
+#     paid_transactions = EventTransaction.query.filter_by(
+#         event_id=event_id,
+#         status=TransactionStatus.paid.value,
+#     ).all()
+ 
+#     if not paid_transactions:
+#         return jsonify({"error": "No paid transactions found for this event"}), 400
+ 
+#     gross         = sum(t.amount for t in paid_transactions)
+#     platform_fee  = round(float(gross) * PLATFORM_FEE_RATE, 2)
+#     payout_amount = round(float(gross) - platform_fee, 2)
+ 
+#     if payout_amount <= 0:
+#         return jsonify({"error": "Payout amount is zero after fee deduction"}), 400
+ 
+#     payout_ref = _make_payment_ref()
+ 
+#     swish_payload = {
+#         "payoutInstructionUUID":  payout_ref,
+#         "payerPaymentReference":  payout_ref,
+#         "payerAlias":             YOUR_SWISH_NUMBER,
+#         "payeeAlias":             payment_details.swish_number,
+#         "amount":                 str(payout_amount),
+#         "currency":               "SEK",
+#         "message":                f"Payout event {event_id}"[:50],
+#     }
+ 
+#     try:
+#         response = _swish_post(SWISH_PAYOUT_URL, swish_payload)
+#     except requests.RequestException as exc:
+#         traceback.print_exc()
+#         return jsonify({"error": "Could not reach Swish", "details": str(exc)}), 502
+ 
+#     if response.status_code not in (200, 201):
+#         return jsonify({
+#             "error":        "Swish rejected the payout request",
+#             "swish_status": response.status_code,
+#             "swish_body":   response.text,
+#         }), 400
+ 
+#     payout = EventPayout(
+#         event_id=event_id,
+#         event_organizer_id=organizer.id,
+#         gross_amount=gross,
+#         platform_fee=platform_fee,
+#         payout_amount=payout_amount,
+#         currency="SEK",
+#         swish_reference=payout_ref,
+#         status=PayoutStatus.processing.value,
+#     )
+#     db.session.add(payout)
+ 
+#     try:
+#         db.session.commit()
+#     except Exception:
+#         db.session.rollback()
+#         traceback.print_exc()
+#         return jsonify({"error": "Payout initiated but failed to persist record"}), 500
+ 
+#     return jsonify({
+#         "payout_reference": payout_ref,
+#         "gross_amount":     float(gross),
+#         "platform_fee":     platform_fee,
+#         "payout_amount":    payout_amount,
+#     }), 200
+
+
 
     
 if __name__ == "__main__":
