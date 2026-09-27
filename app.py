@@ -881,7 +881,7 @@ def get_current_user_from_token():
         payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
         print("Decoded JWT payload:", payload)
         user_id = payload.get('user_id')
-        user = User.query.get(user_id)
+        user = db.session.get(User, user_id)
         print("Fetched user from DB:", user)
         return user
     except jwt.ExpiredSignatureError:
@@ -1112,7 +1112,7 @@ def socketio_auth_required(f):
                 return
             
             # Fetch user from database
-            user = User.query.get(user_id)
+            user = db.session.get(User, user_id)
             if not user:
                 emit('error', {
                     'code': 'UNAUTHORIZED',
@@ -1217,7 +1217,7 @@ def handle_connect():
             return False
         
         # Get user from database
-        user = User.query.get(user_id)
+        user = db.session.get(User, user_id)
         if not user:
             print(f"❌ REJECTED: User not found (id: {user_id})")
             return False
@@ -1683,7 +1683,7 @@ def sign_in():
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
 
-        user = User.query.filter_by(email=email).first()
+        user = db.session.query(User).filter_by(email=email).first()
         if not user or not bcrypt.check_password_hash(user.password_hash, password):
             return jsonify({'message': 'Invalid credentials'}), 401
 
@@ -1710,7 +1710,7 @@ def sign_up():
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
 
-        if User.query.filter_by(email=email).first():
+        if db.session.query(User).filter_by(email=email).first():
             return jsonify({'message': 'Email already exists'}), 400
 
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -1760,7 +1760,7 @@ def delete_user(user_id):
         return jsonify({"error": "Forbidden: You can only delete your own account"}), 403
 
     # 3. Fetch the user to delete
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
@@ -1786,7 +1786,7 @@ def postData():
             return jsonify({'message': 'Invalid email format'}), 400
 
         # Check if email exists
-        if User.query.filter_by(email=new_email).first():
+        if db.session.query(User).filter_by(email=new_email).first():
             return jsonify({'message': 'Email already exists'}), 409
 
         # Hash password before storing ✅
@@ -1827,7 +1827,7 @@ def home():
     if not current_user.is_admin:
         return jsonify({"error": "Forbidden: Admins only"}), 403
 
-    tasks = User.query.all()
+    tasks = db.session.query(User).all()
     task_list = [
         {'id': task.id, 'email': task.email} for task in tasks  # ✅ Never expose passwords
     ]
@@ -4073,10 +4073,10 @@ def toggle_follow(following_id):
     if current_user.id == following_id:
         return jsonify({'error': 'Cannot follow yourself'}), 400
     
-    if not User.query.get(following_id):
+    if not db.session.get(User, following_id):
         return jsonify({'error': 'User not found'}), 404
     
-    follow = Follow.query.filter_by(
+    follow = db.session.query(Follow).filter_by(
         follower_id=current_user.id,
         following_id=following_id
     ).first()
@@ -4132,11 +4132,11 @@ def post_event_like():
     if not data or 'event_id' not in data:
         return jsonify({'error': 'event_id is required'}), 400
  
-    event = EventLocation.query.get(data['event_id'])
+    event = db.session.get(EventLocation, data['event_id'])
     if not event:
         return jsonify({'error': 'Event not found'}), 404
  
-    existing = EventLike.query.filter_by(user_id=user.id, event_id=event.id).first()
+    existing = db.session.query(EventLike).filter_by(user_id=user.id, event_id=event.id).first()
     if existing:
         return jsonify({'error': 'Event already liked'}), 409
  
