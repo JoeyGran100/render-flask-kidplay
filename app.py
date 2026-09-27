@@ -3642,7 +3642,7 @@ def handle_verify_qr(user: User, data: dict):
         })
 
 
-@app.route('/api/events/<int:event_id>/attendees', methods=['GET'])
+@app.route('/events/<int:event_id>/attendees', methods=['GET'])
 def get_event_attendees(event_id: int):
     """
     Get list of all attendees for an event with check-in status.
