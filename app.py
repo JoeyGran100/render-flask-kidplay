@@ -1088,14 +1088,47 @@ def socketio_auth_required(f):
     """Decorator to verify Socket.IO event requires authentication"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        user = get_current_user_from_token()
-        if not user:
+        try:
+            # Get token from query params (like in handle_connect)
+            token = request.args.get('token')
+            
+            if not token:
+                emit('error', {
+                    'code': 'UNAUTHORIZED',
+                    'message': 'No authentication token provided'
+                })
+                return
+            
+            # Decode token using your existing function
+            try:
+                decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded.get('user_id')
+            except jwt.InvalidTokenError:
+                emit('error', {
+                    'code': 'UNAUTHORIZED',
+                    'message': 'Authentication token invalid or expired'
+                })
+                return
+            
+            # Fetch user from database
+            user = User.query.get(user_id)
+            if not user:
+                emit('error', {
+                    'code': 'UNAUTHORIZED',
+                    'message': 'User not found'
+                })
+                return
+            
+            # Pass user to handler
+            return f(user, *args, **kwargs)
+        
+        except Exception as e:
+            app.logger.exception(f"Auth error: {e}")
             emit('error', {
                 'code': 'UNAUTHORIZED',
-                'message': 'Authentication token invalid or expired'
+                'message': 'Authentication failed'
             })
-            return
-        return f(user, *args, **kwargs)
+    
     return decorated_function
 
 
