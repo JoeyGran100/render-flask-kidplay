@@ -3613,18 +3613,12 @@ def get_event_attendees(event_id: int):
     Only accessible to the event organizer.
     
     Returns:
-        [
-            {
-                'userId': int,
-                'firstName': string,
-                'lastName': string,
-                'email': string,
-                'ticketCode': string,
-                'isCheckedIn': boolean,
-                'checkedInAt': timestamp or null
-            },
-            ...
-        ]
+        {
+            'totalAttendees': int,
+            'checkedInCount': int,
+            'checkedIn': [...attendees],
+            'notCheckedIn': [...attendees]
+        }
     """
     try:
         user = get_current_user_from_token()
@@ -3643,8 +3637,10 @@ def get_event_attendees(event_id: int):
         # Get all attendances for this event
         attendances = Attendance.query.filter_by(location_id=event_id).all()
         
-        # Build attendee list with check-in status
-        attendees = []
+        # Build attendee lists separated by check-in status
+        checked_in = []
+        not_checked_in = []
+        
         for attendance in attendances:
             ticket_holder = attendance.user
             profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
@@ -3664,11 +3660,21 @@ def get_event_attendees(event_id: int):
                 'isCheckedIn': checkin is not None,
                 'checkedInAt': checkin.timestamp.timestamp() if checkin else None
             }
-            attendees.append(attendee)
+            
+            if checkin:
+                checked_in.append(attendee)
+            else:
+                not_checked_in.append(attendee)
+        
+        response = {
+            'totalAttendees': len(attendances),
+            'checkedInCount': len(checked_in),
+            'checkedIn': checked_in,
+            'notCheckedIn': not_checked_in
+        }
         
         app.logger.info(f"Attendee list fetched for event {event_id}")
-        
-        return jsonify(attendees), 200
+        return jsonify(response), 200
         
     except Exception as e:
         app.logger.exception(f"Error fetching attendees: {e}")
