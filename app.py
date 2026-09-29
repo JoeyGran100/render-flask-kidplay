@@ -1784,7 +1784,7 @@ def postData():
             'message': "New User added",
             'token': token,
             'userId': new_user.id  # ✅ ADD THIS
-        }), 201
+        }), 200
 
     except Exception as e:
         traceback.print_exc()
