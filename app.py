@@ -3605,80 +3605,80 @@ def handle_verify_qr(user: User, data: dict):
         })
 
 
-@app.route('/events/<int:event_id>/attendees', methods=['GET'])
-def get_event_attendees(event_id: int):
-    """
-    Get list of all attendees for an event with check-in status.
+# @app.route('/events/<int:event_id>/attendees', methods=['GET'])
+# def get_event_attendees(event_id: int):
+#     """
+#     Get list of all attendees for an event with check-in status.
     
-    Only accessible to the event organizer.
+#     Only accessible to the event organizer.
     
-    Returns:
-        {
-            'totalAttendees': int,
-            'checkedInCount': int,
-            'checkedIn': [...attendees],
-            'notCheckedIn': [...attendees]
-        }
-    """
-    try:
-        user = get_current_user_from_token()
-        if not user:
-            return jsonify({'error': 'Unauthorized'}), 401
+#     Returns:
+#         {
+#             'totalAttendees': int,
+#             'checkedInCount': int,
+#             'checkedIn': [...attendees],
+#             'notCheckedIn': [...attendees]
+#         }
+#     """
+#     try:
+#         user = get_current_user_from_token()
+#         if not user:
+#             return jsonify({'error': 'Unauthorized'}), 401
         
-        # Get event
-        event = EventLocation.query.get(event_id)
-        if not event:
-            return jsonify({'error': 'Event not found'}), 404
+#         # Get event
+#         event = EventLocation.query.get(event_id)
+#         if not event:
+#             return jsonify({'error': 'Event not found'}), 404
         
-        # Verify user is organizer
-        if event.event_organizer_id != user.id:
-            return jsonify({'error': 'Forbidden'}), 403
+#         # Verify user is organizer
+#         if event.event_organizer_id != user.id:
+#             return jsonify({'error': 'Forbidden'}), 403
         
-        # Get all attendances for this event
-        attendances = Attendance.query.filter_by(location_id=event_id).all()
+#         # Get all attendances for this event
+#         attendances = Attendance.query.filter_by(location_id=event_id).all()
         
-        # Build attendee lists separated by check-in status
-        checked_in = []
-        not_checked_in = []
+#         # Build attendee lists separated by check-in status
+#         checked_in = []
+#         not_checked_in = []
         
-        for attendance in attendances:
-            ticket_holder = attendance.user
-            profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
+#         for attendance in attendances:
+#             ticket_holder = attendance.user
+#             profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
             
-            # Check if this person is checked in
-            checkin = CheckIn.query.filter_by(
-                user_id=ticket_holder.id,
-                location_id=event_id
-            ).first()
+#             # Check if this person is checked in
+#             checkin = CheckIn.query.filter_by(
+#                 user_id=ticket_holder.id,
+#                 location_id=event_id
+#             ).first()
             
-            attendee = {
-                'userId': ticket_holder.id,
-                'firstName': profile.first_name if profile else 'N/A',
-                'lastName': profile.last_name if profile else 'N/A',
-                'email': ticket_holder.email,
-                'ticketCode': attendance.ticket.ticket_code if attendance.ticket else 'N/A',
-                'isCheckedIn': checkin is not None,
-                'checkedInAt': checkin.timestamp.timestamp() if checkin else None
-            }
+#             attendee = {
+#                 'userId': ticket_holder.id,
+#                 'firstName': profile.first_name if profile else 'N/A',
+#                 'lastName': profile.last_name if profile else 'N/A',
+#                 'email': ticket_holder.email,
+#                 'ticketCode': attendance.ticket.ticket_code if attendance.ticket else 'N/A',
+#                 'isCheckedIn': checkin is not None,
+#                 'checkedInAt': checkin.timestamp.timestamp() if checkin else None
+#             }
             
-            if checkin:
-                checked_in.append(attendee)
-            else:
-                not_checked_in.append(attendee)
+#             if checkin:
+#                 checked_in.append(attendee)
+#             else:
+#                 not_checked_in.append(attendee)
         
-        response = {
-            'totalAttendees': len(attendances),
-            'checkedInCount': len(checked_in),
-            'checkedIn': checked_in,
-            'notCheckedIn': not_checked_in
-        }
+#         response = {
+#             'totalAttendees': len(attendances),
+#             'checkedInCount': len(checked_in),
+#             'checkedIn': checked_in,
+#             'notCheckedIn': not_checked_in
+#         }
         
-        app.logger.info(f"Attendee list fetched for event {event_id}")
-        return jsonify(response), 200
+#         app.logger.info(f"Attendee list fetched for event {event_id}")
+#         return jsonify(response), 200
         
-    except Exception as e:
-        app.logger.exception(f"Error fetching attendees: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+#     except Exception as e:
+#         app.logger.exception(f"Error fetching attendees: {e}")
+#         return jsonify({'error': 'Internal server error'}), 500
 
 
 @socketio.on('join_event_room')
@@ -3740,6 +3740,211 @@ def handle_join_event_room(user: User, data: dict):
             'message': 'Error joining room'
         })
 
+
+@app.route('/events/<int:event_id>/attendees', methods=['GET'])
+def get_event_attendees(event_id: int):
+    """
+    Get list of all attendees for an event with check-in status.
+    
+    Query parameters:
+        - search: Filter by ticket ID or attendee name (first/last)
+        - checkInStatus: 'all' (default), 'checked-in', or 'not-checked-in'
+    
+    Returns:
+        {
+            'totalAttendees': int,
+            'checkedInCount': int,
+            'checkedIn': [...attendees],
+            'notCheckedIn': [...attendees]
+        }
+    """
+    try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        # Get event
+        event = EventLocation.query.get(event_id)
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        # Verify user is organizer
+        if event.event_organizer_id != user.id:
+            return jsonify({'error': 'Forbidden'}), 403
+        
+        # Get query parameters
+        search_query = request.args.get('search', '').strip()
+        check_in_status = request.args.get('checkInStatus', 'all')  # 'all', 'checked-in', 'not-checked-in'
+        
+        # Get all attendances for this event
+        attendances = Attendance.query.filter_by(location_id=event_id).all()
+        
+        # Build attendee lists separated by check-in status
+        checked_in = []
+        not_checked_in = []
+        
+        for attendance in attendances:
+            ticket_holder = attendance.user
+            profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
+            
+            # Check if this person is checked in
+            checkin = CheckIn.query.filter_by(
+                user_id=ticket_holder.id,
+                location_id=event_id
+            ).first()
+            
+            is_checked_in = checkin is not None
+            
+            attendee = {
+                'userId': ticket_holder.id,
+                'firstName': profile.first_name if profile else 'N/A',
+                'lastName': profile.last_name if profile else 'N/A',
+                'email': ticket_holder.email,
+                'ticketCode': attendance.ticket.ticket_code if attendance.ticket else 'N/A',
+                'isCheckedIn': is_checked_in,
+                'checkedInAt': checkin.timestamp.timestamp() if checkin else None
+            }
+            
+            if is_checked_in:
+                checked_in.append(attendee)
+            else:
+                not_checked_in.append(attendee)
+        
+        # Apply filtering based on check-in status
+        if check_in_status == 'checked-in':
+            attendees_to_filter = checked_in
+        elif check_in_status == 'not-checked-in':
+            attendees_to_filter = not_checked_in
+        else:  # 'all'
+            attendees_to_filter = checked_in + not_checked_in
+        
+        # Apply search filter if provided
+        if search_query:
+            attendees_to_filter = filter_attendees_by_search(attendees_to_filter, search_query)
+        
+        # Rebuild lists after filtering
+        filtered_checked_in = [a for a in attendees_to_filter if a['isCheckedIn']]
+        filtered_not_checked_in = [a for a in attendees_to_filter if not a['isCheckedIn']]
+        
+        response = {
+            'totalAttendees': len(attendances),
+            'checkedInCount': len(checked_in),
+            'filteredCount': len(attendees_to_filter),
+            'checkedIn': filtered_checked_in,
+            'notCheckedIn': filtered_not_checked_in
+        }
+        
+        app.logger.info(f"Attendee list fetched for event {event_id} (search: {search_query}, status: {check_in_status})")
+        return jsonify(response), 200
+        
+    except Exception as e:
+        app.logger.exception(f"Error fetching attendees: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+def filter_attendees_by_search(attendees: list, search_query: str) -> list:
+    """
+    Filter attendees by ticket code or attendee name.
+    Search is case-insensitive and searches across:
+    - ticketCode (exact match or partial)
+    - firstName (contains)
+    - lastName (contains)
+    """
+    search_lower = search_query.lower()
+    filtered = []
+    
+    for attendee in attendees:
+        # Search in ticket code
+        if search_lower in attendee['ticketCode'].lower():
+            filtered.append(attendee)
+            continue
+        
+        # Search in first name
+        if search_lower in attendee['firstName'].lower():
+            filtered.append(attendee)
+            continue
+        
+        # Search in last name
+        if search_lower in attendee['lastName'].lower():
+            filtered.append(attendee)
+            continue
+    
+    return filtered
+
+
+@app.route('/events/<int:event_id>/attendees/<int:user_id>/check-in', methods=['POST'])
+def manual_checkin_attendee(event_id: int, user_id: int):
+    """
+    Manually check in an attendee. Only event organizer can do this.
+    
+    Request body (optional):
+        {}  # Empty is fine, or you can add notes if needed
+    
+    Returns:
+        {
+            'success': True,
+            'message': 'User checked in successfully',
+            'checkedInAt': timestamp
+        }
+    """
+    try:
+        # Verify organizer
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        # Get event
+        event = EventLocation.query.get(event_id)
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        # Verify user is organizer
+        if event.event_organizer_id != user.id:
+            return jsonify({'error': 'Forbidden'}), 403
+        
+        # Verify attendee exists and is registered for this event
+        attendance = Attendance.query.filter_by(
+            location_id=event_id,
+            user_id=user_id
+        ).first()
+        
+        if not attendance:
+            return jsonify({'error': 'Attendee not found for this event'}), 404
+        
+        # Check if already checked in
+        existing_checkin = CheckIn.query.filter_by(
+            user_id=user_id,
+            location_id=event_id
+        ).first()
+        
+        if existing_checkin:
+            return jsonify({
+                'error': 'User already checked in',
+                'checkedInAt': existing_checkin.timestamp.timestamp()
+            }), 400
+        
+        # Create check-in record
+        new_checkin = CheckIn(
+            user_id=user_id,
+            location_id=event_id,
+            timestamp=datetime.utcnow()
+        )
+        
+        db.session.add(new_checkin)
+        db.session.commit()
+        
+        app.logger.info(f"User {user_id} manually checked in for event {event_id} by organizer {user.id}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Attendee checked in successfully',
+            'checkedInAt': new_checkin.timestamp.timestamp()
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception(f"Error checking in attendee: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 # @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
