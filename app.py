@@ -3334,73 +3334,75 @@ def post_ticket():
     return jsonify({'message': 'Ticket saved', 'ticket_code': ticket.ticket_code}), 201
  
  
+ 
+ # NOT IN USE ANYMORE - DEPRECATED - TICKET SCREEN NOW SHOWS CREATED EVENTS INSTEAD OF TICKETS
 #Show all events created by the logged-in organizer in TICKET screen, including event coordinates and category details, cover image, and other relevant information.
-@app.route('/organizer/events/tickets', methods=['GET'])
-def get_created_events():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'message': 'Unauthorized'}), 401
+# @app.route('/organizer/events/tickets', methods=['GET'])
+# def get_created_events():
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({'message': 'Unauthorized'}), 401
 
-    # Get the organizer profile for this user
-    organizer = EventOrganizer.query.filter_by(user_id=user.id).first()
-    if not organizer:
-        return jsonify({'message': 'User is not an event organizer'}), 403
+#     # Get the organizer profile for this user
+#     organizer = EventOrganizer.query.filter_by(user_id=user.id).first()
+#     if not organizer:
+#         return jsonify({'message': 'User is not an event organizer'}), 403
 
-    # Get all events created by this organizer
-    created_locations = (
-        EventLocation.query
-        .filter_by(event_organizer_id=organizer.id)
-        .options(
-            db.joinedload(EventLocation.event_coordinates),  # ✅ Fixed: event_coordinates
-            db.joinedload(EventLocation.event_category),
-            db.joinedload(EventLocation.cover_image),
-            db.joinedload(EventLocation.images)  # ✅ Added: event images
-        )
-        .all()
-    )
+#     # Get all events created by this organizer
+#     created_locations = (
+#         EventLocation.query
+#         .filter_by(event_organizer_id=organizer.id)
+#         .options(
+#             db.joinedload(EventLocation.event_coordinates),  # ✅ Fixed: event_coordinates
+#             db.joinedload(EventLocation.event_category),
+#             db.joinedload(EventLocation.cover_image),
+#             db.joinedload(EventLocation.images)  # ✅ Added: event images
+#         )
+#         .all()
+#     )
 
-    created_events = []
-    for loc in created_locations:
-        # ✅ Fixed: Use event_coordinates correctly
-        event_coords = loc.event_coordinates
+#     created_events = []
+#     for loc in created_locations:
+#         # ✅ Fixed: Use event_coordinates correctly
+#         event_coords = loc.event_coordinates
         
-        # ✅ Fixed: Cover image from EventCoverImage
-        cover_image_url = loc.cover_image.image_url if loc.cover_image else None
+#         # ✅ Fixed: Cover image from EventCoverImage
+#         cover_image_url = loc.cover_image.image_url if loc.cover_image else None
         
-        # ✅ Fixed: Gallery images from EventLocationImage
-        gallery_images = [img.image_url for img in loc.images] if loc.images else []
+#         # ✅ Fixed: Gallery images from EventLocationImage
+#         gallery_images = [img.image_url for img in loc.images] if loc.images else []
         
-        created_events.append({
-            'id':                        loc.id,
-            'event_name':                loc.event_name,
-            'event_coordinates_id':      loc.eventcoordinates_id,  # ✅ Fixed: correct field name
-            'event_coordinates_address': event_coords.address if event_coords else None,
-            'event_coordinates_latitude': float(event_coords.latitude) if event_coords and event_coords.latitude else None,
-            'event_coordinates_longitude': float(event_coords.longitude) if event_coords and event_coords.longitude else None,
-            'cover_image_url':           cover_image_url,
-            'gallery_images':            gallery_images,  # ✅ New: multiple gallery images
-            'category':                  loc.event_category.name,
-            'start_time':                loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'end_time':                  loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
-            'duration_minutes':          loc.duration_minutes,
-            'description':               loc.event_description,
-            'base_price':                float(loc.base_price) if loc.base_price else None,
-            'currency':                  loc.currency,
-            'max_attendees':             loc.max_attendees,
-            'girls_attendees':           loc.girls_attendees,
-            'boys_attendees':            loc.boys_attendees,
-            'min_age':                   loc.min_age,
-            'max_age':                   loc.max_age,
-            'age_range':                 loc.age_range,
-            'total_participants':        loc.total_participants,  # ✅ New: actual participant count
-            'is_checkin_closed':         loc.is_checkin_closed,
-            'is_ongoing':                loc.is_ongoing,
-            'is_upcoming':               loc.is_upcoming,
-            'is_past':                   loc.is_past,
-            'created_at':                loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
-        })
+#         created_events.append({
+#             'id':                        loc.id,
+#             'event_name':                loc.event_name,
+#             'event_coordinates_id':      loc.eventcoordinates_id,  # ✅ Fixed: correct field name
+#             'event_coordinates_address': event_coords.address if event_coords else None,
+#             'event_coordinates_latitude': float(event_coords.latitude) if event_coords and event_coords.latitude else None,
+#             'event_coordinates_longitude': float(event_coords.longitude) if event_coords and event_coords.longitude else None,
+#             'cover_image_url':           cover_image_url,
+#             'gallery_images':            gallery_images,  # ✅ New: multiple gallery images
+#             'category':                  loc.event_category.name,
+#             'start_time':                loc.start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+#             'end_time':                  loc.end_time.strftime('%Y-%m-%dT%H:%M:%SZ') if loc.end_time else None,
+#             'duration_minutes':          loc.duration_minutes,
+#             'description':               loc.event_description,
+#             'base_price':                float(loc.base_price) if loc.base_price else None,
+#             'currency':                  loc.currency,
+#             'max_attendees':             loc.max_attendees,
+#             'girls_attendees':           loc.girls_attendees,
+#             'boys_attendees':            loc.boys_attendees,
+#             'min_age':                   loc.min_age,
+#             'max_age':                   loc.max_age,
+#             'age_range':                 loc.age_range,
+#             'total_participants':        loc.total_participants,  # ✅ New: actual participant count
+#             'is_checkin_closed':         loc.is_checkin_closed,
+#             'is_ongoing':                loc.is_ongoing,
+#             'is_upcoming':               loc.is_upcoming,
+#             'is_past':                   loc.is_past,
+#             'created_at':                loc.created_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+#         })
 
-    return jsonify({'created_events': created_events}), 200
+#     return jsonify({'created_events': created_events}), 200
 
 
 # ─────────────────────────────────────────────────────────────────────────────
