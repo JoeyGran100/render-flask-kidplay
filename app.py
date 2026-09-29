@@ -1832,6 +1832,19 @@ def get_parents_profile():
         'date_of_birth': profile.date_of_birth.isoformat() if profile.date_of_birth else None,
         'gender':        profile.gender.value if profile.gender else None,
         'phone_number':  profile.phone_number,
+
+        # Parent profile image
+        'profile_image': profile.images[0].image_url if profile.images else None,
+
+        # Children profile images
+        'kids': [
+            {
+                'id': kid.id,
+                'profile_image': kid.image.image_url if kid.image else None
+            }
+            for kid in profile.kids
+        ],
+
         'created_at':    profile.created_at.isoformat() if profile.created_at else None,
         'updated_at':    profile.updated_at.isoformat() if profile.updated_at else None,
     }), 200
