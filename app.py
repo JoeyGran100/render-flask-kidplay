@@ -3876,75 +3876,76 @@ def filter_attendees_by_search(attendees: list, search_query: str) -> list:
 def manual_checkin_attendee(event_id: int, user_id: int):
     """
     Manually check in an attendee. Only event organizer can do this.
-    
-    Request body (optional):
-        {}  # Empty is fine, or you can add notes if needed
-    
-    Returns:
-        {
-            'success': True,
-            'message': 'User checked in successfully',
-            'checkedInAt': timestamp
-        }
     """
     try:
         # Verify organizer
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-        
+
         # Get event
-        event = EventLocation.query.get(event_id)
+        event = db.session.get(EventLocation, event_id)
         if not event:
             return jsonify({'error': 'Event not found'}), 404
-        
+
         # Verify user is organizer
         if event.event_organizer_id != user.id:
             return jsonify({'error': 'Forbidden'}), 403
-        
+
         # Verify attendee exists and is registered for this event
         attendance = Attendance.query.filter_by(
             location_id=event_id,
             parent_id=user_id
         ).first()
-        
+
         if not attendance:
-            return jsonify({'error': 'Attendee not found for this event'}), 404
-        
+            return jsonify({
+                'error': 'Attendee not found for this event'
+            }), 404
+
         # Check if already checked in
         existing_checkin = CheckIn.query.filter_by(
             user_id=user_id,
             location_id=event_id
         ).first()
-        
+
         if existing_checkin:
             return jsonify({
                 'error': 'User already checked in',
-                'checkedInAt': int(new_checkin.timestamp.timestamp())
+                'checkedInAt': int(
+                    existing_checkin.timestamp.timestamp()
+                )
             }), 400
-        
+
         # Create check-in record
         new_checkin = CheckIn(
             user_id=user_id,
             location_id=event_id,
             timestamp=datetime.utcnow()
         )
-        
+
         db.session.add(new_checkin)
         db.session.commit()
-        
-        app.logger.info(f"User {user_id} manually checked in for event {event_id} by organizer {user.id}")
-        
+
+        app.logger.info(
+            f"User {user_id} manually checked in for event "
+            f"{event_id} by organizer {user.id}"
+        )
+
         return jsonify({
             'success': True,
             'message': 'Attendee checked in successfully',
-            'checkedInAt': new_checkin.timestamp.timestamp()
+            'checkedInAt': int(new_checkin.timestamp.timestamp())
         }), 200
-        
+
     except Exception as e:
         db.session.rollback()
-        app.logger.exception(f"Error checking in attendee: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        app.logger.exception(
+            f"Error checking in attendee: {e}"
+        )
+        return jsonify({
+            'error': 'Internal server error'
+        }), 500
 
 
 # @app.route('/event/<int:event_id>/lookup_attendee', methods=['GET'])
