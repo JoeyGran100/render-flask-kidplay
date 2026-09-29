@@ -3920,7 +3920,7 @@ def manual_checkin_attendee(event_id: int, user_id: int):
         if existing_checkin:
             return jsonify({
                 'error': 'User already checked in',
-                'checkedInAt': existing_checkin.timestamp.timestamp()
+                'checkedInAt': int(new_checkin.timestamp.timestamp())
             }), 400
         
         # Create check-in record
