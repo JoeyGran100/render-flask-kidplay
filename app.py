@@ -3133,20 +3133,37 @@ def get_tickets():
     user = (
         db.session.query(User)
         .options(
+            # ✅ Attendances & Tickets
             db.joinedload(User.attendances)
             .joinedload(Attendance.ticket),
-            db.joinedload(User.attendances)
-            .joinedload(Attendance.location),
+            
+            # ✅ Attendance -> Location -> Coordinates
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
             .joinedload(EventLocation.event_coordinates),
+            
+            # ✅ Attendance -> Location -> Category
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
             .joinedload(EventLocation.event_category),
+            
+            # ✅ Attendance -> Location -> Organizer
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
             .joinedload(EventLocation.event_organizer),
-            db.joinedload(User.parent_profile)
+            
+            # ✅ Parent Profile
+            db.joinedload(User.parent_profile),
+            
+            # ✅ NEW: Organizer Profile & Created Events
+            db.joinedload(User.event_organizer)
+            .joinedload(EventOrganizer.events)
+            .joinedload(EventLocation.event_coordinates),
+            
+            # ✅ NEW: Organizer -> Events -> Category
+            db.joinedload(User.event_organizer)
+            .joinedload(EventOrganizer.events)
+            .joinedload(EventLocation.event_category),
         )
         .filter(User.id == user.id)
         .first()
@@ -3158,7 +3175,9 @@ def get_tickets():
     # Collect tickets through attendances
     tickets = [a.ticket for a in user.attendances if a.ticket]
     
-    # Helper function to format ticket
+    # ============================================================================
+    # HELPER: Format Ticket
+    # ============================================================================
     def format_ticket(t):
         return {
             # Ticket info
@@ -3191,7 +3210,7 @@ def get_tickets():
                 'base_price':        float(t.attendance.location.base_price) if t.attendance.location.base_price else None,
             },
             
-            # Venue/Coordinates (renamed from event_coordinates) ✅
+            # Venue/Coordinates
             'event_coordinates': {
                 'id':        t.attendance.location.event_coordinates.id,
                 'address':   t.attendance.location.event_coordinates.address,
@@ -3209,16 +3228,66 @@ def get_tickets():
             }
         }
     
-    # Separate active and expired tickets ✅
+    # ============================================================================
+    # HELPER: Format Created Event
+    # ============================================================================
+    def format_created_event(event):
+        return {
+            'id':                   event.id,
+            'event_name':           event.event_name,
+            'event_description':    event.event_description,
+            'start_time':           event.start_time.isoformat(),
+            'end_time':             event.end_time.isoformat() if event.end_time else None,
+            'duration_minutes':     event.duration_minutes,
+            'age_range':            event.age_range,
+            'max_attendees':        event.max_attendees,
+            'girls_attendees':      event.girls_attendees,
+            'boys_attendees':       event.boys_attendees,
+            'total_participants':   event.total_participants,
+            'base_price':           float(event.base_price) if event.base_price else None,
+            'currency':             event.currency,
+            'is_checkin_closed':    event.is_checkin_closed,
+            'is_ongoing':           event.is_ongoing,
+            'is_past':              event.is_past,
+            'is_upcoming':          event.is_upcoming,
+            
+            # Category
+            'category': {
+                'id':   event.event_category.id if event.event_category else None,
+                'name': event.event_category.name if event.event_category else None,
+            },
+            
+            # Venue/Coordinates
+            'event_coordinates': {
+                'id':        event.event_coordinates.id if event.event_coordinates else None,
+                'address':   event.event_coordinates.address if event.event_coordinates else None,
+                'latitude':  event.event_coordinates.latitude if event.event_coordinates else None,
+                'longitude': event.event_coordinates.longitude if event.event_coordinates else None,
+            } if event.event_coordinates else None,
+        }
+    
+    # ============================================================================
+    # Process Response Data
+    # ============================================================================
+    
+    # Separate active and expired tickets
     active_tickets = [format_ticket(t) for t in tickets if t.status == "active"]
     expired_tickets = [format_ticket(t) for t in tickets if t.status != "active"]
     
-    # Return wrapped in MyTicketsResponseDto structure ✅
+    # Get created events if user is an organizer
+    created_events = []
+    if user.event_organizer and user.event_organizer.verification_status == OrganizerVerificationStatus.approved:
+        created_events = [format_created_event(e) for e in user.event_organizer.events]
+    
+    # ============================================================================
+    # Return Response
+    # ============================================================================
     return jsonify({
         'active_tickets': active_tickets,
         'expired_tickets': expired_tickets,
-        'created_events': []  # TODO: Implement if needed
+        'created_events': created_events
     }), 200
+ 
  
  
 @app.route('/tickets', methods=['POST'])
