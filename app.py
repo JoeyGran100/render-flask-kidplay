@@ -3905,7 +3905,7 @@ def manual_checkin_attendee(event_id: int, user_id: int):
         # Verify attendee exists and is registered for this event
         attendance = Attendance.query.filter_by(
             location_id=event_id,
-            user_id=user_id
+            parent_id=user_id
         ).first()
         
         if not attendance:
