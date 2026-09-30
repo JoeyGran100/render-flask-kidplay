@@ -1600,7 +1600,7 @@ def broadcast_event_to_map(event_coordinates):
         event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
         
         if not event:
-            print(f"❌ Event not found for coordinates {event_coordinates.id}")
+            print(f"❌ Event not found")
             return
         
         event_dto = {
@@ -1620,13 +1620,16 @@ def broadcast_event_to_map(event_coordinates):
             'status': 'ongoing' if event.is_ongoing else 'upcoming',
         }
         
-        # ✅ Use 'map' room (matches frontend)
-        socketio.emit('new_event_on_map', event_dto, room='map', broadcast=True)
-        print(f"✅ Broadcasted event {event.id} to 'map' room")
+        print(f"📡 About to broadcast event {event.id}")
         print(f"📊 Active viewers in map room: {len(map_viewers)}")
+        print(f"🚀 Emitting to room='map': {event_dto}")
+        
+        socketio.emit('new_event_on_map', event_dto, room='map', broadcast=True)
+        
+        print(f"✅ Event {event.id} broadcasted successfully")
         
     except Exception as e:
-        print(f"❌ Error broadcasting event: {e}")
+        print(f"❌ Error broadcasting: {e}")
         import traceback
         traceback.print_exc()
 
