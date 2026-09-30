@@ -2875,14 +2875,14 @@ def post_event():
     if not data:
         return jsonify({'error': 'No data provided'}), 400
  
-    # Handle event coordinates - either existing event_coordinates_id OR new event coordinates data
-    event_coordinates_id = None
+    # Handle event coordinates - either existing eventcoordinates_id OR new event coordinates data
+    eventcoordinates_id = None
     
-    if 'event_coordinates_id' in data:
-        event_coordinates_id = data['event_coordinates_id']
-        event_coordinates = EventCoordinates.query.get(event_coordinates_id)
+    if 'eventcoordinates_id' in data:
+        eventcoordinates_id = data['eventcoordinates_id']
+        event_coordinates = EventCoordinates.query.get(eventcoordinates_id)
         if not event_coordinates:
-            return jsonify({'error': f'Event coordinates with id {event_coordinates_id} not found'}), 404
+            return jsonify({'error': f'Event coordinates with id {eventcoordinates_id} not found'}), 404
     
     elif 'event_coordinates_data' in data:
         event_coordinates_data = data['event_coordinates_data']
@@ -2909,7 +2909,7 @@ def post_event():
         
         if existing_event_coordinates:
             print(f"✅ Event coordinates already exist: {existing_event_coordinates.id}")
-            event_coordinates_id = existing_event_coordinates.id
+            eventcoordinates_id = existing_event_coordinates.id
             event_coordinates = existing_event_coordinates
         else:
             try:
@@ -2921,15 +2921,15 @@ def post_event():
                 )
                 db.session.add(new_event_coordinates)
                 db.session.flush()
-                event_coordinates_id = new_event_coordinates.id
+                eventcoordinates_id = new_event_coordinates.id
                 event_coordinates = new_event_coordinates
-                print(f"✅ New event coordinates created with ID: {event_coordinates_id}")
+                print(f"✅ New event coordinates created with ID: {eventcoordinates_id}")
             except Exception as e:
                 db.session.rollback()
                 print(f"❌ Error creating event coordinates: {str(e)}")
                 return jsonify({'error': f'Failed to create event coordinates: {str(e)}'}), 400
     else:
-        return jsonify({'error': 'Must provide either event_coordinates_id or event_coordinates_data'}), 400
+        return jsonify({'error': 'Must provide either eventcoordinates_id or event_coordinates_data'}), 400
  
     # Rest of event creation
     required = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
@@ -2953,7 +2953,7 @@ def post_event():
     print(f"⏱️ Event duration: {duration_minutes} minutes")
  
     event = EventLocation(
-        event_coordinates_id=event_coordinates_id,
+        eventcoordinates_id=eventcoordinates_id,
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
         event_name=data.get('event_name', 'Untitled Event'),
@@ -2990,7 +2990,7 @@ def post_event():
         print(f"❌ Error creating event: {str(e)}")
         return jsonify({'error': 'Failed to create event'}), 500
  
-    return jsonify({'message': 'Event created', 'id': event.id}), 201
+    return jsonify({'message': 'Event created', 'id': event.id}), 200
 
 
 # ─────────────────────────────────────────────────────────────────────────────
