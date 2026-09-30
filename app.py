@@ -1521,40 +1521,39 @@ def handle_user_stopped_typing(data):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ✅ HELPER: Avoid code duplication
+def get_current_user_from_sid(sid):
+    """Look up user by socket ID"""
+    for user_id, user_sid in active_connections.items():
+        if user_sid == sid:
+            return user_id
+    return None
+
+
 @socketio.on('join_map')
 def handle_join_map(data):
-    """
-    User is viewing the map. Add them to the map room.
-    They'll receive real-time event updates.
-    """
+    """User is viewing the map - add them to the map room"""
     print(f"\n{'='*60}")
     print(f"🗺️  USER JOINED MAP")
     print(f"{'='*60}")
     
     try:
-        sid = request.sid
-        current_user_id = None
-        
-        # Find current user from active connections
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
+        current_user_id = get_current_user_from_sid(request.sid)  # ✅ Use helper
         
         if not current_user_id:
-            print(f"❌ FAILED: Unknown user")
+            print(f"❌ FAILED: Unknown user for sid {request.sid}")
             emit('error', {'message': 'Unauthorized'})
-            return  # ← ADD THIS: Return early
+            return
         
         # Add user to map viewers
-        map_viewers[current_user_id] = sid
+        map_viewers[current_user_id] = request.sid
         join_room('map')
         
         print(f"✅ User {current_user_id} joined map room")
         print(f"📊 Active map viewers: {len(map_viewers)}")
         print(f"{'='*60}\n")
         
-        # ✅ EMIT SUCCESS RESPONSE
+        # ✅ Send success response
         emit('map_joined', {
             'status': 'connected_to_map',
             'userId': current_user_id
@@ -1564,33 +1563,27 @@ def handle_join_map(data):
         print(f"❌ ERROR in handle_join_map: {e}")
         import traceback
         traceback.print_exc()
-        emit('error', {'message': str(e)})  # ← Send error to client
+        emit('error', {'message': str(e)})
 
 
 @socketio.on('leave_map')
-def handle_leave_map(data):  # ← Add this parameter
-    """
-    User is leaving the map. Remove them from the map room.
-    """
+def handle_leave_map(data):
+    """User is leaving the map - remove from map room"""
     print(f"\n{'='*60}")
     print(f"🗺️  USER LEFT MAP")
     print(f"{'='*60}")
     
     try:
-        sid = request.sid
-        current_user_id = None
-        
-        # Find current user
-        for user_id, user_sid in active_connections.items():
-            if user_sid == sid:
-                current_user_id = user_id
-                break
+        current_user_id = get_current_user_from_sid(request.sid)  # ✅ Use helper
         
         if current_user_id and current_user_id in map_viewers:
             del map_viewers[current_user_id]
             leave_room('map')
             print(f"✅ User {current_user_id} left map room")
             print(f"📊 Active map viewers: {len(map_viewers)}")
+            
+            # ✅ Confirm to client
+            emit('map_left', {'status': 'disconnected_from_map'})
         
         print(f"{'='*60}\n")
         
@@ -1600,11 +1593,16 @@ def handle_leave_map(data):  # ← Add this parameter
         traceback.print_exc()
 
 
+# ✅ CRITICAL: Broadcast function must use correct room name
 def broadcast_event_to_map(event_coordinates):
     """Broadcast new event to all connected map room clients"""
-    event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
-    
-    if event:
+    try:
+        event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
+        
+        if not event:
+            print(f"❌ Event not found for coordinates {event_coordinates.id}")
+            return
+        
         event_dto = {
             'id': event.id,
             'title': event.event_category.name if event.event_category else 'Event',
@@ -1617,12 +1615,20 @@ def broadcast_event_to_map(event_coordinates):
             'start_time': event.start_time.isoformat(),
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'duration_minutes': event.duration_minutes,
+            'remaining_spots': max(0, event.max_attendees - event.total_participants),
+            'max_attendees': event.max_attendees,
             'status': 'ongoing' if event.is_ongoing else 'upcoming',
         }
         
-        socketio.emit('new_event_on_map', event_dto, room='map_room')
-        print(f"✅ Broadcasted event {event.id} to map room")
+        # ✅ Use 'map' room (matches frontend)
+        socketio.emit('new_event_on_map', event_dto, room='map', broadcast=True)
+        print(f"✅ Broadcasted event {event.id} to 'map' room")
+        print(f"📊 Active viewers in map room: {len(map_viewers)}")
         
+    except Exception as e:
+        print(f"❌ Error broadcasting event: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
