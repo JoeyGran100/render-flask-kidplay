@@ -1601,29 +1601,27 @@ def handle_leave_map(data):  # ← Add this parameter
 
 
 def broadcast_event_to_map(event_coordinates):
-    """
-    Tier 1: ULTRA-LIGHTWEIGHT
-    Only coordinates - no event details.
-    Full details loaded on-demand via REST API.
-    """
-    try:
-        event_payload = {
-            'id': event_coordinates.id,
-            'title': event_coordinates.name,
-            'event_name': event_coordinates.name,
+    """Broadcast new event to all connected map room clients"""
+    event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
+    
+    if event:
+        event_dto = {
+            'id': event.id,
+            'title': event.event_category.name if event.event_category else 'Event',
+            'event_name': event.event_name,
             'coordinate': {
                 'latitude': float(event_coordinates.latitude),
                 'longitude': float(event_coordinates.longitude),
             },
-            'address': event_coordinates.address or "",
+            'address': event_coordinates.address,
+            'start_time': event.start_time.isoformat(),
+            'end_time': event.end_time.isoformat() if event.end_time else None,
+            'duration_minutes': event.duration_minutes,
+            'status': 'ongoing' if event.is_ongoing else 'upcoming',
         }
         
-        socketio.emit('new_event_on_map', event_payload, room='map')
-        print(f"✅ Broadcasted marker {event_coordinates.id}")
-        
-    except Exception as e:
-        print(f"❌ ERROR broadcasting event: {e}")
-        traceback.print_exc()  # ← Log full traceback
+        socketio.emit('new_event_on_map', event_dto, room='map_room')
+        print(f"✅ Broadcasted event {event.id} to map room")
         
 
 
