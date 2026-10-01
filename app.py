@@ -2839,7 +2839,7 @@ def get_event_details(event_id):
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
             },
-            'has_attended': event.user_has_attended(user.id),
+            'has_attended': any(a.parent_id == user.id for a in event.attendances),
         })
         
         return response, 200
