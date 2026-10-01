@@ -1593,14 +1593,16 @@ def handle_leave_map(data):
         traceback.print_exc()
 
 
-# ✅ CRITICAL: Broadcast function must use correct room name
 def broadcast_event_to_map(event_coordinates):
     """Broadcast new event to all connected map room clients"""
     print(f"\n{'='*60}")
     print(f"📡 BROADCAST_EVENT_TO_MAP CALLED")
     print(f"{'='*60}")
     print(f"Coordinates ID: {event_coordinates.id}")
-    print(f"Coordinates: {event_coordinates.name} ({event_coordinates.latitude}, {event_coordinates.longitude})")
+    # ❌ REMOVE THIS LINE:
+    # print(f"Coordinates: {event_coordinates.name} ({event_coordinates.latitude}, {event_coordinates.longitude})")
+    # ✅ REPLACE WITH:
+    print(f"Coordinates: ({event_coordinates.latitude}, {event_coordinates.longitude})")
     
     try:
         event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
@@ -1615,7 +1617,7 @@ def broadcast_event_to_map(event_coordinates):
         event_dto = {
             'id': event.id,
             'title': event.event_category.name if event.event_category else 'Event',
-            'event_name': event.event_name,
+            'event_name': event.event_name,  # ✅ Use event_name here instead
             'coordinate': {
                 'latitude': float(event_coordinates.latitude),
                 'longitude': float(event_coordinates.longitude),
