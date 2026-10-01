@@ -3077,8 +3077,11 @@ def post_attendance():
     if event.is_checkin_closed or event.is_past:
         return jsonify({'error': 'Registration is closed for this event'}), 400
  
-    # Check existing attendance
-    existing = Attendance.query.filter_by(parent_id=user.id, location_id=event.id).first()
+    # Check existing attendance with fresh data from DB
+    existing = Attendance.query.filter_by(
+        parent_id=user.id, 
+        location_id=event.id
+    ).first()
     if existing:
         return jsonify({'error': 'Already registered for this event'}), 409
  
@@ -3093,19 +3096,24 @@ def post_attendance():
     db.session.add(attendance)
  
     try:
-        db.session.flush()  # Get attendance.id before creating ticket
+        db.session.flush()
         ticket = Ticket(attendance_id=attendance.id)
         db.session.add(ticket)
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         db.session.rollback()
-        return jsonify({'error': 'Already registered for this event'}), 409
+        # Check if it's the unique constraint or primary key
+        if 'unique_parent_location_attendance' in str(e):
+            return jsonify({'error': 'Already registered for this event'}), 409
+        else:
+            traceback.print_exc()
+            return jsonify({'error': 'Database constraint violation'}), 500
     except Exception as e:
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
  
-    return jsonify({'message': 'Registered successfully'}), 200
+    return jsonify({'message': 'Registered successfully'}), 201
  
  
 # ─────────────────────────────────────────────────────────────────────────────
