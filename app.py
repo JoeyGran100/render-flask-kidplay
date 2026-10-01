@@ -498,6 +498,13 @@ class EventLocation(db.Model):
             if self._count_by_gender(GenderEnum.Female) >= self.girls_attendees:
                 return False, f"No female spots remaining ({self.girls_attendees} max)"
         return True, ""
+    
+    def user_has_attended(self, user_id: int) -> bool:
+        """Check if a specific user has attended this event."""
+        return Attendance.query.filter_by(
+            parent_id=user_id,
+            location_id=self.id
+        ).first() is not None
 
 
 def generate_short_code() -> str:
@@ -2697,6 +2704,10 @@ def get_event_summary(event_id):
     Tier 2 data - between coordinates and full details.
     """
     try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
         event = (
             EventLocation.query
             .filter_by(id=event_id)
@@ -2737,9 +2748,11 @@ def get_event_summary(event_id):
             'total_attendees': event.total_participants,
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
+            'has_attended': event.user_has_attended(user.id),
         })
         
-        # Cache for 2 minutes - lightweight so can be cached
+        # Cache for 2 minutes (browser only - user-specific data)
+        response.cache_control.private = True
         response.cache_control.max_age = 120
         response.add_etag()
         
@@ -2754,11 +2767,12 @@ def get_event_summary(event_id):
 # This endpoint is used when a user taps on a marker on the map to view event details.
 @app.route('/events/<int:event_id>', methods=['GET'])
 def get_event_details(event_id):
-    """
-    Get full event details (existing endpoint - UNCHANGED).
-    Add caching headers since maps will fetch these on marker tap.
-    """
+    """Get full event details with user-specific attendance status."""
     try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
         event = (
             EventLocation.query
             .filter_by(id=event_id)
@@ -2825,12 +2839,9 @@ def get_event_details(event_id):
                 'first_name': event.event_organizer.first_name,
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
-            }
+            },
+            'has_attended': event.user_has_attended(user.id),
         })
-        
-        # Cache for 5 minutes (events don't change frequently mid-session)
-        response.cache_control.max_age = 300
-        response.add_etag()
         
         return response, 200
         
@@ -2849,6 +2860,10 @@ def get_event_organizer_details(event_id):
     Includes EventOrganizer and EventOrganizerImage data.
     """
     try:
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
         event = (
             EventLocation.query
             .filter_by(id=event_id)
@@ -2883,11 +2898,19 @@ def get_event_organizer_details(event_id):
                 for img in organizer.images
             ],
             'contact_email': organizer.owner.email if organizer.owner else None,
+            'has_attended': event.user_has_attended(user.id),
         }
         
-        return jsonify(organizer_data), 200
+        response = jsonify(organizer_data)
         
-    except Exception:
+        # Cache for 2 minutes (browser only - user-specific data)
+        response.cache_control.private = True
+        response.cache_control.max_age = 120
+        response.add_etag()
+        
+        return response, 200
+        
+    except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
 
