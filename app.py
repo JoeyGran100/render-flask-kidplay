@@ -1603,6 +1603,14 @@ def broadcast_event_to_map(event_coordinates):
     print(f"Coordinates ID: {event_coordinates.id}")
     print(f"Coordinates: ({event_coordinates.latitude}, {event_coordinates.longitude})")
     
+        # 🔴 DEBUG: Check state
+    print(f"📊 Current map_viewers: {map_viewers}")
+    print(f"📊 active_connections: {active_connections}")
+    
+    if not map_viewers:
+        print(f"⚠️  WARNING: No map viewers connected! Broadcast won't reach anyone")
+        return
+    
     try:
         event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
         
@@ -3004,10 +3012,16 @@ def post_event():
     try:
         db.session.commit()
         print(f"✅ Event created with ID: {event.id}")
+        print(f"📊 Map viewers: {len(map_viewers)}")
+        print(f"   Viewers: {list(map_viewers.keys())}")
         
-        # 🔴 NEW: Broadcast the event coordinates to all map viewers in real-time
+        # 🔴 NEW: Check if broadcast is actually called
         if event_coordinates:
+            print(f"🚀 About to broadcast event...")
             broadcast_event_to_map(event_coordinates)
+            print(f"✅ Broadcast completed")
+        else:
+            print(f"❌ CRITICAL: event_coordinates is None!")
         
     except Exception as e:
         db.session.rollback()
