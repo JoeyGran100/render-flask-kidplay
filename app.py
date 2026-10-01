@@ -3113,7 +3113,7 @@ def post_attendance():
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
  
-    return jsonify({'message': 'Registered successfully'}), 201
+    return jsonify({'message': 'Registered successfully'}), 200
  
  
 # ─────────────────────────────────────────────────────────────────────────────
