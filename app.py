@@ -3083,7 +3083,7 @@ def post_attendance():
         return jsonify({'error': 'Already registered for this event'}), 409
  
     # Check gender-based capacity
-    profile = user.profile
+    profile = user.parent_profile
     if profile and profile.gender:
         can_register, reason = event.can_register(profile.gender)
         if not can_register:
@@ -3102,7 +3102,7 @@ def post_attendance():
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
  
-    return jsonify({'message': 'Registered successfully'}), 200
+    return jsonify({'message': 'Registered successfully'}), 201
  
  
 # ─────────────────────────────────────────────────────────────────────────────
