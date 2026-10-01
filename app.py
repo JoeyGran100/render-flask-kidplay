@@ -3095,7 +3095,15 @@ def post_attendance():
  
     try:
         db.session.flush()
-        ticket = Ticket(attendance_id=attendance.id)
+        
+        # Create ticket with payment info from event
+        ticket = Ticket(
+            attendance_id=attendance.id,
+            amount_paid=event.base_price,
+            currency=event.currency,
+            payment_ref=f"ATT-{attendance.id}-{uuid.uuid4().hex[:8].upper()}",
+            paid_at=datetime.now(timezone.utc)
+        )
         db.session.add(ticket)
         db.session.commit()
     except IntegrityError as e:
