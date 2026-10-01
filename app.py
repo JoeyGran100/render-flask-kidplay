@@ -3117,66 +3117,6 @@ def post_attendance():
  
  
 # ─────────────────────────────────────────────────────────────────────────────
-# CHECK-IN ✅
-# ─────────────────────────────────────────────────────────────────────────────
- 
-@app.route('/checkin', methods=['GET'])
-def get_checkins():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    return jsonify([
-        {
-            'id':          c.id,
-            'location_id': c.location_id,
-            'timestamp':   c.timestamp.isoformat() if c.timestamp else None,
-        }
-        for c in user.checkins
-    ]), 200
- 
- 
-@app.route('/checkin', methods=['POST'])
-def post_checkin():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data or 'location_id' not in data:
-        return jsonify({'error': 'location_id is required'}), 400
- 
-    event = EventLocation.query.get(data['location_id'])
-    if not event:
-        return jsonify({'error': 'Event not found'}), 404
- 
-    if event.is_checkin_closed:
-        return jsonify({'error': 'Check-in is closed for this event'}), 400
- 
-    # Must be registered
-    attendance = Attendance.query.filter_by(parent_id=user.id, location_id=event.id).first()
-    if not attendance:
-        return jsonify({'error': 'Not registered for this event'}), 403
- 
-    # Already checked in?
-    existing = CheckIn.query.filter_by(user_id=user.id, location_id=event.id).first()
-    if existing:
-        return jsonify({'error': 'Already checked in'}), 409
- 
-    checkin = CheckIn(user_id=user.id, location_id=event.id)
-    db.session.add(checkin)
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to check in'}), 500
- 
-    return jsonify({'message': 'Checked in successfully', 'checkin_id': checkin.id}), 201
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
 # TICKETS ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
