@@ -3070,7 +3070,7 @@ def post_attendance():
     if not data or 'location_id' not in data:
         return jsonify({'error': 'location_id is required'}), 400
  
-    event = EventLocation.query.get(data['location_id'])
+    event = db.session.get(EventLocation, data['location_id'])
     if not event:
         return jsonify({'error': 'Event not found'}), 404
  
@@ -3097,12 +3097,15 @@ def post_attendance():
         ticket = Ticket(attendance_id=attendance.id)
         db.session.add(ticket)
         db.session.commit()
-    except Exception:
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'Already registered for this event'}), 409
+    except Exception as e:
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
  
-    return jsonify({'message': 'Registered successfully'}), 201
+    return jsonify({'message': 'Registered successfully'}), 200
  
  
 # ─────────────────────────────────────────────────────────────────────────────
