@@ -1538,19 +1538,35 @@ def handle_join_map(data):
     print(f"{'='*60}")
     
     try:
-        current_user_id = get_current_user_from_sid(request.sid)  # ✅ Use helper
+        # ✅ Get token from request query params (passed by client)
+        token = request.args.get('token')
         
-        if not current_user_id:
-            print(f"❌ FAILED: Unknown user for sid {request.sid}")
-            emit('error', {'message': 'Unauthorized'})
+        if not token:
+            print(f"❌ FAILED: No token provided")
+            emit('error', {'message': 'Unauthorized: No token'})
             return
         
-        # Add user to map viewers
+        # ✅ Decode and verify token
+        try:
+            payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user_id = payload.get('user_id')
+        except jwt.InvalidTokenError:
+            print(f"❌ FAILED: Invalid token")
+            emit('error', {'message': 'Unauthorized: Invalid token'})
+            return
+        
+        if not current_user_id:
+            print(f"❌ FAILED: No user_id in token")
+            emit('error', {'message': 'Unauthorized: No user_id'})
+            return
+        
+        # ✅ Add user to map viewers
         map_viewers[current_user_id] = request.sid
         join_room('map')
         
-        print(f"✅ User {current_user_id} joined map room")
+        print(f"✅ User {current_user_id} joined map room (SID: {request.sid})")
         print(f"📊 Active map viewers: {len(map_viewers)}")
+        print(f"   Viewers: {list(map_viewers.keys())}")
         print(f"{'='*60}\n")
         
         # ✅ Send success response
