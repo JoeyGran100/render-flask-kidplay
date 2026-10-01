@@ -1538,26 +1538,12 @@ def handle_join_map(data):
     print(f"{'='*60}")
     
     try:
-        # ✅ Get token from request query params (passed by client)
-        token = request.args.get('token')
-        
-        if not token:
-            print(f"❌ FAILED: No token provided")
-            emit('error', {'message': 'Unauthorized: No token'})
-            return
-        
-        # ✅ Decode and verify token
-        try:
-            payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            current_user_id = payload.get('user_id')
-        except jwt.InvalidTokenError:
-            print(f"❌ FAILED: Invalid token")
-            emit('error', {'message': 'Unauthorized: Invalid token'})
-            return
+        # ✅ FIXED: Get authenticated user from existing connection
+        current_user_id = get_current_user_from_sid(request.sid)
         
         if not current_user_id:
-            print(f"❌ FAILED: No user_id in token")
-            emit('error', {'message': 'Unauthorized: No user_id'})
+            print(f"❌ FAILED: User not authenticated")
+            emit('error', {'message': 'Unauthorized: User not found'})
             return
         
         # ✅ Add user to map viewers
