@@ -1596,12 +1596,21 @@ def handle_leave_map(data):
 # ✅ CRITICAL: Broadcast function must use correct room name
 def broadcast_event_to_map(event_coordinates):
     """Broadcast new event to all connected map room clients"""
+    print(f"\n{'='*60}")
+    print(f"📡 BROADCAST_EVENT_TO_MAP CALLED")
+    print(f"{'='*60}")
+    print(f"Coordinates ID: {event_coordinates.id}")
+    print(f"Coordinates: {event_coordinates.name} ({event_coordinates.latitude}, {event_coordinates.longitude})")
+    
     try:
         event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
         
         if not event:
-            print(f"❌ Event not found")
+            print(f"❌ CRITICAL: Event not found in DB after creation!")
+            print(f"   Searched for eventcoordinates_id={event_coordinates.id}")
             return
+        
+        print(f"✅ Event found: ID={event.id}, name={event.event_name}")
         
         event_dto = {
             'id': event.id,
@@ -1620,18 +1629,25 @@ def broadcast_event_to_map(event_coordinates):
             'status': 'ongoing' if event.is_ongoing else 'upcoming',
         }
         
-        print(f"📡 About to broadcast event {event.id}")
-        print(f"📊 Active viewers in map room: {len(map_viewers)}")
-        print(f"🚀 Emitting to room='map': {event_dto}")
+        print(f"📊 Map viewers currently connected: {len(map_viewers)}")
+        if map_viewers:
+            print(f"   Viewer IDs: {list(map_viewers.keys())}")
+        else:
+            print(f"   ⚠️  WARNING: No map viewers connected!")
+        
+        print(f"🚀 Broadcasting to room='map'")
+        print(f"   Event: {event_dto['event_name']}")
         
         socketio.emit('new_event_on_map', event_dto, room='map', broadcast=True)
         
-        print(f"✅ Event {event.id} broadcasted successfully")
+        print(f"✅ Broadcast emitted successfully")
+        print(f"{'='*60}\n")
         
     except Exception as e:
-        print(f"❌ Error broadcasting: {e}")
+        print(f"❌ ERROR in broadcast_event_to_map: {e}")
         import traceback
         traceback.print_exc()
+        print(f"{'='*60}\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
