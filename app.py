@@ -2748,7 +2748,6 @@ def get_event_summary(event_id):
             'total_attendees': event.total_participants,
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
-            'has_attended': event.user_has_attended(user.id),
         })
         
         # Cache for 2 minutes (browser only - user-specific data)
@@ -2898,7 +2897,6 @@ def get_event_organizer_details(event_id):
                 for img in organizer.images
             ],
             'contact_email': organizer.owner.email if organizer.owner else None,
-            'has_attended': event.user_has_attended(user.id),
         }
         
         response = jsonify(organizer_data)
