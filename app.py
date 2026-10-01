@@ -1599,9 +1599,6 @@ def broadcast_event_to_map(event_coordinates):
     print(f"📡 BROADCAST_EVENT_TO_MAP CALLED")
     print(f"{'='*60}")
     print(f"Coordinates ID: {event_coordinates.id}")
-    # ❌ REMOVE THIS LINE:
-    # print(f"Coordinates: {event_coordinates.name} ({event_coordinates.latitude}, {event_coordinates.longitude})")
-    # ✅ REPLACE WITH:
     print(f"Coordinates: ({event_coordinates.latitude}, {event_coordinates.longitude})")
     
     try:
@@ -1617,7 +1614,7 @@ def broadcast_event_to_map(event_coordinates):
         event_dto = {
             'id': event.id,
             'title': event.event_category.name if event.event_category else 'Event',
-            'event_name': event.event_name,  # ✅ Use event_name here instead
+            'event_name': event.event_name,
             'coordinate': {
                 'latitude': float(event_coordinates.latitude),
                 'longitude': float(event_coordinates.longitude),
@@ -1640,7 +1637,8 @@ def broadcast_event_to_map(event_coordinates):
         print(f"🚀 Broadcasting to room='map'")
         print(f"   Event: {event_dto['event_name']}")
         
-        socketio.emit('new_event_on_map', event_dto, room='map', broadcast=True)
+        # ✅ FIXED: Remove broadcast=True
+        socketio.emit('new_event_on_map', event_dto, room='map')
         
         print(f"✅ Broadcast emitted successfully")
         print(f"{'='*60}\n")
