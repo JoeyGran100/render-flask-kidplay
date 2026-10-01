@@ -2791,6 +2791,7 @@ def get_event_details(event_id):
         
         response = jsonify({
             'id': event.id,
+            'event_name': event.event_name,  # ✅ ADD THIS
             'event_coordinates': {
                 'id': event.event_coordinates.id,
                 'address': event.event_coordinates.address,
