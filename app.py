@@ -3065,10 +3065,10 @@ def post_attendance():
         return jsonify({'error': 'Unauthorized'}), 401
  
     data = request.get_json()
-    if not data or 'location_id' not in data:
-        return jsonify({'error': 'location_id is required'}), 400
+    if not data or 'eventId' not in data:
+        return jsonify({'error': 'eventId is required'}), 400
  
-    event = db.session.get(EventLocation, data['location_id'])
+    event = db.session.get(EventLocation, data['eventId'])
     if not event:
         return jsonify({'error': 'Event not found'}), 404
  
@@ -3100,7 +3100,6 @@ def post_attendance():
         db.session.commit()
     except IntegrityError as e:
         db.session.rollback()
-        # Check if it's the unique constraint or primary key
         if 'unique_parent_location_attendance' in str(e):
             return jsonify({'error': 'Already registered for this event'}), 409
         else:
