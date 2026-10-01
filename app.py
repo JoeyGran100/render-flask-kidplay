@@ -3059,22 +3059,6 @@ def post_event():
 # ATTENDANCE ✅
 # ─────────────────────────────────────────────────────────────────────────────
  
-@app.route('/attendance', methods=['GET'])
-def get_attendance():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    attendances = user.attendances
-    return jsonify([
-        {
-            'id':          a.id,
-            'location_id': a.location_id,
-            'timestamp':   a.timestamp.isoformat() if a.timestamp else None,
-        }
-        for a in attendances
-    ]), 200
- 
  
 @app.route('/attendance', methods=['POST'])
 def post_attendance():
@@ -3109,7 +3093,7 @@ def post_attendance():
     db.session.add(attendance)
  
     try:
-        db.session.flush()  # get attendance.id before creating ticket
+        db.session.flush()  # Get attendance.id before creating ticket
         ticket = Ticket(attendance_id=attendance.id)
         db.session.add(ticket)
         db.session.commit()
@@ -3118,7 +3102,7 @@ def post_attendance():
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
  
-    return jsonify({'message': 'Registered successfully', 'attendance_id': attendance.id, 'ticket_code': ticket.ticket_code}), 201
+    return jsonify({'message': 'Registered successfully'}), 200
  
  
 # ─────────────────────────────────────────────────────────────────────────────
