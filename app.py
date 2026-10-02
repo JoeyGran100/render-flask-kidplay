@@ -2766,7 +2766,7 @@ def get_event_summary(event_id):
 # This endpoint is used when a user taps on a marker on the map to view event details.
 @app.route('/events/<int:event_id>', methods=['GET'])
 def get_event_details(event_id):
-    """Get full event details with user-specific attendance status."""
+    """Get full event details with user-specific attendance and like status."""
     try:
         user = get_current_user_from_token()
         if not user:
@@ -2789,9 +2789,17 @@ def get_event_details(event_id):
         if not event:
             return jsonify({'error': 'Event not found'}), 404
         
+        # ✅ Check if user has liked this event
+        user_like = (
+            db.session.query(EventLike)
+            .filter_by(user_id=user.id, event_id=event_id)
+            .first()
+        )
+        is_liked = user_like is not None
+        
         response = jsonify({
             'id': event.id,
-            'event_name': event.event_name,  # ✅ ADD THIS
+            'event_name': event.event_name,
             'event_coordinates': {
                 'id': event.event_coordinates.id,
                 'address': event.event_coordinates.address,
@@ -2841,6 +2849,7 @@ def get_event_details(event_id):
                 'is_approved': event.event_organizer.is_approved,
             },
             'has_attended': any(a.parent_id == user.id for a in event.attendances),
+            'is_liked': is_liked,  # ✅ ADD THIS
         })
         
         return response, 200
