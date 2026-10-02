@@ -4307,65 +4307,64 @@ def get_favourite_events():
                     logger.warning(f"Like record not found for event {e.id}, skipping")
                     continue
                 
-                # ✅ All these fields exist in EventLocation model
                 event_data = {
                     'id': e.id,
-                    'event_name': e.event_name,
+                    'venue_id': e.eventcoordinates_id,
+                    'event_category_id': e.event_category_id,
+                    'event_organizer_id': e.event_organizer_id,
                     'start_time': e.start_time.isoformat(),
-                    'end_time': e.end_time.isoformat() if e.end_time else None,  # ✅ Property
-                    'duration_minutes': e.duration_minutes,
+                    'end_time': e.end_time.isoformat() if e.end_time else None,
                     'event_description': e.event_description,
                     'max_attendees': e.max_attendees,
                     'girls_attendees': e.girls_attendees,
                     'boys_attendees': e.boys_attendees,
                     'min_age': e.min_age,
                     'max_age': e.max_age,
-                    'age_range': e.age_range,  # ✅ Property
+                    'age_range': e.age_range,
                     'base_price': float(e.base_price) if e.base_price else None,
                     'currency': e.currency,
                     'is_checkin_closed': e.is_checkin_closed,
-                    'is_upcoming': e.is_upcoming,  # ✅ Property
-                    'is_ongoing': e.is_ongoing,  # ✅ Property
-                    'is_past': e.is_past,  # ✅ Property
-                    'total_attendees': e.total_participants,  # ✅ Property
-                    'remaining_spots': e.max_attendees - e.total_participants,
+                    'is_upcoming': e.is_upcoming,
+                    'is_ongoing': e.is_ongoing,
+                    'is_past': e.is_past,
                 }
                 
-                # ── Event Coordinates ──
+                # ── Venue (Event Coordinates) ──
                 if e.event_coordinates:
-                    event_data['event_coordinates'] = {
+                    event_data['venue'] = {
                         'id': e.event_coordinates.id,
                         'address': e.event_coordinates.address,
                         'latitude': float(e.event_coordinates.latitude) if e.event_coordinates.latitude else None,
                         'longitude': float(e.event_coordinates.longitude) if e.event_coordinates.longitude else None,
                     }
                 else:
-                    event_data['event_coordinates'] = None
+                    event_data['venue'] = None
                 
                 # ── Category ──
                 if e.event_category:
-                    event_data['event_category'] = {
+                    event_data['category'] = {
                         'id': e.event_category.id,
                         'name': e.event_category.name,
                     }
                 else:
-                    event_data['event_category'] = None
+                    event_data['category'] = None
                 
-                # ── Organizer (PREVIEW ONLY) ──
+                # ── Organizer ──
                 if e.event_organizer:
-                    event_data['organizer_preview'] = {
+                    event_data['organizer'] = {
                         'id': e.event_organizer.id,
                         'user_id': e.event_organizer.user_id,
-                        'first_name': e.event_organizer.first_name,
+                        'name': e.event_organizer.name,
                         'avatar_url': e.event_organizer.avatar_url,
                         'is_approved': e.event_organizer.is_approved,
+                        'follower_count': e.event_organizer.follower_count,
                     }
-                    logger.debug(f"  Organizer preview loaded: {e.event_organizer.first_name}")
+                    logger.debug(f"  Organizer loaded: {e.event_organizer.name}")
                 else:
                     logger.warning(f"  Event {e.id} has no organizer")
-                    event_data['organizer_preview'] = None
+                    event_data['organizer'] = None
                 
-                # ── Event Images ──
+                # ── Cover Image ──
                 if e.cover_image:
                     event_data['cover_image'] = {
                         'id': e.cover_image.id,
@@ -4375,6 +4374,7 @@ def get_favourite_events():
                 else:
                     event_data['cover_image'] = None
                 
+                # ── Gallery Images ──
                 event_data['gallery_images'] = [
                     {
                         'id': img.id,
@@ -4385,8 +4385,7 @@ def get_favourite_events():
                     for img in e.images
                 ] if e.images else []
                 
-                # ✅ Like status (always true for /favourites, but good for consistency)
-                event_data['is_liked'] = True
+                # ── Like Status ──
                 event_data['liked_at'] = like_record.liked_at.isoformat()
                 
                 response_data.append(event_data)
