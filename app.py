@@ -4283,7 +4283,8 @@ def get_favourite_events():
                 joinedload(EventLocation.event_organizer),
                 joinedload(EventLocation.event_category),
                 joinedload(EventLocation.cover_image),
-                joinedload(EventLocation.images)
+                joinedload(EventLocation.images),
+                joinedload(EventLocation.attendances)  # ✅ Load attendances
             )
             .filter(EventLike.user_id == user.id)
             .order_by(EventLike.liked_at.desc())
@@ -4388,6 +4389,9 @@ def get_favourite_events():
                 # ── Like Status ──
                 event_data['liked_at'] = like_record.liked_at.isoformat()
                 
+                # ✅ ADD THIS: Check if user has attended this event
+                event_data['has_attended'] = e.user_has_attended(user.id)
+                
                 response_data.append(event_data)
                 logger.debug(f"Event {e.id} processed successfully")
                 
@@ -4403,27 +4407,6 @@ def get_favourite_events():
         traceback.print_exc()
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-
-
-@app.route('/favourites/<int:event_id>', methods=['DELETE'])
-def remove_favourite_event(event_id):
-    """Remove an event from user's favourites"""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    like = EventLike.query.filter_by(user_id=user.id, event_id=event_id).first()
-    if not like:
-        return jsonify({'error': 'Event not in favourites'}), 404
-    
-    try:
-        db.session.delete(like)
-        db.session.commit()
-        return jsonify({'message': 'Event removed from favourites'}), 200
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to remove event'}), 500
  
  
 # ─────────────────────────────────────────────────────────────────────────────
