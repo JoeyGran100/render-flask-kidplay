@@ -864,6 +864,59 @@ with app.app_context():
     db.create_all()
 
 
+# class PrivatePerson(db.Model):
+#     __tablename__ = 'private_persons'
+
+#     id = db.Column(db.Integer, primary_key=True)
+
+#     organizer_id = db.Column(
+#         db.Integer,
+#         db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+#         unique=True,
+#         nullable=False
+#     )
+
+#     personnummer = db.Column(
+#         db.String(12),
+#         unique=True,
+#         nullable=False
+#     )
+
+#     organizer = db.relationship(
+#         'EventOrganizer',
+#         back_populates='private_person'
+#     )
+
+
+# class Company(db.Model):
+#     __tablename__ = 'companies'
+
+#     id = db.Column(db.Integer, primary_key=True)
+
+#     organizer_id = db.Column(
+#         db.Integer,
+#         db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+#         unique=True,
+#         nullable=False
+#     )
+
+#     organization_number = db.Column(
+#         db.String(20),
+#         unique=True,
+#         nullable=False
+#     )
+
+#     company_name = db.Column(
+#         db.String(200),
+#         nullable=False
+#     )
+
+#     organizer = db.relationship(
+#         'EventOrganizer',
+#         back_populates='company'
+#     )
+
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
