@@ -4174,14 +4174,15 @@ def get_event_likes():
         return jsonify({'error': 'Internal server error'}), 500
 
 
-@app.route('/likes/<int:event_id>', methods=['POST'])
-def toggle_event_like(event_id):
+
+@app.route('/likes', methods=['POST'])  # ← Changed from /likes/<int:event_id>
+def toggle_event_like():
     """
     Toggle like status for an event (single endpoint for both like and unlike).
     
-    POST /likes/123 → if liked, unlikes it. If not liked, likes it.
+    POST /likes with body: { "event_id": 123 }
     """
-    logger.info(f"=== POST /likes/{event_id} request started ===")
+    logger.info("=== POST /likes request started ===")
     
     user = get_current_user_from_token()
     if not user:
@@ -4189,6 +4190,14 @@ def toggle_event_like(event_id):
         return jsonify({'error': 'Unauthorized'}), 401
     
     logger.info(f"User authenticated: {user.id}")
+    
+    # ✅ Get event_id from request body
+    data = request.get_json()
+    if not data or 'event_id' not in data:
+        logger.warning("Missing event_id in request body")
+        return jsonify({'error': 'event_id is required'}), 400
+    
+    event_id = data['event_id']
     
     try:
         # Check if event exists
