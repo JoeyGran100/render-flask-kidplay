@@ -4263,7 +4263,7 @@ def toggle_event_like():
 
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
-    """Get all events liked by the current user with minimal organizer data"""
+    """Get all events liked by the current user"""
     logger.info("=== GET /favourites request started ===")
     
     try:
@@ -4274,10 +4274,17 @@ def get_favourite_events():
         
         logger.info(f"User authenticated: {user.id}")
         
-        # Query liked events
+        # Query liked events with necessary joins
         liked_events = (
             db.session.query(EventLocation)
             .join(EventLike, EventLike.event_id == EventLocation.id)
+            .options(
+                joinedload(EventLocation.event_coordinates),
+                joinedload(EventLocation.event_organizer),
+                joinedload(EventLocation.event_category),
+                joinedload(EventLocation.cover_image),
+                joinedload(EventLocation.images)
+            )
             .filter(EventLike.user_id == user.id)
             .order_by(EventLike.liked_at.desc())
             .all()
@@ -4300,63 +4307,63 @@ def get_favourite_events():
                     logger.warning(f"Like record not found for event {e.id}, skipping")
                     continue
                 
+                # ✅ All these fields exist in EventLocation model
                 event_data = {
                     'id': e.id,
-                    'event_coordinates_id': e.event_coordinates_id,
-                    'event_category_id': e.event_category_id,
-                    'event_organizer_id': e.event_organizer_id,
+                    'event_name': e.event_name,
                     'start_time': e.start_time.isoformat(),
-                    'end_time': e.end_time.isoformat() if e.end_time else None,
+                    'end_time': e.end_time.isoformat() if e.end_time else None,  # ✅ Property
+                    'duration_minutes': e.duration_minutes,
                     'event_description': e.event_description,
                     'max_attendees': e.max_attendees,
                     'girls_attendees': e.girls_attendees,
                     'boys_attendees': e.boys_attendees,
                     'min_age': e.min_age,
                     'max_age': e.max_age,
-                    'age_range': e.age_range,
+                    'age_range': e.age_range,  # ✅ Property
                     'base_price': float(e.base_price) if e.base_price else None,
                     'currency': e.currency,
                     'is_checkin_closed': e.is_checkin_closed,
-                    'is_upcoming': e.is_upcoming,
-                    'is_ongoing': e.is_ongoing,
-                    'is_past': e.is_past,
+                    'is_upcoming': e.is_upcoming,  # ✅ Property
+                    'is_ongoing': e.is_ongoing,  # ✅ Property
+                    'is_past': e.is_past,  # ✅ Property
+                    'total_attendees': e.total_participants,  # ✅ Property
+                    'remaining_spots': e.max_attendees - e.total_participants,
                 }
                 
                 # ── Event Coordinates ──
                 if e.event_coordinates:
                     event_data['event_coordinates'] = {
                         'id': e.event_coordinates.id,
-                        'name': e.event_coordinates.name,
                         'address': e.event_coordinates.address,
-                        'latitude': e.event_coordinates.latitude,
-                        'longitude': e.event_coordinates.longitude,
+                        'latitude': float(e.event_coordinates.latitude) if e.event_coordinates.latitude else None,
+                        'longitude': float(e.event_coordinates.longitude) if e.event_coordinates.longitude else None,
                     }
                 else:
                     event_data['event_coordinates'] = None
                 
                 # ── Category ──
                 if e.event_category:
-                    event_data['category'] = {
+                    event_data['event_category'] = {
                         'id': e.event_category.id,
                         'name': e.event_category.name,
                     }
                 else:
-                    event_data['category'] = None
+                    event_data['event_category'] = None
                 
                 # ── Organizer (PREVIEW ONLY) ──
                 if e.event_organizer:
-                    event_data['organizer'] = {
+                    event_data['organizer_preview'] = {
                         'id': e.event_organizer.id,
                         'user_id': e.event_organizer.user_id,
-                        'name': e.event_organizer.name,
+                        'first_name': e.event_organizer.first_name,
                         'avatar_url': e.event_organizer.avatar_url,
                         'is_approved': e.event_organizer.is_approved,
-                        'follower_count': e.event_organizer.follower_count,
                     }
-                    logger.debug(f"  Organizer preview loaded: {e.event_organizer.name}")
+                    logger.debug(f"  Organizer preview loaded: {e.event_organizer.first_name}")
                 else:
                     logger.warning(f"  Event {e.id} has no organizer")
-                    event_data['organizer'] = None
+                    event_data['organizer_preview'] = None
                 
                 # ── Event Images ──
                 if e.cover_image:
@@ -4378,6 +4385,8 @@ def get_favourite_events():
                     for img in e.images
                 ] if e.images else []
                 
+                # ✅ Like status (always true for /favourites, but good for consistency)
+                event_data['is_liked'] = True
                 event_data['liked_at'] = like_record.liked_at.isoformat()
                 
                 response_data.append(event_data)
@@ -4394,6 +4403,7 @@ def get_favourite_events():
         logger.error(f"Internal server error in /favourites: {str(e)}", exc_info=True)
         traceback.print_exc()
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+
 
 
 @app.route('/favourites/<int:event_id>', methods=['DELETE'])
