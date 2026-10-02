@@ -4140,55 +4140,102 @@ def toggle_follow(following_id):
         return jsonify({'error': 'Toggle failed'}), 500
  
  
-# ─────────────────────────────────────────────────────────────────────────────
-# EVENT LIKES ✅
-# ─────────────────────────────────────────────────────────────────────────────
  
+# ═══════════════════════════════════════════════════════════════════════════
+# 📌 EVENT LIKES / FAVORITES - SINGLE TOGGLE ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════
+
 @app.route('/likes', methods=['GET'])
 def get_event_likes():
+    """Get all event IDs that current user has liked"""
+    logger.info("=== GET /likes request started ===")
+    
     user = get_current_user_from_token()
     if not user:
+        logger.warning("Unauthorized request - no user token found")
         return jsonify({'error': 'Unauthorized'}), 401
- 
-    likes = user.liked_events.all()
-    return jsonify([
-        {
-            'event_id': like.event_id,
-            'liked_at': like.liked_at.isoformat() if like.liked_at else None,
-        }
-        for like in likes
-    ]), 200
- 
- 
-@app.route('/likes', methods=['POST'])
-def post_event_like():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data or 'event_id' not in data:
-        return jsonify({'error': 'event_id is required'}), 400
- 
-    event = db.session.get(EventLocation, data['event_id'])
-    if not event:
-        return jsonify({'error': 'Event not found'}), 404
- 
-    existing = db.session.query(EventLike).filter_by(user_id=user.id, event_id=event.id).first()
-    if existing:
-        return jsonify({'error': 'Event already liked'}), 409
- 
-    like = EventLike(user_id=user.id, event_id=event.id)
-    db.session.add(like)
- 
+    
+    logger.info(f"User authenticated: {user.id}")
+    
     try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to like event'}), 500
- 
-    return jsonify({'message': 'Event liked'}), 201
+        likes = db.session.query(EventLike).filter_by(user_id=user.id).all()
+        logger.info(f"Found {len(likes)} liked events for user {user.id}")
+        
+        return jsonify([
+            {
+                'event_id': like.event_id,
+                'liked_at': like.liked_at.isoformat() if like.liked_at else None,
+            }
+            for like in likes
+        ]), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching likes: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/likes/<int:event_id>', methods=['POST'])
+def toggle_event_like(event_id):
+    """
+    Toggle like status for an event (single endpoint for both like and unlike).
+    
+    POST /likes/123 → if liked, unlikes it. If not liked, likes it.
+    """
+    logger.info(f"=== POST /likes/{event_id} request started ===")
+    
+    user = get_current_user_from_token()
+    if not user:
+        logger.warning("Unauthorized request - no user token found")
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    logger.info(f"User authenticated: {user.id}")
+    
+    try:
+        # Check if event exists
+        event = db.session.get(EventLocation, event_id)
+        if not event:
+            logger.warning(f"Event {event_id} not found")
+            return jsonify({'error': 'Event not found'}), 404
+        
+        # Check if already liked
+        existing_like = (
+            db.session.query(EventLike)
+            .filter_by(user_id=user.id, event_id=event_id)
+            .first()
+        )
+        
+        if existing_like:
+            # ✅ UNLIKE
+            logger.info(f"User {user.id} unliking event {event_id}")
+            db.session.delete(existing_like)
+            action = "unliked"
+            is_liked = False
+        else:
+            # ✅ LIKE
+            logger.info(f"User {user.id} liking event {event_id}")
+            like = EventLike(user_id=user.id, event_id=event_id)
+            db.session.add(like)
+            action = "liked"
+            is_liked = True
+        
+        try:
+            db.session.commit()
+            logger.info(f"Successfully {action} event {event_id} for user {user.id}")
+            
+            return jsonify({
+                'message': f'Event {action} successfully',
+                'event_id': event_id,
+                'is_liked': is_liked
+            }), 200
+            
+        except Exception as db_error:
+            db.session.rollback()
+            logger.error(f"Database error: {str(db_error)}", exc_info=True)
+            return jsonify({'error': f'Failed to {action} event'}), 500
+    
+    except Exception as e:
+        logger.error(f"Error toggling like: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
  
  
 # ─────────────────────────────────────────────────────────────────────────────
