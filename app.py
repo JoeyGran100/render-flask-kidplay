@@ -2542,27 +2542,7 @@ def approve_event_organizer(organizer_id):
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT ORGANIZER IMAGES ✅
 # ─────────────────────────────────────────────────────────────────────────────
- 
-@app.route('/organizer/images', methods=['GET'])
-def get_organizer_images():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    organizer = user.event_organizer
-    if not organizer:
-        return jsonify({'error': 'Organizer profile not found'}), 404
- 
-    return jsonify([
-        {
-            'id':              img.id,
-            'cover_image_url': img.cover_image_url,
-            'display_order':   img.display_order,
-            'uploaded_at':     img.uploaded_at.isoformat() if img.uploaded_at else None,
-        }
-        for img in organizer.images
-    ]), 200
- 
+
  
 @app.route('/organizer/images', methods=['POST'])
 def post_organizer_image():
