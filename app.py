@@ -325,9 +325,14 @@ class Event(db.Model):
     images              = db.relationship('EventImage', back_populates='event', lazy=True, cascade='all, delete-orphan', order_by='EventImage.display_order')
  
     # Event data
+    # Event data
     attendances         = db.relationship('Attendance', back_populates='event', lazy=True, cascade='all, delete-orphan')
     checkins            = db.relationship('CheckIn', back_populates='event', lazy=True, cascade='all, delete-orphan')
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
+
+    # Payouts
+    payouts             = db.relationship('EventPayout', back_populates='event', lazy=True)
+
     conversations       = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True, overlaps="event")
     feature_assignments = db.relationship("EventFeatureAssignment", back_populates="event", cascade="all, delete-orphan", lazy="selectin")
     
