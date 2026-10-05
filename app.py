@@ -2744,16 +2744,16 @@ def get_events_in_bounds():
         print(f"LNG RANGE: {lng_min} to {lng_max}")
         
                 # ✅ ADD THIS: Check total events before filters
-        total_events = EventLocation.query.join(EventLocation).count()
+        total_events = Event.query.count()
         print(f"Total events in DB: {total_events}")
 
-        query = EventLocation.query.join(EventLocation).options(
+        query = EventLocation.query.options(
             joinedload(EventLocation.event_coordinates),
             joinedload(EventLocation.event_category),
         ).filter(
             EventLocation.latitude.between(lat_min, lat_max),
             EventLocation.longitude.between(lng_min, lng_max),
-        )
+                )
                 
         # Check after coordinates filter
         coords_filtered = query.filter(
@@ -2768,7 +2768,7 @@ def get_events_in_bounds():
         # Category filter
         if data.get('category_ids'):
             query = query.filter(
-                EventLocation.event_category_id.in_(data.get('category_ids'))
+                Event.event_category_id.in_(data.get('category_ids'))
             )
 
         # Status filter (in query, not Python)
@@ -2778,12 +2778,12 @@ def get_events_in_bounds():
         now = datetime.now(timezone.utc)
 
         if status == 'upcoming':
-            query = query.filter(EventLocation.start_time > now)  # ← Filter by column
+            query = query.filter(Event.start_time > now)  # ← Filter by column
         elif status == 'ongoing':
             query = query.filter(
-                EventLocation.start_time <= now,
-                (EventLocation.end_time >= now) | (EventLocation.end_time == None)
-    )
+                Event.start_time <= now,
+                (Event.end_time >= now) | (Event.end_time == None)
+            )
 
         events = query.all()
         print(f"Events after status filter: {len(events)}")
@@ -2838,12 +2838,12 @@ def get_event_summary(event_id):
             return jsonify({'error': 'Unauthorized'}), 401
         
         event = (
-            EventLocation.query
+            Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(EventLocation.event_coordinates),
-                joinedload(EventLocation.event_category),
-                joinedload(EventLocation.cover_image),  # Only cover image, not gallery
+                joinedload(Event.event_coordinates),
+                joinedload(Event.event_category),
+                joinedload(Event.cover_image),  # Only cover image, not gallery
             )
             .first()
         )
@@ -2902,15 +2902,15 @@ def get_event_details(event_id):
             return jsonify({'error': 'Unauthorized'}), 401
         
         event = (
-            EventLocation.query
+            Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(EventLocation.event_coordinates),
-                joinedload(EventLocation.event_organizer),
-                joinedload(EventLocation.event_category),
-                joinedload(EventLocation.cover_image),
-                joinedload(EventLocation.images),
-                joinedload(EventLocation.attendances).joinedload(Attendance.user).joinedload(User.parent_profile)
+                joinedload(Event.event_coordinates),
+                joinedload(Event.event_organizer),
+                joinedload(Event.event_category),
+                joinedload(Event.cover_image),
+                joinedload(Event.images),
+                joinedload(Event.attendances).joinedload(Attendance.user).joinedload(User.parent_profile)
             )
             .first()
         )
@@ -3003,12 +3003,12 @@ def get_event_organizer_details(event_id):
             return jsonify({'error': 'Unauthorized'}), 401
         
         event = (
-            EventLocation.query
+            Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(EventLocation.event_organizer).options(
-                    joinedload(EventOrganizer.images),
-                    joinedload(EventOrganizer.owner).joinedload(User.parent_profile)
+                joinedload(Event.event_organizer).options(
+                    joinedload(Event.images),
+                    joinedload(Event.owner).joinedload(User.parent_profile)
                 )
             )
             .first()
@@ -3073,7 +3073,7 @@ def post_event():
     
     if 'eventcoordinates_id' in data:
         eventcoordinates_id = data['eventcoordinates_id']
-        event_coordinates = EventLocation.query.get(eventcoordinates_id)
+        event_coordinates = Event.query.get(eventcoordinates_id)
         if not event_coordinates:
             return jsonify({'error': f'Event coordinates with id {eventcoordinates_id} not found'}), 404
     
@@ -3094,10 +3094,10 @@ def post_event():
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
         
         tolerance = 0.0001
-        existing_event_coordinates = EventLocation.query.filter(
-            EventLocation.name.ilike(event_coordinates_data['name'].strip()),
-            EventLocation.latitude.between(latitude - tolerance, latitude + tolerance),
-            EventLocation.longitude.between(longitude - tolerance, longitude + tolerance)
+        existing_event_coordinates = Event.query.filter(
+            Event.name.ilike(event_coordinates_data['name'].strip()),
+            Event.latitude.between(latitude - tolerance, latitude + tolerance),
+            Event.longitude.between(longitude - tolerance, longitude + tolerance)
         ).first()
         
         if existing_event_coordinates:
@@ -3145,7 +3145,7 @@ def post_event():
     
     print(f"⏱️ Event duration: {duration_minutes} minutes")
  
-    event = EventLocation(
+    event = Event(
         eventcoordinates_id=eventcoordinates_id,
         event_category_id=data['event_category_id'],
         event_organizer_id=organizer.id,
@@ -3207,7 +3207,7 @@ def post_attendance():
     if not data or 'eventId' not in data:
         return jsonify({'error': 'eventId is required'}), 400
  
-    event = db.session.get(EventLocation, data['eventId'])
+    event = db.session.get(Event, data['eventId'])
     if not event:
         return jsonify({'error': 'Event not found'}), 404
  
@@ -3281,17 +3281,17 @@ def get_tickets():
             # ✅ Attendance -> Location -> Coordinates
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
-            .joinedload(EventLocation.event_coordinates),
+            .joinedload(Event.event_coordinates),
             
             # ✅ Attendance -> Location -> Category
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
-            .joinedload(EventLocation.event_category),
+            .joinedload(Event.event_category),
             
             # ✅ Attendance -> Location -> Organizer
             db.joinedload(User.attendances)
             .joinedload(Attendance.location)
-            .joinedload(EventLocation.event_organizer),
+            .joinedload(Event.event_organizer),
             
             # ✅ Parent Profile
             db.joinedload(User.parent_profile),
@@ -3304,7 +3304,7 @@ def get_tickets():
             # ✅ NEW: Organizer -> Events -> Category
             db.joinedload(User.event_organizer)
             .joinedload(EventOrganizer.events)
-            .joinedload(EventLocation.event_category),
+            .joinedload(Event.event_category),
         )
         .filter(User.id == user.id)
         .first()
@@ -3782,7 +3782,7 @@ def handle_join_event_room(user: User, data: dict):
             return
         
         # Verify event exists
-        event = EventLocation.query.get(event_id)
+        event = Event.query.get(event_id)
         if not event:
             emit('error', {
                 'code': 'EVENT_NOT_FOUND',
@@ -3842,7 +3842,7 @@ def get_event_attendees(event_id: int):
             return jsonify({'error': 'Unauthorized'}), 401
         
         # Get event
-        event = EventLocation.query.get(event_id)
+        event = Event.query.get(event_id)
         if not event:
             return jsonify({'error': 'Event not found'}), 404
         
@@ -3962,7 +3962,7 @@ def manual_checkin_attendee(event_id: int, user_id: int):
             return jsonify({'error': 'Unauthorized'}), 401
 
         # Get event
-        event = db.session.get(EventLocation, event_id)
+        event = db.session.get(Event, event_id)
         if not event:
             return jsonify({'error': 'Event not found'}), 404
 
