@@ -3243,12 +3243,12 @@ def get_tickets():
  
     user = db.session.query(User).options(
         db.joinedload(User.attendances).joinedload(Attendance.ticket),
-        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_location_id),
+        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_location),
         db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_category),
         db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_organizer),
         db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.capacity),
         db.joinedload(User.parent_profile),
-        db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_location_id),
+        db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_location),
         db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_category),
         db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.capacity),
     ).filter(User.id == user.id).first()
@@ -3262,7 +3262,7 @@ def get_tickets():
             return None
         
         event = attendance.event
-        location = event.event_location_id
+        location = event.event_location
         capacity = event.capacity
         category = event.event_category
         organizer = event.event_organizer
