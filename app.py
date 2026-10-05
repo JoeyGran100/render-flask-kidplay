@@ -696,13 +696,13 @@ class Conversation(db.Model):
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
     parent_id       = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     other_user_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
-    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)  # ✅ Changed
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)
     created_at      = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at      = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     messages        = db.relationship('Message', back_populates='conversation', cascade='all, delete-orphan')
-    event           = db.relationship('EventLocation', foreign_keys=[event_id])
+    event           = db.relationship('Event', foreign_keys=[event_id])
     parent          = db.relationship('User', foreign_keys=[parent_id])
     other_user      = db.relationship('User', foreign_keys=[other_user_id])
     
