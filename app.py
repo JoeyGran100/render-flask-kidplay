@@ -3337,13 +3337,19 @@ def get_tickets():
                 'category': {'id': event.event_category.id if event.event_category else None, 'name': event.event_category.name if event.event_category else None},
                 'event_coordinates': {'id': location.id, 'address': location.address, 'latitude': location.latitude, 'longitude': location.longitude} if location else None,
             })
+            
+    # Add before return statement:
+    active_tickets = [t for t in formatted_tickets if not t['is_void']]
+    expired_tickets = [t for t in formatted_tickets if t['is_void']]
  
     return jsonify({
         'success': True,
-        'tickets': formatted_tickets,
+        'active_tickets': active_tickets,        # ← Changed
+        'expired_tickets': expired_tickets,      # ← Changed
         'created_events': created_events,
-        'ticket_count': len(formatted_tickets),
-        'created_event_count': len(created_events),
+        'active_count': len(active_tickets),
+        'expired_count': len(expired_tickets),
+        'created_count': len(created_events),
     }), 200
  
  
