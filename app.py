@@ -123,11 +123,9 @@ class User(db.Model):
     password_hash = db.Column(db.String(255),nullable=False)
     created_at = db.Column(db.DateTime,default=lambda: datetime.now(timezone.utc),nullable=False)
     
-    # One authentication account -> one parent profile
-    parent_profile = db.relationship('ParentsProfile',back_populates='user',uselist=False,cascade='all, delete-orphan')
-    # User/account-level activity
-    attendances = db.relationship('Attendance',back_populates='user')
-    checkins = db.relationship('CheckIn',back_populates='user')
+    parent_profile = db.relationship('ParentsProfile', back_populates='user', uselist=False, cascade='all, delete-orphan')
+    attendances = db.relationship('Attendance', back_populates='parent')  # ✅ Updated
+    checkins = db.relationship('CheckIn', back_populates='parent')  # ✅ Updated
 
 
 class ParentsProfile(db.Model):
@@ -225,7 +223,7 @@ class EventOrganizer(db.Model):
     # Relationships
     owner  = db.relationship('User', backref=db.backref('event_organizer', uselist=False))
     images = db.relationship('EventOrganizerImage', back_populates='organizer', cascade='all, delete-orphan', order_by='EventOrganizerImage.display_order')
-    events = db.relationship('EventLocation', back_populates='event_organizer')
+    events = db.relationship('Event', back_populates='event_organizer')
 
     # ── Derived from ParentsProfile via owner ─────────────────────────────
 
@@ -294,112 +292,44 @@ class EventOrganizerImage(db.Model):
     organizer = db.relationship('EventOrganizer', back_populates='images')
 
 
-class EventCategory(db.Model):
-    __tablename__ = 'event_categories'
 
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    name = db.Column(db.String(100), unique=True, nullable=False)
-
-
-class EventCoordinates(db.Model):
-    """The physical place. Reusable across events."""
-    __tablename__ = 'event_coordinates'
-
-    id        = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    address   = db.Column(db.String(300), nullable=True)
-    latitude  = db.Column(db.Float)
-    longitude = db.Column(db.Float)
-
-    # Relationships
-    events = db.relationship('EventLocation', back_populates='event_coordinates')
-
-
-# ✅ NEW: EventCoverImage (if you want event-specific cover images)
-class EventCoverImage(db.Model):
-    """
-    Cover/hero image for a specific event.
-    One image per event.
-    """
-    __tablename__ = 'event_cover_images'
-
-    id = db.Column(db.Integer,primary_key=True,autoincrement=True)
-    event_id = db.Column(db.Integer,db.ForeignKey('event_locations.id', ondelete='CASCADE'),nullable=False,unique=True)
-    image_url = db.Column(db.String(500),nullable=False)
-    uploaded_at = db.Column(db.DateTime(timezone=True),default=lambda: datetime.now(timezone.utc))
-    event = db.relationship('EventLocation',back_populates='cover_image')
-
-
-class EventLocationImage(db.Model):
-    """
-    Portfolio/gallery images for a specific event (max 10 per event).
-    These are displayed in the event gallery when viewing event details.
-    """
-    __tablename__ = 'event_location_images'
- 
-    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id      = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False)
-    
-    image_url     = db.Column(db.String(500), nullable=False)
-    display_order = db.Column(db.Integer, default=0)  # For ordering images in gallery
-    uploaded_at   = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
- 
-    # Relationship
-    event = db.relationship('EventLocation', back_populates='images')
-    
-    @validates('image_url')
-    def validate_image_count(self, key, value):
-        """Check if event already has 10 images"""
-        if self.event_id:
-            count = EventLocationImage.query.filter_by(event_id=self.event_id).count()
-            if count >= 10:
-                raise ValueError("Maximum 10 images per event")
-
-
-class EventLocation(db.Model):
-    """One specific event instance at a event coordinates."""
-    __tablename__ = 'event_locations'
+class Event(db.Model):
+    """One specific event instance at a event location."""
+    __tablename__ = 'event'
  
     id                = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    eventcoordinates_id          = db.Column(db.Integer, db.ForeignKey('event_coordinates.id'), nullable=False)
-    event_category_id = db.Column(db.Integer, db.ForeignKey('event_categories.id'), nullable=False)
     event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id'), nullable=False)
- 
+    event_category_id = db.Column(db.Integer, db.ForeignKey('event_categories.id'), nullable=False)
+    event_location_id = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=False)
+    capacity_id = db.Column(db.Integer, db.ForeignKey('event_capacities.id'), nullable=False, unique=True)
+    
     # Event config
     event_name      = db.Column(db.String(300), nullable=False)
     start_time    = db.Column(db.DateTime(timezone=True), nullable=False)
     duration_minutes = db.Column(db.Integer, nullable=True)  # Duration in minutes (e.g., 60 for 1h, 80 for 1h 20min). NULL = undecided/open-ended
     event_description   = db.Column(db.String(500))
-    max_attendees = db.Column(db.Integer, nullable=False)
-    girls_attendees = db.Column(db.Integer, nullable=True)
-    boys_attendees  = db.Column(db.Integer, nullable=True)
-    
-    # Age range ─────────────────────────────────────────────────────────────
-    min_age       = db.Column(db.Integer, nullable=False, default=1)  # Minimum age requirement
-    max_age       = db.Column(db.Integer, nullable=True, default=18)  # Maximum age requirement
-    
     base_price    = db.Column(db.Numeric(10, 2))
     currency      = db.Column(db.String(10), default='SEK', nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
  
-    # Operational state
-    is_checkin_closed = db.Column(db.Boolean, default=False, nullable=False)
- 
-    # ── Relationships ──────────────────────────────────────────────────────────
     
-    event_coordinates   = db.relationship('EventCoordinates', back_populates='events')
+    # ── Relationships ──────────────────────────────────────────────────────────
+    event_location      = db.relationship('EventLocation', back_populates='events')
     event_category      = db.relationship('EventCategory', lazy='selectin')
     event_organizer     = db.relationship('EventOrganizer', back_populates='events', lazy='selectin')
-    
+    capacity            = db.relationship('EventCapacity', uselist=False, foreign_keys=[capacity_id])
+ 
     # Images
     cover_image         = db.relationship('EventCoverImage', uselist=False, back_populates='event', cascade='all, delete-orphan')
-    images              = db.relationship('EventLocationImage', back_populates='event', lazy=True, cascade='all, delete-orphan', order_by='EventLocationImage.display_order')
-    
+    images              = db.relationship('EventImage', back_populates='event', lazy=True, cascade='all, delete-orphan', order_by='EventImage.display_order')
+ 
     # Event data
-    attendances         = db.relationship('Attendance', back_populates='location', lazy=True, cascade='all, delete-orphan')
-    checkins            = db.relationship('CheckIn', back_populates='location', lazy=True, cascade='all, delete-orphan')
+    attendances         = db.relationship('Attendance', back_populates='event', lazy=True, cascade='all, delete-orphan')
+    checkins            = db.relationship('CheckIn', back_populates='event', lazy=True, cascade='all, delete-orphan')
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
     conversations       = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True, overlaps="event")
+    feature_assignments = db.relationship("EventFeatureAssignment", back_populates="event", cascade="all, delete-orphan", lazy="selectin")
     
     # ── Validators ─────────────────────────────────────────────────────────────
  
@@ -409,40 +339,14 @@ class EventLocation(db.Model):
             raise ValueError("duration_minutes must be positive (or NULL for undecided)")
         return value
  
-    @validates('girls_attendees', 'boys_attendees')
-    def validate_gender_limits(self, key, value):
-        if value is not None and value < 0:
-            raise ValueError(f"{key} cannot be negative")
-        return value
-    
-    
-    @validates('min_age')
-    def validate_min_age(self, key, value):
-        if value is not None and value < 0:
-            raise ValueError("min_age cannot be negative")
-        return value
-    
-    @validates('max_age')
-    def validate_max_age(self, key, value):
-        if value is not None and value < 0:
-            raise ValueError("max_age cannot be negative")
-        if value is not None and self.min_age and value < self.min_age:
-            raise ValueError("max_age cannot be less than min_age")
-        return value
-    
- 
-    def validate_attendee_totals(self):
-        validate_attendee_totals(self.max_attendees, self.girls_attendees, self.boys_attendees)
- 
-    # ── State properties ───────────────────────────────────────────────────────
-    
     @property
     def age_range(self):
         """Format age range as '1 - 18' or '1+' if no max age"""
-        if self.max_age is None:
-            return f"{self.min_age}+"
-        return f"{self.min_age} - {self.max_age}"
-    
+        if not self.capacity:
+            return "Not configured"
+        if self.capacity.max_age is None:
+            return f"{self.capacity.min_age}+"
+        return f"{self.capacity.min_age} - {self.capacity.max_age}"
  
     @property
     def end_time(self):
@@ -456,25 +360,23 @@ class EventLocation(db.Model):
     def is_ongoing(self):
         now = datetime.now(timezone.utc)
         if self.end_time is None:
-            # Undecided duration: event is ongoing if it has started
             return self.start_time <= now
         return self.start_time <= now <= self.end_time
  
     @property
     def is_past(self):
         if self.end_time is None:
-            # Undecided duration: treat as never truly "past" (people can still be there)
             return False
         return datetime.now(timezone.utc) > self.end_time
  
     @property
     def is_upcoming(self):
         return datetime.now(timezone.utc) < self.start_time
-    
+ 
     @property
     def total_participants(self):
         """Total number of attendees registered for this event"""
-        return Attendance.query.filter_by(location_id=self.id).count()
+        return Attendance.query.filter_by(event_id=self.id).count()
  
     # ── Gender counting ────────────────────────────────────────────────────────
  
@@ -483,28 +385,213 @@ class EventLocation(db.Model):
             Attendance.query
             .join(User, User.id == Attendance.parent_id)
             .join(ParentsProfile, ParentsProfile.parents_id == User.id)
-            .filter(Attendance.location_id == self.id, ParentsProfile.gender == gender)
+            .filter(Attendance.event_id == self.id, ParentsProfile.gender == gender)
             .count()
         )
  
     def can_register(self, gender: GenderEnum) -> tuple[bool, str]:
-        total = Attendance.query.filter_by(location_id=self.id).count()
-        if total >= self.max_attendees:
+        """Check if a parent can register for this event"""
+        if not self.capacity:
+            return False, "Event capacity not configured"
+ 
+        total = Attendance.query.filter_by(event_id=self.id).count()
+        if total >= self.capacity.max_attendees:
             return False, "Event is fully booked"
-        if gender == GenderEnum.Male and self.boys_attendees is not None:
-            if self._count_by_gender(GenderEnum.Male) >= self.boys_attendees:
-                return False, f"No male spots remaining ({self.boys_attendees} max)"
-        if gender == GenderEnum.Female and self.girls_attendees is not None:
-            if self._count_by_gender(GenderEnum.Female) >= self.girls_attendees:
-                return False, f"No female spots remaining ({self.girls_attendees} max)"
+ 
+        if gender == GenderEnum.Male and self.capacity.boys_attendees is not None:
+            if self._count_by_gender(GenderEnum.Male) >= self.capacity.boys_attendees:
+                return False, f"No male spots remaining ({self.capacity.boys_attendees} max)"
+ 
+        if gender == GenderEnum.Female and self.capacity.girls_attendees is not None:
+            if self._count_by_gender(GenderEnum.Female) >= self.capacity.girls_attendees:
+                return False, f"No female spots remaining ({self.capacity.girls_attendees} max)"
+ 
         return True, ""
-    
+ 
     def user_has_attended(self, user_id: int) -> bool:
         """Check if a specific user has attended this event."""
         return Attendance.query.filter_by(
             parent_id=user_id,
-            location_id=self.id
+            event_id=self.id
         ).first() is not None
+
+
+class EventCoverImage(db.Model):
+    """
+    Cover/hero image for a specific event.
+    One image per event.
+    """
+    __tablename__ = 'event_cover_images'
+
+    id = db.Column(db.Integer,primary_key=True,autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='CASCADE'), nullable=False, unique=True)  # ✅ Changed
+    image_url = db.Column(db.String(500),nullable=False)
+    uploaded_at = db.Column(db.DateTime(timezone=True),default=lambda: datetime.now(timezone.utc))
+    event = db.relationship('Event', back_populates='cover_image')
+
+
+
+class EventImage(db.Model):
+    """
+    Portfolio/gallery images for a specific event (max 10 per event).
+    These are displayed in the event gallery when viewing event details.
+    """
+    __tablename__ = 'event_images'
+ 
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='CASCADE'), nullable=False)  # ✅ Changed
+    
+    image_url     = db.Column(db.String(500), nullable=False)
+    display_order = db.Column(db.Integer, default=0)  # For ordering images in gallery
+    uploaded_at   = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+ 
+    # Relationship
+    event = db.relationship('Event', back_populates='images')
+    
+    @validates('image_url')
+    def validate_image_count(self, key, value):
+        """Check if event already has 10 images"""
+        if self.event_id:
+            count = EventImage.query.filter_by(event_id=self.event_id).count()
+            if count >= 10:
+                raise ValueError("Maximum 10 images per event")
+        return value
+
+
+class EventLocation(db.Model):
+    """The physical place. Reusable across events."""
+    __tablename__ = 'event_locations'
+
+    id        = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    address   = db.Column(db.String(300), nullable=True)
+    latitude  = db.Column(db.Float)
+    longitude = db.Column(db.Float)
+
+    # Relationships
+    events = db.relationship('Event', back_populates='event_location')
+
+
+class EventCategory(db.Model):
+    __tablename__ = 'event_categories'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+
+
+class EventCapacity(db.Model):
+    __tablename__ = "event_capacities"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("event.id"),  # ✅ CORRECT
+        unique=True,
+        nullable=False
+    )
+
+    max_attendees = db.Column(db.Integer, nullable=False)
+
+    girls_attendees = db.Column(db.Integer, nullable=True)
+    boys_attendees = db.Column(db.Integer, nullable=True)
+
+    min_age = db.Column(db.Integer, nullable=False, default=1)
+    max_age = db.Column(db.Integer, nullable=True, default=18)
+    
+    # Optional: add validation relationship or methods
+    @validates('min_age')
+    def validate_min_age(self, key, value):
+        if value is not None and value < 0:
+            raise ValueError("min_age cannot be negative")
+        return value
+ 
+    @validates('max_age')
+    def validate_max_age(self, key, value):
+        if value is not None and value < 0:
+            raise ValueError("max_age cannot be negative")
+        if value is not None and self.min_age and value < self.min_age:
+            raise ValueError("max_age cannot be less than min_age")
+        return value
+ 
+    @validates('girls_attendees', 'boys_attendees', 'max_attendees')
+    def validate_attendees(self, key, value):
+        if value is not None and value < 0:
+            raise ValueError(f"{key} cannot be negative")
+        return value
+    
+
+class EventFeatureType(enum.Enum):
+    OFFERED = "offered"
+    TO_BRING = "to_bring"
+
+
+class EventFeature(db.Model):
+    __tablename__ = "event_features"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    key = db.Column(db.String(50), unique=True, nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.String(500), nullable=True)
+
+    display_order = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0
+    )
+
+    is_active = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True
+    )
+
+
+class EventFeatureAssignment(db.Model):
+    __tablename__ = "event_feature_assignments"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("event.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    feature_id = db.Column(
+        db.Integer,
+        db.ForeignKey("event_features.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    type = db.Column(
+        db.Enum(EventFeatureType),
+        nullable=False
+    )
+
+    display_order = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0
+    )
+
+    event = db.relationship(
+        "Event",
+        back_populates="feature_assignments"
+    )
+
+    feature = db.relationship(
+        "EventFeature"
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "event_id",
+            "feature_id",
+            "type",
+            name="uq_event_feature_type"
+        ),
+    )
 
 
 def generate_short_code() -> str:
@@ -538,59 +625,62 @@ class Ticket(db.Model):
 
     @property
     def is_expired(self) -> bool:
-        event_time = self.attendance.location.start_time
+        event_time = self.attendance.event.start_time  # ✅ Updated from location.start_time
         if event_time.tzinfo is None:
             event_time = event_time.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) > event_time
-
+ 
     @property
     def is_checked_in(self) -> bool:
         return CheckIn.query.filter_by(
-            user_id=self.attendance.parent_id, 
-            location_id=self.attendance.location_id
+            parent_id=self.attendance.parent_id,  # ✅ Updated
+            event_id=self.attendance.event_id  # ✅ Updated
         ).first() is not None
-
+ 
     @property
     def status(self) -> str:
-        if self.is_void:       return "void"
-        if self.is_expired:    return "expired"
-        if self.is_checked_in: return "used"
+        if self.is_void:
+            return "void"
+        if self.is_expired:
+            return "expired"
+        if self.is_checked_in:
+            return "used"
         return "active"
-
+ 
     def __repr__(self):
         return f"<Ticket {self.ticket_code} [{self.status}]>"
 
 
 class CheckIn(db.Model):
     __tablename__ = 'user_checkins'
-
-    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id     = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
-    location_id = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False)
-    timestamp   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-    user     = db.relationship('User', back_populates='checkins')
-    location = db.relationship('EventLocation', back_populates='checkins')
-
+ 
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    parent_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='CASCADE'), nullable=False)  # ✅ Changed from event_locations.id
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+ 
+    parent = db.relationship('User', back_populates='checkins')  # ✅ Changed from 'user'
+    event = db.relationship('Event', back_populates='checkins')  # ✅ Changed from 'location'
+ 
     __table_args__ = (
-        db.UniqueConstraint('user_id', 'location_id', name='unique_user_location_checkin'),
+        db.UniqueConstraint('parent_id', 'event_id', name='unique_parent_event_checkin'),  # ✅ Updated
     )
 
 
 class Attendance(db.Model):
     __tablename__ = 'user_attendance'
-
-    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    parent_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
-    location_id = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='CASCADE'), nullable=False)
-    timestamp   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-    user     = db.relationship('User', back_populates='attendances')
-    location = db.relationship('EventLocation', back_populates='attendances')
-    ticket   = db.relationship('Ticket', back_populates='attendance', uselist=False)
-
+ 
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    parent_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), nullable=False)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='CASCADE'), nullable=False)  # ✅ Changed from event_locations.id
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+ 
+    parent = db.relationship('User', back_populates='attendances')
+    event = db.relationship('Event', back_populates='attendances')  # ✅ Changed from 'location'
+    ticket = db.relationship('Ticket', back_populates='attendance', uselist=False)
+ 
     __table_args__ = (
-        db.UniqueConstraint('parent_id', 'location_id', name='unique_parent_location_attendance'),
+        db.UniqueConstraint('parent_id', 'event_id', name='unique_parent_event_attendance'),  # ✅ Updated
     )
 
 
@@ -606,7 +696,7 @@ class Conversation(db.Model):
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
     parent_id       = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
     other_user_id   = db.Column(db.Integer, db.ForeignKey('user_credentials.id'), nullable=False)
-    event_id        = db.Column(db.Integer, db.ForeignKey('event_locations.id'), nullable=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)  # ✅ Changed
     created_at      = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at      = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
     
@@ -738,17 +828,17 @@ class TransactionStatus(enum.Enum):
 
 class EventTransaction(db.Model):
     __tablename__ = 'event_transactions'
-
-    id               = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id         = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='RESTRICT'), nullable=False)
+ 
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)  # ✅ Changed
     attendee_user_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='RESTRICT'), nullable=False)
-    amount           = db.Column(db.Numeric(10, 2), nullable=False)
-    currency         = db.Column(db.String(10), default='SEK', nullable=False)
-    swish_reference  = db.Column(db.String(100), unique=True, nullable=False)
-    status           = db.Column(db.Enum(TransactionStatus), default=TransactionStatus.pending, nullable=False)
-    created_at       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-    event    = db.relationship('EventLocation')
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    currency = db.Column(db.String(10), default='SEK', nullable=False)
+    swish_reference = db.Column(db.String(100), unique=True, nullable=False)
+    status = db.Column(db.Enum(TransactionStatus), default=TransactionStatus.pending, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+ 
+    event = db.relationship('Event', back_populates='transactions')
     attendee = db.relationship('User')
 
 
@@ -760,23 +850,23 @@ class PayoutStatus(enum.Enum):
 
 class EventPayout(db.Model):
     __tablename__ = 'event_payouts'
-
-    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id      = db.Column(db.Integer, db.ForeignKey('event_locations.id', ondelete='RESTRICT'), nullable=False)
+ 
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)  # ✅ Changed
     event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='RESTRICT'), nullable=False)
-
-    gross_amount  = db.Column(db.Numeric(10, 2), nullable=False)
-    platform_fee  = db.Column(db.Numeric(10, 2), nullable=False)
+ 
+    gross_amount = db.Column(db.Numeric(10, 2), nullable=False)
+    platform_fee = db.Column(db.Numeric(10, 2), nullable=False)
     payout_amount = db.Column(db.Numeric(10, 2), nullable=False)
-
-    currency        = db.Column(db.String(10), default='SEK', nullable=False)
+ 
+    currency = db.Column(db.String(10), default='SEK', nullable=False)
     swish_reference = db.Column(db.String(100), unique=True, nullable=False)
-    status          = db.Column(db.Enum(PayoutStatus), default=PayoutStatus.processing, nullable=False)
-
+    status = db.Column(db.Enum(PayoutStatus), default=PayoutStatus.processing, nullable=False)
+ 
     initiated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = db.Column(db.DateTime, nullable=True)
-
-    event      = db.relationship('EventLocation')
+ 
+    event = db.relationship('Event', back_populates='payouts')
     event_organizer = db.relationship('EventOrganizer')
     
 
@@ -5922,3 +6012,58 @@ def get_active_users_count():
     
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    
+    
+
+    
+    # class PrivatePerson(db.Model):
+    # __tablename__ = 'private_persons'
+
+    # id = db.Column(db.Integer, primary_key=True)
+
+    # organizer_id = db.Column(
+    #     db.Integer,
+    #     db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+    #     unique=True,
+    #     nullable=False
+    # )
+
+    # personnummer = db.Column(
+    #     db.String(20),
+    #     unique=True,
+    #     nullable=False
+    # )
+
+    # organizer = db.relationship(
+    #     'EventOrganizer',
+    #     back_populates='private_person'
+    # )
+    
+    
+    # class Company(db.Model):
+    # __tablename__ = 'companies'
+
+    # id = db.Column(db.Integer, primary_key=True)
+
+    # organizer_id = db.Column(
+    #     db.Integer,
+    #     db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+    #     unique=True,
+    #     nullable=False
+    # )
+
+    # organization_number = db.Column(
+    #     db.String(50),
+    #     unique=True,
+    #     nullable=False
+    # )
+
+    # company_name = db.Column(
+    #     db.String(200),
+    #     nullable=False
+    # )
+
+    # organizer = db.relationship(
+    #     'EventOrganizer',
+    #     back_populates='company'
+    # )
