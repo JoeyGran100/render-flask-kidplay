@@ -2739,21 +2739,21 @@ def get_events_in_bounds():
         print(f"LNG RANGE: {lng_min} to {lng_max}")
         
                 # ✅ ADD THIS: Check total events before filters
-        total_events = EventLocation.query.join(EventCoordinates).count()
+        total_events = EventLocation.query.join(EventLocation).count()
         print(f"Total events in DB: {total_events}")
 
-        query = EventLocation.query.join(EventCoordinates).options(
+        query = EventLocation.query.join(EventLocation).options(
             joinedload(EventLocation.event_coordinates),
             joinedload(EventLocation.event_category),
         ).filter(
-            EventCoordinates.latitude.between(lat_min, lat_max),
-            EventCoordinates.longitude.between(lng_min, lng_max),
+            EventLocation.latitude.between(lat_min, lat_max),
+            EventLocation.longitude.between(lng_min, lng_max),
         )
                 
         # Check after coordinates filter
         coords_filtered = query.filter(
-            EventCoordinates.latitude.between(lat_min, lat_max),
-            EventCoordinates.longitude.between(lng_min, lng_max),
+            EventLocation.latitude.between(lat_min, lat_max),
+            EventLocation.longitude.between(lng_min, lng_max),
         ).all()
         print(f"Events after coords filter: {len(coords_filtered)}")
 
@@ -3068,7 +3068,7 @@ def post_event():
     
     if 'eventcoordinates_id' in data:
         eventcoordinates_id = data['eventcoordinates_id']
-        event_coordinates = EventCoordinates.query.get(eventcoordinates_id)
+        event_coordinates = EventLocation.query.get(eventcoordinates_id)
         if not event_coordinates:
             return jsonify({'error': f'Event coordinates with id {eventcoordinates_id} not found'}), 404
     
@@ -3089,10 +3089,10 @@ def post_event():
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
         
         tolerance = 0.0001
-        existing_event_coordinates = EventCoordinates.query.filter(
-            EventCoordinates.name.ilike(event_coordinates_data['name'].strip()),
-            EventCoordinates.latitude.between(latitude - tolerance, latitude + tolerance),
-            EventCoordinates.longitude.between(longitude - tolerance, longitude + tolerance)
+        existing_event_coordinates = EventLocation.query.filter(
+            EventLocation.name.ilike(event_coordinates_data['name'].strip()),
+            EventLocation.latitude.between(latitude - tolerance, latitude + tolerance),
+            EventLocation.longitude.between(longitude - tolerance, longitude + tolerance)
         ).first()
         
         if existing_event_coordinates:
@@ -3101,7 +3101,7 @@ def post_event():
             event_coordinates = existing_event_coordinates
         else:
             try:
-                new_event_coordinates = EventCoordinates(
+                new_event_coordinates = EventLocation(
                     address=event_coordinates_data.get('address'),
                     latitude=latitude,
                     longitude=longitude,
