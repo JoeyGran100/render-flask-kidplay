@@ -2722,105 +2722,76 @@ def post_event_category():
 @app.route('/events/map/bounds', methods=['POST'])
 def get_events_in_bounds():
     try:
-        data = request.get_json()
-
-        ne = data.get('northeast', {})
-        sw = data.get('southwest', {})
-        
-        print("MAP BOUNDS REQUEST:", data)
-        print("NE:", ne)
-        print("SW:", sw)
-
-        if (ne.get('latitude') is None or ne.get('longitude') is None or
-            sw.get('latitude') is None or sw.get('longitude') is None):
+        data = request.get_json() or {}
+        ne, sw = data.get('northeast', {}), data.get('southwest', {})
+ 
+        if any(ne.get(k) is None or sw.get(k) is None for k in ['latitude', 'longitude']):
             return jsonify({'success': False, 'error': 'Invalid bounds'}), 400
-
-        lat_min = min(float(ne['latitude']), float(sw['latitude']))
-        lat_max = max(float(ne['latitude']), float(sw['latitude']))
-        lng_min = min(float(ne['longitude']), float(sw['longitude']))
-        lng_max = max(float(ne['longitude']), float(sw['longitude']))
-        
-        print(f"LAT RANGE: {lat_min} to {lat_max}")
-        print(f"LNG RANGE: {lng_min} to {lng_max}")
-        
-                # ✅ ADD THIS: Check total events before filters
-        total_events = Event.query.count()
-        print(f"Total events in DB: {total_events}")
-
-        query = EventLocation.query.options(
-            joinedload(Event.event_coordinates),
+ 
+        lat_min, lat_max = min(float(ne['latitude']), float(sw['latitude'])), max(float(ne['latitude']), float(sw['latitude']))
+        lng_min, lng_max = min(float(ne['longitude']), float(sw['longitude'])), max(float(ne['longitude']), float(sw['longitude']))
+ 
+        query = Event.query.options(
+            joinedload(Event.event_location),
             joinedload(Event.event_category),
-        ).filter(
+            joinedload(Event.capacity),
+            joinedload(Event.event_organizer),
+        ).join(Event.event_location).filter(
             EventLocation.latitude.between(lat_min, lat_max),
-            EventLocation.longitude.between(lng_min, lng_max),
-                )
-                
-        # Check after coordinates filter
-        coords_filtered = query.filter(
-            EventLocation.latitude.between(lat_min, lat_max),
-            EventLocation.longitude.between(lng_min, lng_max),
-        ).all()
-        print(f"Events after coords filter: {len(coords_filtered)}")
-
-        for e in coords_filtered:
-            print(f"  - Event {e.id}: lat={e.event_coordinates.latitude}, lng={e.event_coordinates.longitude}, is_upcoming={e.is_upcoming}")
-
-        # Category filter
-        if data.get('category_ids'):
-            query = query.filter(
-                Event.event_category_id.in_(data.get('category_ids'))
-            )
-
-        # Status filter (in query, not Python)
-        status = data.get('status_filter', 'upcoming')
-        print(f"STATUS FILTER: {status}")
-        
-        now = datetime.now(timezone.utc)
-
-        if status == 'upcoming':
-            query = query.filter(Event.start_time > now)  # ← Filter by column
-        elif status == 'ongoing':
-            query = query.filter(
-                Event.start_time <= now,
-                (Event.end_time >= now) | (Event.end_time == None)
-            )
-
+            EventLocation.longitude.between(lng_min, lng_max)
+        )
+ 
+        category_ids = data.get('category_ids')
+        if category_ids:
+            query = query.filter(Event.event_category_id.in_(category_ids))
+ 
         events = query.all()
-        print(f"Events after status filter: {len(events)}")
-
-        # Build response (Tier 1 - lightweight)
-        map_events = [
-            {
+ 
+        status = data.get('status_filter', 'upcoming')
+        if status == 'upcoming':
+            events = [e for e in events if e.is_upcoming]
+        elif status == 'ongoing':
+            events = [e for e in events if e.is_ongoing]
+        elif status == 'past':
+            events = [e for e in events if e.is_past]
+        elif status not in ['all']:
+            return jsonify({'success': False, 'error': f'Invalid status_filter: {status}'}), 400
+ 
+        map_events = []
+        for event in events:
+            location = event.event_location
+            if not location:
+                continue
+            
+            capacity = event.capacity
+            max_attendees = capacity.max_attendees if capacity else 0
+            remaining_spots = max(0, max_attendees - event.total_participants)
+            
+            map_events.append({
                 'id': event.id,
                 'title': event.event_category.name if event.event_category else 'Event',
                 'event_name': event.event_name,
                 'coordinate': {
-                    'latitude': float(event.event_coordinates.latitude),
-                    'longitude': float(event.event_coordinates.longitude),
+                    'latitude': float(location.latitude) if location.latitude else None,
+                    'longitude': float(location.longitude) if location.longitude else None,
                 },
-                'address': event.event_coordinates.address,
-                'start_time': event.start_time.isoformat(),
-                'remaining_spots': max(0, event.max_attendees - event.total_participants),
-                'max_attendees': event.max_attendees,
+                'address': location.address,
+                'start_time': event.start_time.isoformat() if event.start_time else None,
+                'end_time': event.end_time.isoformat() if event.end_time else None,
                 'duration_minutes': event.duration_minutes,
-                'end_time': event.end_time.isoformat(),
+                'remaining_spots': remaining_spots,
+                'max_attendees': max_attendees,
                 'age_range': event.age_range,
                 'base_price': float(event.base_price) if event.base_price else None,
                 'currency': event.currency,
-                'status': 'ongoing' if event.is_ongoing else 'upcoming',
-            }
-            for event in events
-        ]
-
-        return jsonify({
-            'success': True,
-            'count': len(map_events),
-            'events': map_events
-        }), 200
-
+                'status': 'ongoing' if event.is_ongoing else ('past' if event.is_past else 'upcoming'),
+            })
+ 
+        return jsonify({'success': True, 'count': len(map_events), 'events': map_events}), 200
+ 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+        return jsonify({'success': False, 'error': 'Internal server error', 'details': str(e)}), 500
 
 
 # Shows a lightweight summary of an event for use in marker info windows on the map. 
@@ -3269,164 +3240,110 @@ def get_tickets():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    
-    # Re-fetch user with all relationships eager-loaded
-    user = (
-        db.session.query(User)
-        .options(
-            # ✅ Attendances & Tickets
-            db.joinedload(User.attendances)
-            .joinedload(Attendance.ticket),
-            
-            # ✅ Attendance -> Location -> Coordinates
-            db.joinedload(User.attendances)
-            .joinedload(Attendance.location)
-            .joinedload(Event.event_coordinates),
-            
-            # ✅ Attendance -> Location -> Category
-            db.joinedload(User.attendances)
-            .joinedload(Attendance.location)
-            .joinedload(Event.event_category),
-            
-            # ✅ Attendance -> Location -> Organizer
-            db.joinedload(User.attendances)
-            .joinedload(Attendance.location)
-            .joinedload(Event.event_organizer),
-            
-            # ✅ Parent Profile
-            db.joinedload(User.parent_profile),
-            
-            # ✅ NEW: Organizer Profile & Created Events
-            db.joinedload(User.event_organizer)
-            .joinedload(EventOrganizer.events)
-            .joinedload(Event.event_coordinates),
-            
-            # ✅ NEW: Organizer -> Events -> Category
-            db.joinedload(User.event_organizer)
-            .joinedload(EventOrganizer.events)
-            .joinedload(Event.event_category),
-        )
-        .filter(User.id == user.id)
-        .first()
-    )
-    
+ 
+    user = db.session.query(User).options(
+        db.joinedload(User.attendances).joinedload(Attendance.ticket),
+        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_location),
+        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_category),
+        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_organizer),
+        db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.capacity),
+        db.joinedload(User.parent_profile),
+        db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_location),
+        db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_category),
+        db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.capacity),
+    ).filter(User.id == user.id).first()
+ 
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    
-    # Collect tickets through attendances
-    tickets = [a.ticket for a in user.attendances if a.ticket]
-    
-    # ============================================================================
-    # HELPER: Format Ticket
-    # ============================================================================
-    def format_ticket(t):
+ 
+    def format_ticket(ticket):
+        attendance = ticket.attendance
+        if not attendance or not attendance.event:
+            return None
+        
+        event = attendance.event
+        location = event.event_location
+        capacity = event.capacity
+        category = event.event_category
+        organizer = event.event_organizer
+ 
         return {
-            # Ticket info
-            'id':           t.id,
-            'ticket_uid':   t.ticket_uid,
-            'ticket_code':  t.ticket_code,
-            'ticket_type':  t.ticket_type,
-            'status':       t.status,
-            'amount_paid':  float(t.amount_paid) if t.amount_paid else None,
-            'currency':     t.currency,
-            'issued_at':    t.issued_at.isoformat() if t.issued_at else None,
-            'paid_at':      t.paid_at.isoformat() if t.paid_at else None,
-            'is_void':      t.is_void,
-            
-            # Event Location Details
+            'id': ticket.id,
+            'ticket_uid': ticket.ticket_uid,
+            'ticket_code': ticket.ticket_code,
+            'ticket_type': ticket.ticket_type,
+            'status': ticket.status,
+            'amount_paid': float(ticket.amount_paid) if ticket.amount_paid else None,
+            'currency': ticket.currency,
+            'issued_at': ticket.issued_at.isoformat() if ticket.issued_at else None,
+            'paid_at': ticket.paid_at.isoformat() if ticket.paid_at else None,
+            'is_void': ticket.is_void,
             'event': {
-                'id':                t.attendance.location.id,
-                'event_name':        t.attendance.location.event_name,
-                'start_time':        t.attendance.location.start_time.isoformat(),
-                'end_time':          t.attendance.location.end_time.isoformat() if t.attendance.location.end_time else None,
-                'duration_minutes':  t.attendance.location.duration_minutes,
-                'description':       t.attendance.location.event_description,
-                'age_range':         t.attendance.location.age_range,
-                'max_attendees':     t.attendance.location.max_attendees,
-                'category':          t.attendance.location.event_category.name,
-                'organizer': {
-                    'id':   t.attendance.location.event_organizer.id,
-                    'name': t.attendance.location.event_organizer.name,
-                },
-                'base_price':        float(t.attendance.location.base_price) if t.attendance.location.base_price else None,
+                'id': event.id,
+                'event_name': event.event_name,
+                'start_time': event.start_time.isoformat() if event.start_time else None,
+                'end_time': event.end_time.isoformat() if event.end_time else None,
+                'duration_minutes': event.duration_minutes,
+                'description': event.event_description,
+                'age_range': event.age_range,
+                'max_attendees': capacity.max_attendees if capacity else None,
+                'category': category.name if category else None,
+                'organizer': {'id': organizer.id if organizer else None, 'name': organizer.name if organizer else None},
+                'base_price': float(event.base_price) if event.base_price else None,
+                'currency': event.currency,
+                'is_ongoing': event.is_ongoing,
+                'is_past': event.is_past,
+                'is_upcoming': event.is_upcoming,
             },
-            
-            # Venue/Coordinates
             'event_coordinates': {
-                'id':        t.attendance.location.event_coordinates.id,
-                'address':   t.attendance.location.event_coordinates.address,
-                'latitude':  t.attendance.location.event_coordinates.latitude,
-                'longitude': t.attendance.location.event_coordinates.longitude,
-            },
-            
-            # Parent/User Profile Info
+                'id': location.id,
+                'address': location.address,
+                'latitude': location.latitude,
+                'longitude': location.longitude,
+            } if location else None,
             'user_profile': {
-                'id':        user.id,
-                'email':     user.email,
-                'name':      f"{user.parent_profile.first_name} {user.parent_profile.last_name}".strip() if user.parent_profile else None,
-                'phone':     user.parent_profile.phone_number if user.parent_profile else None,
-                'gender':    user.parent_profile.gender.value if user.parent_profile and user.parent_profile.gender else None,
-            }
-        }
-    
-    # ============================================================================
-    # HELPER: Format Created Event
-    # ============================================================================
-    def format_created_event(event):
-        return {
-            'id':                   event.id,
-            'event_name':           event.event_name,
-            'event_description':    event.event_description,
-            'start_time':           event.start_time.isoformat(),
-            'end_time':             event.end_time.isoformat() if event.end_time else None,
-            'duration_minutes':     event.duration_minutes,
-            'age_range':            event.age_range,
-            'max_attendees':        event.max_attendees,
-            'girls_attendees':      event.girls_attendees,
-            'boys_attendees':       event.boys_attendees,
-            'total_participants':   event.total_participants,
-            'base_price':           float(event.base_price) if event.base_price else None,
-            'currency':             event.currency,
-            'is_checkin_closed':    event.is_checkin_closed,
-            'is_ongoing':           event.is_ongoing,
-            'is_past':              event.is_past,
-            'is_upcoming':          event.is_upcoming,
-            
-            # Category
-            'category': {
-                'id':   event.event_category.id if event.event_category else None,
-                'name': event.event_category.name if event.event_category else None,
+                'id': user.id,
+                'email': user.email,
+                'name': f"{user.parent_profile.first_name} {user.parent_profile.last_name}".strip() if user.parent_profile else None,
+                'phone': user.parent_profile.phone_number if user.parent_profile else None,
+                'gender': user.parent_profile.gender.value if user.parent_profile and user.parent_profile.gender else None,
             },
-            
-            # Venue/Coordinates
-            'event_coordinates': {
-                'id':        event.event_coordinates.id if event.event_coordinates else None,
-                'address':   event.event_coordinates.address if event.event_coordinates else None,
-                'latitude':  event.event_coordinates.latitude if event.event_coordinates else None,
-                'longitude': event.event_coordinates.longitude if event.event_coordinates else None,
-            } if event.event_coordinates else None,
         }
+ 
+    formatted_tickets = [ft for ft in (format_ticket(t) for t in user.attendances if t.ticket) if ft]
     
-    # ============================================================================
-    # Process Response Data
-    # ============================================================================
-    
-    # Separate active and expired tickets
-    active_tickets = [format_ticket(t) for t in tickets if t.status == "active"]
-    expired_tickets = [format_ticket(t) for t in tickets if t.status != "active"]
-    
-    # Get created events if user is an organizer
     created_events = []
-    if user.event_organizer and user.event_organizer.verification_status == OrganizerVerificationStatus.approved:
-        created_events = [format_created_event(e) for e in user.event_organizer.events]
-    
-    # ============================================================================
-    # Return Response
-    # ============================================================================
+    if user.event_organizer:
+        for event in user.event_organizer.events:
+            location = event.event_location
+            capacity = event.capacity
+            created_events.append({
+                'id': event.id,
+                'event_name': event.event_name,
+                'event_description': event.event_description,
+                'start_time': event.start_time.isoformat() if event.start_time else None,
+                'end_time': event.end_time.isoformat() if event.end_time else None,
+                'duration_minutes': event.duration_minutes,
+                'age_range': event.age_range,
+                'max_attendees': capacity.max_attendees if capacity else None,
+                'girls_attendees': capacity.girls_attendees if capacity else None,
+                'boys_attendees': capacity.boys_attendees if capacity else None,
+                'total_participants': event.total_participants,
+                'base_price': float(event.base_price) if event.base_price else None,
+                'currency': event.currency,
+                'is_ongoing': event.is_ongoing,
+                'is_past': event.is_past,
+                'is_upcoming': event.is_upcoming,
+                'category': {'id': event.event_category.id if event.event_category else None, 'name': event.event_category.name if event.event_category else None},
+                'event_coordinates': {'id': location.id, 'address': location.address, 'latitude': location.latitude, 'longitude': location.longitude} if location else None,
+            })
+ 
     return jsonify({
-        'active_tickets': active_tickets,
-        'expired_tickets': expired_tickets,
-        'created_events': created_events
+        'success': True,
+        'tickets': formatted_tickets,
+        'created_events': created_events,
+        'ticket_count': len(formatted_tickets),
+        'created_event_count': len(created_events),
     }), 200
  
  
