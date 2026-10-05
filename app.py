@@ -2748,8 +2748,8 @@ def get_events_in_bounds():
         print(f"Total events in DB: {total_events}")
 
         query = EventLocation.query.options(
-            joinedload(EventLocation.event_coordinates),
-            joinedload(EventLocation.event_category),
+            joinedload(Event.event_coordinates),
+            joinedload(Event.event_category),
         ).filter(
             EventLocation.latitude.between(lat_min, lat_max),
             EventLocation.longitude.between(lng_min, lng_max),
@@ -3299,7 +3299,7 @@ def get_tickets():
             # ✅ NEW: Organizer Profile & Created Events
             db.joinedload(User.event_organizer)
             .joinedload(EventOrganizer.events)
-            .joinedload(EventLocation.event_coordinates),
+            .joinedload(Event.event_coordinates),
             
             # ✅ NEW: Organizer -> Events -> Category
             db.joinedload(User.event_organizer)
