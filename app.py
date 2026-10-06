@@ -3040,7 +3040,7 @@ def post_event():
         return jsonify({'error': 'No data provided'}), 400
 
     # ─────────────────────────────────────────────────────────────────────
-    # 1. Handle event location - either existing event_location_id OR new location data
+    # 1. Handle event location
     # ─────────────────────────────────────────────────────────────────────
     event_location_id = None
     event_location = None
@@ -3097,23 +3097,19 @@ def post_event():
         return jsonify({'error': 'Must provide either event_location_id or event_coordinates_data'}), 400
 
     # ─────────────────────────────────────────────────────────────────────
-    # 2. Validate required event fields
+    # 2. Validate required fields & parse datetime
     # ─────────────────────────────────────────────────────────────────────
     required_event_fields = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
     missing = [f for f in required_event_fields if f not in data]
     if missing:
         return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 3. Parse and validate datetime
-    # ─────────────────────────────────────────────────────────────────────
     try:
         start_time = datetime.fromisoformat(data['start_time'])
         end_time = datetime.fromisoformat(data['end_time'])
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
 
-    # Calculate duration_minutes from start and end time
     duration = end_time - start_time
     duration_minutes = int(duration.total_seconds() / 60)
 
@@ -3123,7 +3119,7 @@ def post_event():
     print(f"⏱️ Event duration: {duration_minutes} minutes")
 
     # ─────────────────────────────────────────────────────────────────────
-    # 4. Validate and extract capacity fields
+    # 3. Validate capacity fields
     # ─────────────────────────────────────────────────────────────────────
     max_attendees = data.get('max_attendees')
     girls_attendees = data.get('girls_attendees')
@@ -3131,7 +3127,6 @@ def post_event():
     min_age = data.get('min_age', 1)
     max_age = data.get('max_age', 18)
 
-    # Validate attendee numbers
     if max_attendees <= 0:
         return jsonify({'error': 'max_attendees must be positive'}), 400
 
@@ -3141,12 +3136,10 @@ def post_event():
     if boys_attendees is not None and boys_attendees < 0:
         return jsonify({'error': 'boys_attendees cannot be negative'}), 400
 
-    # Validate gender split doesn't exceed max_attendees
     if girls_attendees is not None and boys_attendees is not None:
         if girls_attendees + boys_attendees > max_attendees:
             return jsonify({'error': 'girls_attendees + boys_attendees cannot exceed max_attendees'}), 400
 
-    # Validate ages
     if min_age < 0:
         return jsonify({'error': 'min_age cannot be negative'}), 400
 
@@ -3157,13 +3150,43 @@ def post_event():
         return jsonify({'error': 'max_age cannot be less than min_age'}), 400
 
     # ─────────────────────────────────────────────────────────────────────
-    # 5. Create Event FIRST
+    # 4. Create EventCapacity FIRST (without event_id - use raw SQL insert)
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        # Insert EventCapacity without event_id using raw SQL
+        result = db.session.execute(
+            """
+            INSERT INTO event_capacities (max_attendees, girls_attendees, boys_attendees, min_age, max_age, event_id)
+            VALUES (:max_attendees, :girls_attendees, :boys_attendees, :min_age, :max_age, :event_id)
+            RETURNING id
+            """,
+            {
+                'max_attendees': max_attendees,
+                'girls_attendees': girls_attendees,
+                'boys_attendees': boys_attendees,
+                'min_age': min_age,
+                'max_age': max_age,
+                'event_id': 0  # Placeholder, will update later
+            }
+        )
+        capacity_id = result.scalar()
+        print(f"✅ EventCapacity placeholder created with ID: {capacity_id}")
+
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        print(f"❌ Error creating event capacity: {str(e)}")
+        return jsonify({'error': f'Failed to create event capacity: {str(e)}'}), 500
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 5. Create Event with capacity_id
     # ─────────────────────────────────────────────────────────────────────
     try:
         event = Event(
             event_location_id=event_location_id,
             event_category_id=data['event_category_id'],
             event_organizer_id=organizer.id,
+            capacity_id=capacity_id,  # ✅ Now we have capacity_id
             event_name=data.get('event_name', 'Untitled Event'),
             start_time=start_time,
             duration_minutes=duration_minutes,
@@ -3172,7 +3195,7 @@ def post_event():
             currency=data.get('currency', 'SEK'),
         )
         db.session.add(event)
-        db.session.flush()  # ✅ Get event.id WITHOUT committing
+        db.session.flush()
         print(f"✅ Event created with ID: {event.id}")
 
     except Exception as e:
@@ -3182,43 +3205,35 @@ def post_event():
         return jsonify({'error': f'Failed to create event: {str(e)}'}), 500
 
     # ─────────────────────────────────────────────────────────────────────
-    # 6. Create EventCapacity AFTER Event has ID
+    # 6. Update EventCapacity with actual event_id
     # ─────────────────────────────────────────────────────────────────────
     try:
-        event_capacity = EventCapacity(
-            event_id=event.id,  # ✅ NOW we have event.id
-            max_attendees=max_attendees,
-            girls_attendees=girls_attendees,
-            boys_attendees=boys_attendees,
-            min_age=min_age,
-            max_age=max_age
+        db.session.execute(
+            """
+            UPDATE event_capacities
+            SET event_id = :event_id
+            WHERE id = :capacity_id
+            """,
+            {'event_id': event.id, 'capacity_id': capacity_id}
         )
-        db.session.add(event_capacity)
-        db.session.flush()
-        print(f"✅ Event capacity created with ID: {event_capacity.id}")
-
-        # ✅ Link capacity to event
-        event.capacity_id = event_capacity.id
         db.session.commit()
+        print(f"✅ EventCapacity linked to Event")
 
         print(f"📊 Map viewers: {len(map_viewers)}")
         print(f"   Viewers: {list(map_viewers.keys())}")
 
-        # 🔴 Broadcast event to map viewers
         if event_location:
             print(f"🚀 About to broadcast event...")
             broadcast_event_to_map(event_location)
             print(f"✅ Broadcast completed")
-        else:
-            print(f"❌ CRITICAL: event_location is None!")
 
         return jsonify({'message': 'Event created', 'id': event.id}), 200
 
     except Exception as e:
         db.session.rollback()
         traceback.print_exc()
-        print(f"❌ Error creating event capacity: {str(e)}")
-        return jsonify({'error': f'Failed to create event capacity: {str(e)}'}), 500
+        print(f"❌ Error linking capacity to event: {str(e)}")
+        return jsonify({'error': f'Failed to link capacity: {str(e)}'}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
