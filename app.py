@@ -3030,137 +3030,193 @@ def post_event():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     organizer = user.event_organizer
     if not organizer or not organizer.is_approved:
         return jsonify({'error': 'Only approved organizers can create events'}), 403
- 
+
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
- 
-    # Handle event coordinates - either existing eventcoordinates_id OR new event coordinates data
-    eventcoordinates_id = None
-    
-    if 'eventcoordinates_id' in data:
-        eventcoordinates_id = data['eventcoordinates_id']
-        event_coordinates = Event.query.get(eventcoordinates_id)
-        if not event_coordinates:
-            return jsonify({'error': f'Event coordinates with id {eventcoordinates_id} not found'}), 404
-    
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 1. Handle event location - either existing event_location_id OR new location data
+    # ─────────────────────────────────────────────────────────────────────
+    event_location_id = None
+    event_location = None
+
+    if 'event_location_id' in data:
+        event_location_id = data['event_location_id']
+        event_location = EventLocation.query.get(event_location_id)
+        if not event_location:
+            return jsonify({'error': f'Event location with id {event_location_id} not found'}), 404
+
     elif 'event_coordinates_data' in data:
         event_coordinates_data = data['event_coordinates_data']
         required_event_coordinates = ['name', 'latitude', 'longitude']
         missing = [f for f in required_event_coordinates if f not in event_coordinates_data]
         if missing:
             return jsonify({'error': f'Missing event coordinates fields: {", ".join(missing)}'}), 400
-        
+
         try:
             latitude = float(event_coordinates_data['latitude'])
             longitude = float(event_coordinates_data['longitude'])
         except (ValueError, TypeError):
             return jsonify({'error': 'Latitude and longitude must be valid numbers'}), 400
-        
+
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             return jsonify({'error': 'Invalid latitude/longitude coordinates'}), 400
-        
+
         tolerance = 0.0001
-        existing_event_coordinates = Event.query.filter(
-            Event.name.ilike(event_coordinates_data['name'].strip()),
-            Event.latitude.between(latitude - tolerance, latitude + tolerance),
-            Event.longitude.between(longitude - tolerance, longitude + tolerance)
+        existing_event_location = EventLocation.query.filter(
+            EventLocation.latitude.between(latitude - tolerance, latitude + tolerance),
+            EventLocation.longitude.between(longitude - tolerance, longitude + tolerance)
         ).first()
-        
-        if existing_event_coordinates:
-            print(f"✅ Event coordinates already exist: {existing_event_coordinates.id}")
-            eventcoordinates_id = existing_event_coordinates.id
-            event_coordinates = existing_event_coordinates
+
+        if existing_event_location:
+            print(f"✅ Event location already exists: {existing_event_location.id}")
+            event_location_id = existing_event_location.id
+            event_location = existing_event_location
         else:
             try:
-                new_event_coordinates = EventLocation(
+                new_event_location = EventLocation(
                     address=event_coordinates_data.get('address'),
                     latitude=latitude,
-                    longitude=longitude,
-                    name=event_coordinates_data['name']
+                    longitude=longitude
                 )
-                db.session.add(new_event_coordinates)
+                db.session.add(new_event_location)
                 db.session.flush()
-                eventcoordinates_id = new_event_coordinates.id
-                event_coordinates = new_event_coordinates
-                print(f"✅ New event coordinates created with ID: {eventcoordinates_id}")
+                event_location_id = new_event_location.id
+                event_location = new_event_location
+                print(f"✅ New event location created with ID: {event_location_id}")
             except Exception as e:
                 db.session.rollback()
-                print(f"❌ Error creating event coordinates: {str(e)}")
-                return jsonify({'error': f'Failed to create event coordinates: {str(e)}'}), 400
+                print(f"❌ Error creating event location: {str(e)}")
+                return jsonify({'error': f'Failed to create event location: {str(e)}'}), 400
     else:
-        return jsonify({'error': 'Must provide either eventcoordinates_id or event_coordinates_data'}), 400
- 
-    # Rest of event creation
-    required = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
-    missing = [f for f in required if f not in data]
+        return jsonify({'error': 'Must provide either event_location_id or event_coordinates_data'}), 400
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 2. Validate required event fields
+    # ─────────────────────────────────────────────────────────────────────
+    required_event_fields = ['event_category_id', 'start_time', 'end_time', 'max_attendees']
+    missing = [f for f in required_event_fields if f not in data]
     if missing:
         return jsonify({'error': f'Missing required fields: {", ".join(missing)}'}), 400
- 
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 3. Parse and validate datetime
+    # ─────────────────────────────────────────────────────────────────────
     try:
         start_time = datetime.fromisoformat(data['start_time'])
         end_time = datetime.fromisoformat(data['end_time'])
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid datetime format. Use ISO 8601.'}), 400
-    
+
     # Calculate duration_minutes from start and end time
     duration = end_time - start_time
     duration_minutes = int(duration.total_seconds() / 60)
-    
+
     if duration_minutes <= 0:
         return jsonify({'error': 'End time must be after start time'}), 400
-    
+
     print(f"⏱️ Event duration: {duration_minutes} minutes")
- 
-    event = Event(
-        eventcoordinates_id=eventcoordinates_id,
-        event_category_id=data['event_category_id'],
-        event_organizer_id=organizer.id,
-        event_name=data.get('event_name', 'Untitled Event'),
-        start_time=start_time,
-        duration_minutes=duration_minutes,
-        event_description=data.get('event_description'),
-        max_attendees=data['max_attendees'],
-        girls_attendees=data.get('girls_attendees'),
-        boys_attendees=data.get('boys_attendees'),
-        min_age=data.get('min_age', 1),
-        max_age=data.get('max_age', 18),
-        base_price=data.get('base_price'),
-        currency=data.get('currency', 'SEK'),
-    )
- 
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 4. Validate and extract capacity fields
+    # ─────────────────────────────────────────────────────────────────────
+    max_attendees = data.get('max_attendees')
+    girls_attendees = data.get('girls_attendees')
+    boys_attendees = data.get('boys_attendees')
+    min_age = data.get('min_age', 1)
+    max_age = data.get('max_age', 18)
+
+    # Validate attendee numbers
+    if max_attendees <= 0:
+        return jsonify({'error': 'max_attendees must be positive'}), 400
+
+    if girls_attendees is not None and girls_attendees < 0:
+        return jsonify({'error': 'girls_attendees cannot be negative'}), 400
+
+    if boys_attendees is not None and boys_attendees < 0:
+        return jsonify({'error': 'boys_attendees cannot be negative'}), 400
+
+    # Validate gender split doesn't exceed max_attendees
+    if girls_attendees is not None and boys_attendees is not None:
+        if girls_attendees + boys_attendees > max_attendees:
+            return jsonify({'error': 'girls_attendees + boys_attendees cannot exceed max_attendees'}), 400
+
+    # Validate ages
+    if min_age < 0:
+        return jsonify({'error': 'min_age cannot be negative'}), 400
+
+    if max_age is not None and max_age < 0:
+        return jsonify({'error': 'max_age cannot be negative'}), 400
+
+    if max_age is not None and max_age < min_age:
+        return jsonify({'error': 'max_age cannot be less than min_age'}), 400
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 5. Create EventCapacity
+    # ─────────────────────────────────────────────────────────────────────
     try:
-        event.validate_attendee_totals()
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
- 
-    db.session.add(event)
- 
+        event_capacity = EventCapacity(
+            max_attendees=max_attendees,
+            girls_attendees=girls_attendees,
+            boys_attendees=boys_attendees,
+            min_age=min_age,
+            max_age=max_age
+        )
+        db.session.add(event_capacity)
+        db.session.flush()
+        print(f"✅ Event capacity created with ID: {event_capacity.id}")
+    except Exception as e:
+        db.session.rollback()
+        print(f"❌ Error creating event capacity: {str(e)}")
+        return jsonify({'error': f'Failed to create event capacity: {str(e)}'}), 400
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 6. Create Event with proper field mapping
+    # ─────────────────────────────────────────────────────────────────────
     try:
+        event = Event(
+            event_location_id=event_location_id,  # ✅ CORRECTED: was eventcoordinates_id
+            event_category_id=data['event_category_id'],
+            event_organizer_id=organizer.id,
+            capacity_id=event_capacity.id,  # ✅ NEW: Link to capacity
+            event_name=data.get('event_name', 'Untitled Event'),
+            start_time=start_time,
+            duration_minutes=duration_minutes,
+            event_description=data.get('event_description'),
+            base_price=data.get('base_price'),
+            currency=data.get('currency', 'SEK'),
+        )
+
+        db.session.add(event)
+        db.session.flush()
+        event_capacity.event_id = event.id
+        db.session.add(event_capacity)
         db.session.commit()
+
         print(f"✅ Event created with ID: {event.id}")
         print(f"📊 Map viewers: {len(map_viewers)}")
         print(f"   Viewers: {list(map_viewers.keys())}")
-        
-        # 🔴 NEW: Check if broadcast is actually called
-        if event_coordinates:
+
+        # 🔴 Broadcast event to map viewers
+        if event_location:
             print(f"🚀 About to broadcast event...")
-            broadcast_event_to_map(event_coordinates)
+            broadcast_event_to_map(event_location)
             print(f"✅ Broadcast completed")
         else:
-            print(f"❌ CRITICAL: event_coordinates is None!")
-        
+            print(f"❌ CRITICAL: event_location is None!")
+
+        return jsonify({'message': 'Event created', 'id': event.id}), 200
+
     except Exception as e:
         db.session.rollback()
         traceback.print_exc()
         print(f"❌ Error creating event: {str(e)}")
-        return jsonify({'error': 'Failed to create event'}), 500
- 
-    return jsonify({'message': 'Event created', 'id': event.id}), 200
+        return jsonify({'error': f'Failed to create event: {str(e)}'}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
