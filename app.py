@@ -487,19 +487,9 @@ class EventCapacity(db.Model):
     __tablename__ = "event_capacities"
 
     id = db.Column(db.Integer, primary_key=True)
-
-    event_id = db.Column(
-        db.Integer,
-        db.ForeignKey("event.id"),  # ✅ CORRECT
-        unique=True,
-        nullable=False
-    )
-
     max_attendees = db.Column(db.Integer, nullable=False)
-
     girls_attendees = db.Column(db.Integer, nullable=True)
     boys_attendees = db.Column(db.Integer, nullable=True)
-
     min_age = db.Column(db.Integer, nullable=False, default=1)
     max_age = db.Column(db.Integer, nullable=True, default=18)
     
