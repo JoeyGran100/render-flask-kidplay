@@ -3027,6 +3027,8 @@ def get_event_organizer_details(event_id):
 # The endpoint will handle both cases and ensure that the event coordinates are valid before creating the event.
 @app.route('/createEvent', methods=['POST'])
 def post_event():
+    from sqlalchemy import text  # ✅ Add this import at top
+    
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -3150,23 +3152,22 @@ def post_event():
         return jsonify({'error': 'max_age cannot be less than min_age'}), 400
 
     # ─────────────────────────────────────────────────────────────────────
-    # 4. Create EventCapacity FIRST (without event_id - use raw SQL insert)
+    # 4. Create EventCapacity FIRST with text()
     # ─────────────────────────────────────────────────────────────────────
     try:
-        # Insert EventCapacity without event_id using raw SQL
         result = db.session.execute(
-            """
+            text("""
             INSERT INTO event_capacities (max_attendees, girls_attendees, boys_attendees, min_age, max_age, event_id)
             VALUES (:max_attendees, :girls_attendees, :boys_attendees, :min_age, :max_age, :event_id)
             RETURNING id
-            """,
+            """),
             {
                 'max_attendees': max_attendees,
                 'girls_attendees': girls_attendees,
                 'boys_attendees': boys_attendees,
                 'min_age': min_age,
                 'max_age': max_age,
-                'event_id': 0  # Placeholder, will update later
+                'event_id': 0
             }
         )
         capacity_id = result.scalar()
@@ -3186,7 +3187,7 @@ def post_event():
             event_location_id=event_location_id,
             event_category_id=data['event_category_id'],
             event_organizer_id=organizer.id,
-            capacity_id=capacity_id,  # ✅ Now we have capacity_id
+            capacity_id=capacity_id,
             event_name=data.get('event_name', 'Untitled Event'),
             start_time=start_time,
             duration_minutes=duration_minutes,
@@ -3209,11 +3210,11 @@ def post_event():
     # ─────────────────────────────────────────────────────────────────────
     try:
         db.session.execute(
-            """
+            text("""
             UPDATE event_capacities
             SET event_id = :event_id
             WHERE id = :capacity_id
-            """,
+            """),
             {'event_id': event.id, 'capacity_id': capacity_id}
         )
         db.session.commit()
