@@ -3157,10 +3157,36 @@ def post_event():
         return jsonify({'error': 'max_age cannot be less than min_age'}), 400
 
     # ─────────────────────────────────────────────────────────────────────
-    # 5. Create EventCapacity
+    # 5. Create Event FIRST
+    # ─────────────────────────────────────────────────────────────────────
+    try:
+        event = Event(
+            event_location_id=event_location_id,
+            event_category_id=data['event_category_id'],
+            event_organizer_id=organizer.id,
+            event_name=data.get('event_name', 'Untitled Event'),
+            start_time=start_time,
+            duration_minutes=duration_minutes,
+            event_description=data.get('event_description'),
+            base_price=data.get('base_price'),
+            currency=data.get('currency', 'SEK'),
+        )
+        db.session.add(event)
+        db.session.flush()  # ✅ Get event.id WITHOUT committing
+        print(f"✅ Event created with ID: {event.id}")
+
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        print(f"❌ Error creating event: {str(e)}")
+        return jsonify({'error': f'Failed to create event: {str(e)}'}), 500
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 6. Create EventCapacity AFTER Event has ID
     # ─────────────────────────────────────────────────────────────────────
     try:
         event_capacity = EventCapacity(
+            event_id=event.id,  # ✅ NOW we have event.id
             max_attendees=max_attendees,
             girls_attendees=girls_attendees,
             boys_attendees=boys_attendees,
@@ -3170,35 +3196,11 @@ def post_event():
         db.session.add(event_capacity)
         db.session.flush()
         print(f"✅ Event capacity created with ID: {event_capacity.id}")
-    except Exception as e:
-        db.session.rollback()
-        print(f"❌ Error creating event capacity: {str(e)}")
-        return jsonify({'error': f'Failed to create event capacity: {str(e)}'}), 400
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 6. Create Event with proper field mapping
-    # ─────────────────────────────────────────────────────────────────────
-    try:
-        event = Event(
-            event_location_id=event_location_id,  # ✅ CORRECTED: was eventcoordinates_id
-            event_category_id=data['event_category_id'],
-            event_organizer_id=organizer.id,
-            capacity_id=event_capacity.id,  # ✅ NEW: Link to capacity
-            event_name=data.get('event_name', 'Untitled Event'),
-            start_time=start_time,
-            duration_minutes=duration_minutes,
-            event_description=data.get('event_description'),
-            base_price=data.get('base_price'),
-            currency=data.get('currency', 'SEK'),
-        )
-
-        db.session.add(event)
-        db.session.flush()
-        event_capacity.event_id = event.id
-        db.session.add(event_capacity)
+        # ✅ Link capacity to event
+        event.capacity_id = event_capacity.id
         db.session.commit()
 
-        print(f"✅ Event created with ID: {event.id}")
         print(f"📊 Map viewers: {len(map_viewers)}")
         print(f"   Viewers: {list(map_viewers.keys())}")
 
@@ -3215,8 +3217,8 @@ def post_event():
     except Exception as e:
         db.session.rollback()
         traceback.print_exc()
-        print(f"❌ Error creating event: {str(e)}")
-        return jsonify({'error': f'Failed to create event: {str(e)}'}), 500
+        print(f"❌ Error creating event capacity: {str(e)}")
+        return jsonify({'error': f'Failed to create event capacity: {str(e)}'}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
