@@ -3043,7 +3043,7 @@ def post_event():
 
     elif 'event_coordinates_data' in data:
         event_coordinates_data = data['event_coordinates_data']
-        required_event_coordinates = ['name', 'latitude', 'longitude']
+        required_event_coordinates = ['address', 'latitude', 'longitude']
         missing = [f for f in required_event_coordinates if f not in event_coordinates_data]
         if missing:
             return jsonify({'error': f'Missing event coordinates fields: {", ".join(missing)}'}), 400
