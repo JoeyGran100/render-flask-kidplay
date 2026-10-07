@@ -3137,8 +3137,26 @@ def post_event():
     if max_age is not None and max_age < min_age:
         return jsonify({'error': 'max_age cannot be less than min_age'}), 400
 
+    # ✅ NEW: Handle amenities/features
+    amenities_to_bring = data.get('amenities_to_bring', [])
+    feature_assignments_data = []
+
+    if amenities_to_bring:
+        # Look up features by key
+        for amenity_key in amenities_to_bring:
+            feature = EventFeature.query.filter_by(key=amenity_key).first()
+            if not feature:
+                print(f"⚠️ Warning: Feature with key '{amenity_key}' not found, skipping")
+                continue
+            feature_assignments_data.append({
+                'feature_id': feature.id,
+                'type': EventFeatureType.TO_BRING
+            })
+        
+        print(f"✅ Found {len(feature_assignments_data)} features for event")
+
     # ─────────────────────────────────────────────────────────────────────
-    # 4. Create in correct order: EventCapacity → Event
+    # 4. Create in correct order: EventCapacity → Event → EventFeatureAssignments
     # ─────────────────────────────────────────────────────────────────────
     try:
         # ✅ Create EventCapacity first (no dependencies)
@@ -3150,7 +3168,7 @@ def post_event():
             max_age=max_age
         )
         db.session.add(event_capacity)
-        db.session.flush()  # Get the ID
+        db.session.flush()
         print(f"✅ EventCapacity created with ID: {event_capacity.id}")
 
         # ✅ Create Event (references EventCapacity)
@@ -3158,7 +3176,7 @@ def post_event():
             event_location_id=event_location_id,
             event_category_id=data['event_category_id'],
             event_organizer_id=organizer.id,
-            capacity_id=event_capacity.id,  # ✅ Now this works cleanly
+            capacity_id=event_capacity.id,
             event_name=data.get('event_name', 'Untitled Event'),
             start_time=start_time,
             duration_minutes=duration_minutes,
@@ -3167,8 +3185,24 @@ def post_event():
             currency=data.get('currency', 'SEK'),
         )
         db.session.add(event)
-        db.session.commit()
+        db.session.flush()
         print(f"✅ Event created with ID: {event.id}")
+
+        # ✅ NEW: Create EventFeatureAssignments (references Event)
+        for idx, assignment_data in enumerate(feature_assignments_data):
+            feature_assignment = EventFeatureAssignment(
+                event_id=event.id,
+                feature_id=assignment_data['feature_id'],
+                type=assignment_data['type'],
+                display_order=idx
+            )
+            db.session.add(feature_assignment)
+        
+        if feature_assignments_data:
+            print(f"✅ Created {len(feature_assignments_data)} feature assignments")
+
+        db.session.commit()
+        print(f"✅ Event and features committed to database")
 
         # ✅ Broadcast
         if event_location:
