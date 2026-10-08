@@ -3399,52 +3399,7 @@ def get_tickets():
         'expired_count': len(expired_tickets),
         'created_count': len(created_events),
     }), 200
- 
- 
- 
-@app.route('/tickets', methods=['POST'])
-def post_ticket():
-    """
-    Tickets are normally auto-created during attendance registration.
-    This endpoint handles manual issuance or updating payment details.
-    """
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data or 'attendance_id' not in data:
-        return jsonify({'error': 'attendance_id is required'}), 400
- 
-    attendance = Attendance.query.get(data['attendance_id'])
-    if not attendance or attendance.user_id != user.id:
-        return jsonify({'error': 'Attendance not found'}), 404
- 
-    ticket = attendance.ticket
-    if not ticket:
-        ticket = Ticket(attendance_id=attendance.id)
-        db.session.add(ticket)
-    
-    # Update payment details if provided
-    if 'amount_paid' in data:
-        ticket.amount_paid = data['amount_paid']
-    if 'payment_ref' in data:
-        ticket.payment_ref = data['payment_ref']
-    if 'paid_at' in data:
-        try:
-            ticket.paid_at = datetime.fromisoformat(data['paid_at'])
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid paid_at format. Use ISO 8601.'}), 400
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to save ticket'}), 500
- 
-    return jsonify({'message': 'Ticket saved', 'ticket_code': ticket.ticket_code}), 201
- 
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qr CODE SCANNER/GENERATOR ✅
