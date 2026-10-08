@@ -3418,66 +3418,44 @@ def get_tickets():
 
 @app.route('/tickets/<ticket_uid>/qr-token', methods=['GET'])
 def get_qr_token(ticket_uid: str):
-    """
-    Generate QR token for a ticket.
-    
-    Called by ticket holder to get their QR code for display.
-    Token is static and valid for the entire event duration.
-    
-    Returns:
-        {
-            'token': 'base64-encoded-signed-token',
-            'ticketCode': 'TKT-XXXXX',
-            'ticketUid': 'uuid',
-            'status': 'active|used|void|expired',
-            'eventId': int,
-            'eventName': string,
-            'eventStartTime': ISO timestamp,
-            'eventEndTime': ISO timestamp or null
-        }
-    """
     try:
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized', 'code': 'NO_AUTH'}), 401
-        
-        # Fetch ticket
+
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
         if not ticket:
             return jsonify({'error': 'Ticket not found', 'code': 'NOT_FOUND'}), 404
-        
-        # Verify ownership
+
         if ticket.attendance.parent_id != user.id:
             return jsonify({'error': 'Forbidden', 'code': 'FORBIDDEN'}), 403
-        
-        # Verify ticket is valid
+
         if ticket.is_void:
             return jsonify({'error': 'Ticket is void', 'code': 'TICKET_VOID'}), 410
-        
+
         if ticket.cancelled_at:
             return jsonify({'error': 'Ticket was cancelled', 'code': 'TICKET_CANCELLED'}), 410
-        
+
         if ticket.is_expired:
             return jsonify({'error': 'Event has ended', 'code': 'EVENT_EXPIRED'}), 410
-        
-        # Get event
-        event = ticket.attendance.location
+
+        # ✅ Fixed: use .event not .location
+        event = ticket.attendance.event
         if not event:
             return jsonify({'error': 'Event not found', 'code': 'NO_EVENT'}), 500
-        
-        # Check event hasn't ended
+
+        # ✅ Fixed: end_time is now a property on Event, not a column
         if event.end_time and datetime.now(timezone.utc) > event.end_time:
             return jsonify({'error': 'Event has ended', 'code': 'EVENT_ENDED'}), 410
-        
-        # Generate QR token
+
         token = generate_static_qr(
             ticket_uid=ticket.ticket_uid,
             event_id=event.id,
             issued_at=ticket.issued_at.timestamp()
         )
-        
+
         app.logger.info(f"QR token generated for ticket {ticket_uid}")
-        
+
         return jsonify({
             'token': token,
             'ticketCode': ticket.ticket_code,
@@ -3485,11 +3463,11 @@ def get_qr_token(ticket_uid: str):
             'isVoid': ticket.is_void,
             'status': ticket.status,
             'eventId': event.id,
-            'eventName': event.event_name,
-            'eventStartTime': event.start_time.isoformat() if event.start_time else None,  # ✅ Optional
-            'eventEndTime': event.end_time.isoformat() if event.end_time else None,        # ✅ Optional
+            'eventName': event.event_name,        # ✅ Fixed: was event_name on EventLocation
+            'eventStartTime': event.start_time.isoformat() if event.start_time else None,
+            'eventEndTime': event.end_time.isoformat() if event.end_time else None,
         }), 200
-        
+
     except Exception as e:
         app.logger.exception(f"Error generating QR token: {e}")
         return jsonify({'error': 'Internal server error', 'code': 'SERVER_ERROR'}), 500
