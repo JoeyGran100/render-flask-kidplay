@@ -261,13 +261,14 @@ class EventOrganizer(db.Model):
     def total_events_created(self):
         return len(self.events)
 
+    # ✅ NEW - replace with this
     @property
     def total_participants(self):
         return (
-            Attendance.query
-            .join(EventLocation, EventLocation.id == Attendance.location_id)
-            .filter(EventLocation.event_organizer_id == self.id)
-            .count()
+        Attendance.query
+        .join(Event, Event.id == Attendance.event_id)
+        .filter(Event.event_organizer_id == self.id)
+        .count()
         )
 
     @property
