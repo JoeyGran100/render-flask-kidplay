@@ -3288,7 +3288,7 @@ def get_tickets():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     user = db.session.query(User).options(
         db.joinedload(User.attendances).joinedload(Attendance.ticket),
         db.joinedload(User.attendances).joinedload(Attendance.event).joinedload(Event.event_location),
@@ -3300,21 +3300,21 @@ def get_tickets():
         db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.event_category),
         db.joinedload(User.event_organizer).joinedload(EventOrganizer.events).joinedload(Event.capacity),
     ).filter(User.id == user.id).first()
- 
+
     if not user:
         return jsonify({'error': 'User not found'}), 404
- 
-    def format_ticket(ticket):
-        attendance = ticket.attendance
-        if not attendance or not attendance.event:
+
+    def format_ticket(attendance):  # ✅ Accept Attendance, not Ticket
+        ticket = attendance.ticket  # ✅ Get ticket from attendance
+        if not ticket or not attendance.event:
             return None
-        
+
         event = attendance.event
         location = event.event_location
         capacity = event.capacity
         category = event.event_category
         organizer = event.event_organizer
- 
+
         return {
             'id': ticket.id,
             'ticket_uid': ticket.ticket_uid,
@@ -3336,7 +3336,10 @@ def get_tickets():
                 'age_range': event.age_range,
                 'max_attendees': capacity.max_attendees if capacity else None,
                 'category': category.name if category else None,
-                'organizer': {'id': organizer.id if organizer else None, 'name': organizer.name if organizer else None},
+                'organizer': {
+                    'id': organizer.id if organizer else None,
+                    'name': organizer.name if organizer else None
+                },
                 'base_price': float(event.base_price) if event.base_price else None,
                 'currency': event.currency,
                 'is_ongoing': event.is_ongoing,
@@ -3357,9 +3360,10 @@ def get_tickets():
                 'gender': user.parent_profile.gender.value if user.parent_profile and user.parent_profile.gender else None,
             },
         }
- 
-    formatted_tickets = [ft for ft in (format_ticket(t) for t in user.attendances if t.ticket) if ft]
-    
+
+    # ✅ Pass attendance objects directly (format_ticket now handles both)
+    formatted_tickets = [ft for ft in (format_ticket(a) for a in user.attendances if a.ticket) if ft]
+
     created_events = []
     if user.event_organizer:
         for event in user.event_organizer.events:
@@ -3382,18 +3386,25 @@ def get_tickets():
                 'is_ongoing': event.is_ongoing,
                 'is_past': event.is_past,
                 'is_upcoming': event.is_upcoming,
-                'category': {'id': event.event_category.id if event.event_category else None, 'name': event.event_category.name if event.event_category else None},
-                'event_coordinates': {'id': location.id, 'address': location.address, 'latitude': location.latitude, 'longitude': location.longitude} if location else None,
+                'category': {
+                    'id': event.event_category.id if event.event_category else None,
+                    'name': event.event_category.name if event.event_category else None
+                },
+                'event_coordinates': {
+                    'id': location.id,
+                    'address': location.address,
+                    'latitude': location.latitude,
+                    'longitude': location.longitude
+                } if location else None,
             })
-            
-    # Add before return statement:
+
     active_tickets = [t for t in formatted_tickets if not t['is_void']]
     expired_tickets = [t for t in formatted_tickets if t['is_void']]
- 
+
     return jsonify({
         'success': True,
-        'active_tickets': active_tickets,        # ← Changed
-        'expired_tickets': expired_tickets,      # ← Changed
+        'active_tickets': active_tickets,
+        'expired_tickets': expired_tickets,
         'created_events': created_events,
         'active_count': len(active_tickets),
         'expired_count': len(expired_tickets),
