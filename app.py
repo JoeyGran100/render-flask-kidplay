@@ -1740,64 +1740,66 @@ def handle_leave_map(data):
         traceback.print_exc()
 
 
-def broadcast_event_to_map(event_coordinates):
-    """Broadcast new event to all connected map room clients"""
+def broadcast_event_to_map(event_location):
     print(f"\n{'='*60}")
     print(f"📡 BROADCAST_EVENT_TO_MAP CALLED")
     print(f"{'='*60}")
-    print(f"Coordinates ID: {event_coordinates.id}")
-    print(f"Coordinates: ({event_coordinates.latitude}, {event_coordinates.longitude})")
-    
-        # 🔴 DEBUG: Check state
+    print(f"Location ID: {event_location.id}")
+    print(f"Coordinates: ({event_location.latitude}, {event_location.longitude})")
+
+    # 🔴 DEBUG: Check state
     print(f"📊 Current map_viewers: {map_viewers}")
     print(f"📊 active_connections: {active_connections}")
-    
+
     if not map_viewers:
         print(f"⚠️  WARNING: No map viewers connected! Broadcast won't reach anyone")
         return
-    
+
     try:
-        event = EventLocation.query.filter_by(eventcoordinates_id=event_coordinates.id).first()
-        
+        event = Event.query.options(
+            joinedload(Event.event_category),
+            joinedload(Event.capacity),
+        ).filter_by(event_location_id=event_location.id).order_by(Event.id.desc()).first()
+
         if not event:
-            print(f"❌ CRITICAL: Event not found in DB after creation!")
-            print(f"   Searched for eventcoordinates_id={event_coordinates.id}")
+            print(f"❌ CRITICAL: Event not found for event_location_id={event_location.id}")
             return
-        
+
         print(f"✅ Event found: ID={event.id}, name={event.event_name}")
-        
+
+        capacity = event.capacity
+        max_attendees = capacity.max_attendees if capacity else 0
+
         event_dto = {
             'id': event.id,
             'title': event.event_category.name if event.event_category else 'Event',
             'event_name': event.event_name,
             'coordinate': {
-                'latitude': float(event_coordinates.latitude),
-                'longitude': float(event_coordinates.longitude),
+                'latitude': float(event_location.latitude),
+                'longitude': float(event_location.longitude),
             },
-            'address': event_coordinates.address,
-            'start_time': event.start_time.isoformat(),
+            'address': event_location.address,
+            'start_time': event.start_time.isoformat() if event.start_time else None,
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'duration_minutes': event.duration_minutes,
-            'remaining_spots': max(0, event.max_attendees - event.total_participants),
-            'max_attendees': event.max_attendees,
-            'status': 'ongoing' if event.is_ongoing else 'upcoming',
+            'remaining_spots': max(0, max_attendees - event.total_participants),
+            'max_attendees': max_attendees,
+            'age_range': event.age_range,
+            'base_price': float(event.base_price) if event.base_price else None,
+            'currency': event.currency,
+            'status': 'ongoing' if event.is_ongoing else ('past' if event.is_past else 'upcoming'),
         }
-        
+
         print(f"📊 Map viewers currently connected: {len(map_viewers)}")
-        if map_viewers:
-            print(f"   Viewer IDs: {list(map_viewers.keys())}")
-        else:
-            print(f"   ⚠️  WARNING: No map viewers connected!")
-        
+        print(f"   Viewer IDs: {list(map_viewers.keys())}")
         print(f"🚀 Broadcasting to room='map'")
         print(f"   Event: {event_dto['event_name']}")
-        
-        # ✅ FIXED: Remove broadcast=True
+
         socketio.emit('new_event_on_map', event_dto, room='map')
-        
+
         print(f"✅ Broadcast emitted successfully")
         print(f"{'='*60}\n")
-        
+
     except Exception as e:
         print(f"❌ ERROR in broadcast_event_to_map: {e}")
         import traceback
@@ -1805,46 +1807,6 @@ def broadcast_event_to_map(event_coordinates):
         print(f"{'='*60}\n")
 
 
-def broadcast_new_created_event_to_map(event, event_location):
-    # Re-fetch with relationships loaded (the in-memory object may lack joinedloads)
-    loaded_event = Event.query.options(
-        joinedload(Event.event_location),
-        joinedload(Event.event_category),
-        joinedload(Event.capacity),
-        joinedload(Event.event_organizer),
-    ).get(event.id)
-
-    if not loaded_event:
-        print(f"⚠️ broadcast_new_created_event_to_map: Event {event.id} not found after commit")
-        return
-
-    location = loaded_event.event_location
-    capacity = loaded_event.capacity
-    max_attendees = capacity.max_attendees if capacity else 0
-    remaining_spots = max(0, max_attendees - loaded_event.total_participants)
-
-    payload = {
-        'id': loaded_event.id,
-        'title': loaded_event.event_category.name if loaded_event.event_category else 'Event',
-        'event_name': loaded_event.event_name,
-        'coordinate': {
-            'latitude': float(location.latitude) if location and location.latitude else None,
-            'longitude': float(location.longitude) if location and location.longitude else None,
-        },
-        'address': location.address if location else None,
-        'start_time': loaded_event.start_time.isoformat() if loaded_event.start_time else None,
-        'end_time': loaded_event.end_time.isoformat() if loaded_event.end_time else None,
-        'duration_minutes': loaded_event.duration_minutes,
-        'remaining_spots': remaining_spots,
-        'max_attendees': max_attendees,
-        'age_range': loaded_event.age_range,
-        'base_price': float(loaded_event.base_price) if loaded_event.base_price else None,
-        'currency': loaded_event.currency,
-        'status': 'ongoing' if loaded_event.is_ongoing else ('past' if loaded_event.is_past else 'upcoming'),
-    }
-
-    socketio.emit('new_map_event', payload)
-    print(f"📡 Broadcasted new event {loaded_event.id} to all connected clients")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -3248,7 +3210,7 @@ def post_event():
         # ✅ Broadcast
         if event_location:
             print(f"🚀 Broadcasting event...")
-            broadcast_new_created_event_to_map(event, event_location)
+            broadcast_event_to_map(event_location)
             print(f"✅ Broadcast completed")
 
         return jsonify({'message': 'Event created', 'id': event.id}), 200
