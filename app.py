@@ -4918,7 +4918,7 @@ def start_conversation():
                     'error': 'eventId must be an integer'
                 }), 400
 
-            event = db.session.get(EventLocation, event_id)
+            event = db.session.get(Event, event_id)  # ✅ Fixed: Event not EventLocation
 
             print(
                 f"🔍 Looking up event with ID "
