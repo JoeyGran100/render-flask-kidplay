@@ -2680,32 +2680,7 @@ def get_event_categories():
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
  
- 
-@app.route('/event-categories', methods=['POST'])
-def post_event_category():
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
- 
-    data = request.get_json()
-    if not data or 'name' not in data:
-        return jsonify({'error': 'name is required'}), 400
- 
-    if EventCategory.query.filter_by(name=data['name']).first():
-        return jsonify({'error': 'Category already exists'}), 409
- 
-    category = EventCategory(name=data['name'])
-    db.session.add(category)
- 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to create category'}), 500
- 
-    return jsonify({'message': 'Category created', 'id': category.id}), 201
- 
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT LOCATIONS ✅ / GOOGLE MAPS ✅
@@ -2791,44 +2766,44 @@ def get_events_in_bounds():
 # This endpoint returns only the essential fields needed for displaying event information without loading full details, making it efficient for map interactions.
 @app.route('/events/<int:event_id>/summary', methods=['GET'])
 def get_event_summary(event_id):
-    """
-    Lightweight event summary for marker info window.
-    Returns ONLY fields needed for the marker card/info window.
-    Tier 2 data - between coordinates and full details.
-    """
     try:
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-        
+
         event = (
             Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(Event.event_coordinates),
+                joinedload(Event.event_location),   # ✅ was event_coordinates
                 joinedload(Event.event_category),
-                joinedload(Event.cover_image),  # Only cover image, not gallery
+                joinedload(Event.capacity),          # ✅ needed for max_attendees
+                joinedload(Event.cover_image),
             )
             .first()
         )
-        
+
         if not event:
             return jsonify({'error': 'Event not found'}), 404
-        
+
+        location = event.event_location
+        capacity = event.capacity
+        max_attendees = capacity.max_attendees if capacity else 0
+
         response = jsonify({
             'id': event.id,
             'title': event.event_category.name if event.event_category else 'Event',
             'event_name': event.event_name,
             'coordinate': {
-                'latitude': float(event.event_coordinates.latitude),
-                'longitude': float(event.event_coordinates.longitude),
+                'latitude': float(location.latitude) if location and location.latitude else None,
+                'longitude': float(location.longitude) if location and location.longitude else None,
             },
-            'address': event.event_coordinates.address,
-            'start_time': event.start_time.isoformat(),
+            'address': location.address if location else None,
+            'start_time': event.start_time.isoformat() if event.start_time else None,
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'duration_minutes': event.duration_minutes,
-            'remaining_spots': max(0, event.max_attendees - event.total_participants),
-            'max_attendees': event.max_attendees,
+            'remaining_spots': max(0, max_attendees - event.total_participants),
+            'max_attendees': max_attendees,                          # ✅ via capacity
             'age_range': event.age_range,
             'base_price': float(event.base_price) if event.base_price else None,
             'currency': event.currency,
@@ -2842,14 +2817,13 @@ def get_event_summary(event_id):
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
         })
-        
-        # Cache for 2 minutes (browser only - user-specific data)
+
         response.cache_control.private = True
         response.cache_control.max_age = 120
         response.add_etag()
-        
+
         return response, 200
-        
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
@@ -2859,68 +2833,80 @@ def get_event_summary(event_id):
 # This endpoint is used when a user taps on a marker on the map to view event details.
 @app.route('/events/<int:event_id>', methods=['GET'])
 def get_event_details(event_id):
-    """Get full event details with user-specific attendance and like status."""
     try:
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-        
+
         event = (
             Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(Event.event_coordinates),
+                joinedload(Event.event_location),   # ✅ was event_coordinates
                 joinedload(Event.event_organizer),
                 joinedload(Event.event_category),
+                joinedload(Event.capacity),          # ✅ needed for attendee counts
                 joinedload(Event.cover_image),
                 joinedload(Event.images),
-                joinedload(Event.attendances).joinedload(Attendance.user).joinedload(User.parent_profile)
+                joinedload(Event.attendances)
+                    .joinedload(Attendance.user)
+                    .joinedload(User.parent_profile)
             )
             .first()
         )
-        
+
         if not event:
             return jsonify({'error': 'Event not found'}), 404
-        
-        # ✅ Check if user has liked this event
+
         user_like = (
             db.session.query(EventLike)
             .filter_by(user_id=user.id, event_id=event_id)
             .first()
         )
         is_liked = user_like is not None
-        
+
+        location = event.event_location
+        capacity = event.capacity
+        max_attendees = capacity.max_attendees if capacity else 0
+
         response = jsonify({
             'id': event.id,
             'event_name': event.event_name,
-            'event_coordinates': {
-                'id': event.event_coordinates.id,
-                'address': event.event_coordinates.address,
-                'latitude': float(event.event_coordinates.latitude) if event.event_coordinates.latitude else None,
-                'longitude': float(event.event_coordinates.longitude) if event.event_coordinates.longitude else None,
+            'event_location': {                      # ✅ was event_coordinates
+                'id': location.id if location else None,
+                'address': location.address if location else None,
+                'latitude': float(location.latitude) if location and location.latitude else None,
+                'longitude': float(location.longitude) if location and location.longitude else None,
             },
             'event_category': {
                 'id': event.event_category.id,
                 'name': event.event_category.name,
             } if event.event_category else None,
-            'start_time': event.start_time.isoformat(),
+            'start_time': event.start_time.isoformat() if event.start_time else None,
             'duration_minutes': event.duration_minutes,
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'event_description': event.event_description,
-            'max_attendees': event.max_attendees,
-            'girls_attendees': event.girls_attendees,
-            'boys_attendees': event.boys_attendees,
+            'max_attendees': max_attendees,                          # ✅ via capacity
+            'girls_attendees': capacity.girls_attendees if capacity else None,  # ✅ via capacity
+            'boys_attendees': capacity.boys_attendees if capacity else None,    # ✅ via capacity
             'age_range': event.age_range,
             'base_price': float(event.base_price) if event.base_price else None,
             'currency': event.currency,
-            'is_checkin_closed': event.is_checkin_closed,
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
             'is_past': event.is_past,
             'total_attendees': event.total_participants,
-            'remaining_spots': event.max_attendees - event.total_participants,
-            'total_male_attendees': sum(1 for a in event.attendances if a.user.parent_profile.gender == GenderEnum.Male),
-            'total_female_attendees': sum(1 for a in event.attendances if a.user.parent_profile.gender == GenderEnum.Female),
+            'remaining_spots': max(0, max_attendees - event.total_participants),
+            'total_male_attendees': sum(
+                1 for a in event.attendances
+                if a.user and a.user.parent_profile
+                and a.user.parent_profile.gender == GenderEnum.Male
+            ),
+            'total_female_attendees': sum(
+                1 for a in event.attendances
+                if a.user and a.user.parent_profile
+                and a.user.parent_profile.gender == GenderEnum.Female
+            ),
             'cover_image': {
                 'id': event.cover_image.id,
                 'image_url': event.cover_image.image_url,
@@ -2940,13 +2926,13 @@ def get_event_details(event_id):
                 'first_name': event.event_organizer.first_name,
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
-            },
+            } if event.event_organizer else None,
             'has_attended': any(a.parent_id == user.id for a in event.attendances),
-            'is_liked': is_liked,  # ✅ ADD THIS
+            'is_liked': is_liked,
         })
-        
+
         return response, 200
-        
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
@@ -3232,40 +3218,39 @@ def post_attendance():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     data = request.get_json()
     if not data or 'eventId' not in data:
         return jsonify({'error': 'eventId is required'}), 400
- 
+
     event = db.session.get(Event, data['eventId'])
     if not event:
         return jsonify({'error': 'Event not found'}), 404
- 
-    if event.is_checkin_closed or event.is_past:
+
+    if event.is_past:                                        # ✅ removed is_checkin_closed (not in model)
         return jsonify({'error': 'Registration is closed for this event'}), 400
- 
-    # Check existing attendance with fresh data from DB
+
+    # ✅ Fixed: was location_id=event.id
     existing = Attendance.query.filter_by(
-        parent_id=user.id, 
-        location_id=event.id
+        parent_id=user.id,
+        event_id=event.id
     ).first()
     if existing:
         return jsonify({'error': 'Already registered for this event'}), 409
- 
-    # Check gender-based capacity
+
     profile = user.parent_profile
     if profile and profile.gender:
         can_register, reason = event.can_register(profile.gender)
         if not can_register:
             return jsonify({'error': reason}), 400
- 
-    attendance = Attendance(parent_id=user.id, location_id=event.id)
+
+    # ✅ Fixed: was location_id=event.id
+    attendance = Attendance(parent_id=user.id, event_id=event.id)
     db.session.add(attendance)
- 
+
     try:
         db.session.flush()
-        
-        # Create ticket with payment info from event
+
         ticket = Ticket(
             attendance_id=attendance.id,
             amount_paid=event.base_price,
@@ -3275,9 +3260,10 @@ def post_attendance():
         )
         db.session.add(ticket)
         db.session.commit()
+
     except IntegrityError as e:
         db.session.rollback()
-        if 'unique_parent_location_attendance' in str(e):
+        if 'unique_parent_event_attendance' in str(e):       # ✅ updated constraint name
             return jsonify({'error': 'Already registered for this event'}), 409
         else:
             traceback.print_exc()
@@ -3286,7 +3272,7 @@ def post_attendance():
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'error': 'Failed to register attendance'}), 500
- 
+
     return jsonify({'message': 'Registered successfully'}), 200
  
  
