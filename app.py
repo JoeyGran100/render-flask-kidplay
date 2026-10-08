@@ -1805,6 +1805,47 @@ def broadcast_event_to_map(event_coordinates):
         print(f"{'='*60}\n")
 
 
+def broadcast_new_created_event_to_map(event, event_location):
+    # Re-fetch with relationships loaded (the in-memory object may lack joinedloads)
+    loaded_event = Event.query.options(
+        joinedload(Event.event_location),
+        joinedload(Event.event_category),
+        joinedload(Event.capacity),
+        joinedload(Event.event_organizer),
+    ).get(event.id)
+
+    if not loaded_event:
+        print(f"⚠️ broadcast_new_created_event_to_map: Event {event.id} not found after commit")
+        return
+
+    location = loaded_event.event_location
+    capacity = loaded_event.capacity
+    max_attendees = capacity.max_attendees if capacity else 0
+    remaining_spots = max(0, max_attendees - loaded_event.total_participants)
+
+    payload = {
+        'id': loaded_event.id,
+        'title': loaded_event.event_category.name if loaded_event.event_category else 'Event',
+        'event_name': loaded_event.event_name,
+        'coordinate': {
+            'latitude': float(location.latitude) if location and location.latitude else None,
+            'longitude': float(location.longitude) if location and location.longitude else None,
+        },
+        'address': location.address if location else None,
+        'start_time': loaded_event.start_time.isoformat() if loaded_event.start_time else None,
+        'end_time': loaded_event.end_time.isoformat() if loaded_event.end_time else None,
+        'duration_minutes': loaded_event.duration_minutes,
+        'remaining_spots': remaining_spots,
+        'max_attendees': max_attendees,
+        'age_range': loaded_event.age_range,
+        'base_price': float(loaded_event.base_price) if loaded_event.base_price else None,
+        'currency': loaded_event.currency,
+        'status': 'ongoing' if loaded_event.is_ongoing else ('past' if loaded_event.is_past else 'upcoming'),
+    }
+
+    socketio.emit('new_map_event', payload)
+    print(f"📡 Broadcasted new event {loaded_event.id} to all connected clients")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3207,7 +3248,7 @@ def post_event():
         # ✅ Broadcast
         if event_location:
             print(f"🚀 Broadcasting event...")
-            broadcast_event_to_map(event_location)
+            broadcast_new_created_event_to_map(event, event_location)
             print(f"✅ Broadcast completed")
 
         return jsonify({'message': 'Event created', 'id': event.id}), 200
