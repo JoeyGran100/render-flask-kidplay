@@ -292,7 +292,6 @@ class EventOrganizerImage(db.Model):
     organizer = db.relationship('EventOrganizer', back_populates='images')
 
 
-
 class Event(db.Model):
     """One specific event instance at a event location."""
     __tablename__ = 'event'
@@ -2549,55 +2548,61 @@ def post_event_organizer():
 @app.route('/organizers/<int:organizer_id>', methods=['GET'])
 def get_organizer_public(organizer_id):
     """Public organizer profile with follow status - FULL DETAILS"""
-    current_user = get_current_user_from_token()
-    
-    organizer = db.session.query(EventOrganizer).get(organizer_id)
-    
-    if not organizer:
-        return jsonify({'error': 'Organizer not found'}), 404
-    
-    if not organizer.is_approved:
-        return jsonify({'error': 'Organizer profile not available'}), 403
-    
-    # Check if current user is following this organizer
-    is_following = False
-    if current_user:
-        follow = Follow.query.filter_by(
-            follower_id=current_user.id,
-            following_id=organizer.user_id
-        ).first()
-        is_following = follow is not None
-    
-    return jsonify({
-        'id':                   organizer.id,
-        'user_id':              organizer.user_id,
-        'name':                 organizer.name,
-        'organizer_bio':        organizer.organizer_bio,
-        'avatar_url':           organizer.avatar_url,
-        'top_event_hashtags':   organizer.top_event_hashtags or [],
-        'verification_status':  organizer.verification_status.value,
-        'is_approved':          organizer.is_approved,
-        'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
-        
-        # ── Public Stats ──
-        'follower_count':       organizer.follower_count,
-        'total_events_created': organizer.total_events_created,
-        'total_participants':   organizer.total_participants,
-        
-        # ── Portfolio ──
-        'portfolio_images': [
-            {
-                'id': img.id,
-                'image_url': img.image_url,
-                'display_order': img.display_order,
-                'uploaded_at': img.uploaded_at.isoformat(),
-            }
-            for img in organizer.images
-        ] if organizer.images else [],
-        
-        # ── Follow Status ──
-        'is_following': is_following,
-    }), 200
+    try:
+        current_user = get_current_user_from_token()
+
+        # ✅ SQLAlchemy 2.0 style
+        organizer = db.session.get(EventOrganizer, organizer_id)
+
+        if not organizer:
+            return jsonify({'error': 'Organizer not found'}), 404
+
+        if not organizer.is_approved:
+            return jsonify({'error': 'Organizer profile not available'}), 403
+
+        # Check if current user is following this organizer
+        is_following = False
+        if current_user:
+            follow = Follow.query.filter_by(
+                follower_id=current_user.id,
+                following_id=organizer.user_id
+            ).first()
+            is_following = follow is not None
+
+        return jsonify({
+            'id':                   organizer.id,
+            'user_id':              organizer.user_id,
+            'name':                 organizer.name,
+            'organizer_bio':        organizer.organizer_bio,
+            'avatar_url':           organizer.avatar_url,
+            'top_event_hashtags':   organizer.top_event_hashtags or [],
+            'verification_status':  organizer.verification_status.value,
+            'is_approved':          organizer.is_approved,
+            'verified_at':          organizer.verified_at.isoformat() if organizer.verified_at else None,
+
+            # ── Public Stats ──
+            'follower_count':       organizer.follower_count,
+            'total_events_created': organizer.total_events_created,
+            'total_participants':   organizer.total_participants,  # ✅ Now uses fixed property
+
+            # ── Portfolio ──
+            'portfolio_images': [
+                {
+                    'id': img.id,
+                    'image_url': img.image_url,
+                    'display_order': img.display_order,
+                    'uploaded_at': img.uploaded_at.isoformat(),
+                }
+                for img in organizer.images
+            ] if organizer.images else [],
+
+            # ── Follow Status ──
+            'is_following': is_following,
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 
 #Only an admin can approve a host/Organizer. This is a separate endpoint to keep the workflow clear and auditable.
@@ -2940,7 +2945,6 @@ def get_event_details(event_id):
     
 # Load organizer details for a specific event, but only the organizer info, not the full event details. 
 # This is useful for lightweight requests where you just need to show who is organizing an event without fetching all event data.  
-
 @app.route('/events/<int:event_id>/organizer/details', methods=['GET'])
 def get_event_organizer_details(event_id):
     """
@@ -2951,24 +2955,24 @@ def get_event_organizer_details(event_id):
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-        
+
         event = (
             Event.query
             .filter_by(id=event_id)
             .options(
                 joinedload(Event.event_organizer).options(
-                    joinedload(Event.images),
-                    joinedload(Event.owner).joinedload(User.parent_profile)
+                    joinedload(EventOrganizer.images),                          # ✅ Fixed
+                    joinedload(EventOrganizer.owner).joinedload(User.parent_profile)  # ✅ Fixed
                 )
             )
             .first()
         )
-        
+
         if not event or not event.event_organizer:
             return jsonify({'error': 'Event or organizer not found'}), 404
-        
+
         organizer = event.event_organizer
-        
+
         organizer_data = {
             'id': organizer.id,
             'name': organizer.name,
@@ -2987,16 +2991,14 @@ def get_event_organizer_details(event_id):
             ],
             'contact_email': organizer.owner.email if organizer.owner else None,
         }
-        
+
         response = jsonify(organizer_data)
-        
-        # Cache for 2 minutes (browser only - user-specific data)
         response.cache_control.private = True
         response.cache_control.max_age = 120
         response.add_etag()
-        
+
         return response, 200
-        
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': 'Internal server error'}), 500
