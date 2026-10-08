@@ -2842,14 +2842,14 @@ def get_event_details(event_id):
             Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(Event.event_location),   # ✅ was event_coordinates
+                joinedload(Event.event_location),
                 joinedload(Event.event_organizer),
                 joinedload(Event.event_category),
-                joinedload(Event.capacity),          # ✅ needed for attendee counts
+                joinedload(Event.capacity),
                 joinedload(Event.cover_image),
                 joinedload(Event.images),
                 joinedload(Event.attendances)
-                    .joinedload(Attendance.user)
+                    .joinedload(Attendance.parent)              # ✅ was Attendance.user
                     .joinedload(User.parent_profile)
             )
             .first()
@@ -2872,7 +2872,7 @@ def get_event_details(event_id):
         response = jsonify({
             'id': event.id,
             'event_name': event.event_name,
-            'event_location': {                      # ✅ was event_coordinates
+            'event_location': {
                 'id': location.id if location else None,
                 'address': location.address if location else None,
                 'latitude': float(location.latitude) if location and location.latitude else None,
@@ -2886,9 +2886,9 @@ def get_event_details(event_id):
             'duration_minutes': event.duration_minutes,
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'event_description': event.event_description,
-            'max_attendees': max_attendees,                          # ✅ via capacity
-            'girls_attendees': capacity.girls_attendees if capacity else None,  # ✅ via capacity
-            'boys_attendees': capacity.boys_attendees if capacity else None,    # ✅ via capacity
+            'max_attendees': max_attendees,
+            'girls_attendees': capacity.girls_attendees if capacity else None,
+            'boys_attendees': capacity.boys_attendees if capacity else None,
             'age_range': event.age_range,
             'base_price': float(event.base_price) if event.base_price else None,
             'currency': event.currency,
@@ -2899,13 +2899,13 @@ def get_event_details(event_id):
             'remaining_spots': max(0, max_attendees - event.total_participants),
             'total_male_attendees': sum(
                 1 for a in event.attendances
-                if a.user and a.user.parent_profile
-                and a.user.parent_profile.gender == GenderEnum.Male
+                if a.parent and a.parent.parent_profile        # ✅ was a.user
+                and a.parent.parent_profile.gender == GenderEnum.Male
             ),
             'total_female_attendees': sum(
                 1 for a in event.attendances
-                if a.user and a.user.parent_profile
-                and a.user.parent_profile.gender == GenderEnum.Female
+                if a.parent and a.parent.parent_profile        # ✅ was a.user
+                and a.parent.parent_profile.gender == GenderEnum.Female
             ),
             'cover_image': {
                 'id': event.cover_image.id,
