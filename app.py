@@ -3485,7 +3485,6 @@ def _is_event_organizer(event: Event, user: User) -> bool:
 
 
 @socketio.on('verify_qr')
-@socketio_auth_required
 def handle_verify_qr(user: User, data: dict):
     """
     Verify a scanned QR code and automatically check in the ticket holder.
@@ -3669,7 +3668,6 @@ def handle_verify_qr(user: User, data: dict):
 
 
 @socketio.on('join_event_room')
-@socketio_auth_required
 def handle_join_event_room(user: User, data: dict):
     """
     Join the event room to receive real-time check-in updates.
