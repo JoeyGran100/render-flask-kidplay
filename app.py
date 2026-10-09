@@ -2944,12 +2944,12 @@ def get_event_details(event_id):
                     'feature_key': fa.feature.key,
                     'feature_name': fa.feature.name,
                     'feature_description': fa.feature.description,
-                    'feature_type': fa.feature_type.value,
-                    'display_order': fa.feature.display_order,
+                    'feature_type': fa.type.value,          # ← was fa.feature_type.value
+                    'display_order': fa.display_order,       # ← use assignment's own display_order, not feature's
                 }
                 for fa in sorted(
                     event.feature_assignments,
-                    key=lambda x: x.feature.display_order
+                    key=lambda x: x.display_order           # ← sort by assignment order too
                 )
                 if fa.feature and fa.feature.is_active
             ],
