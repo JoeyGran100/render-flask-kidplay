@@ -620,10 +620,12 @@ class Ticket(db.Model):
 
     @property
     def is_expired(self) -> bool:
-        event_time = self.attendance.event.start_time  # ✅ Updated from location.start_time
-        if event_time.tzinfo is None:
-            event_time = event_time.replace(tzinfo=timezone.utc)
-        return datetime.now(timezone.utc) > event_time
+        end_time = self.attendance.event.end_time  # start_time + duration_minutes
+        if end_time is None:
+            return False  # duration undecided/open-ended, so it never expires
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) > end_time
  
     @property
     def is_checked_in(self) -> bool:
@@ -636,10 +638,10 @@ class Ticket(db.Model):
     def status(self) -> str:
         if self.is_void:
             return "void"
-        if self.is_expired:
-            return "expired"
         if self.is_checked_in:
             return "used"
+        if self.is_expired:
+            return "expired"
         return "active"
  
     def __repr__(self):
