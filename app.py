@@ -3477,34 +3477,39 @@ def get_qr_token(ticket_uid: str):
 # QR Verification - Socket.IO (scanner app only)
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _is_event_organizer(event: Event, user: User) -> bool:
+    organizer = event.event_organizer
+    return organizer is not None and organizer.user_id == user.id
+
+
 @socketio.on('verify_qr')
 @socketio_auth_required
 def handle_verify_qr(user: User, data: dict):
     """
     Verify a scanned QR code and automatically check in the ticket holder.
-    
+ 
     Performs:
     1. QR signature verification
     2. Ticket validity check
     3. Event validation
     4. Auto check-in
     5. Broadcasts check-in to event room
-    
+ 
     Expected data:
         - token: str - Signed QR token from scanned code
         - eventId: int - Event being scanned at
-        
+ 
     Emits:
         - verify_result: Success with user details or error code
         - error: General error message
     """
     start_time = time.time()
-    
+ 
     try:
         # Validate input
         token = data.get('token', '').strip()
         event_id = data.get('eventId')
-        
+ 
         if not token or not event_id:
             emit('verify_result', {
                 'valid': False,
@@ -3512,7 +3517,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'token and eventId are required'
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 1: Verify QR token signature
         # ─────────────────────────────────────────────────────────────────
@@ -3524,12 +3529,12 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'QR code is invalid or tampered'
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 2: Fetch and validate ticket
         # ─────────────────────────────────────────────────────────────────
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
-        
+ 
         if not ticket:
             emit('verify_result', {
                 'valid': False,
@@ -3537,8 +3542,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Ticket not found'
             })
             return
-        
-        # Check ticket lifecycle
+ 
         if ticket.is_void:
             emit('verify_result', {
                 'valid': False,
@@ -3546,7 +3550,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket has been voided'
             })
             return
-        
+ 
         if ticket.cancelled_at:
             emit('verify_result', {
                 'valid': False,
@@ -3554,7 +3558,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket was cancelled'
             })
             return
-        
+ 
         if ticket.is_expired:
             emit('verify_result', {
                 'valid': False,
@@ -3562,12 +3566,12 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket has expired'
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 3: Validate event
         # ─────────────────────────────────────────────────────────────────
-        event = ticket.attendance.location
-        
+        event = ticket.attendance.event                       # CHANGED: was .location
+ 
         if not event:
             emit('verify_result', {
                 'valid': False,
@@ -3575,8 +3579,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Event not found'
             })
             return
-        
-        # Check event hasn't ended
+ 
         if event.end_time and datetime.now(timezone.utc) > event.end_time:
             emit('verify_result', {
                 'valid': False,
@@ -3584,7 +3587,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This event has ended'
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 4: Verify ticket is for the scanned event
         # ─────────────────────────────────────────────────────────────────
@@ -3595,15 +3598,17 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Ticket is for a different event'
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 5: Auto check-in
+        # (NOTE: perform_checkin must also use parent_id / event_id)
         # ─────────────────────────────────────────────────────────────────
         success, checkin_msg, reason_code = perform_checkin(ticket, event)
-
-        
+ 
+        ticket_holder = ticket.attendance.parent              # CHANGED: was .user
+        profile = getattr(ticket_holder, 'parent_profile', None)
+ 
         if not success:
-            profile = ticket.attendance.user.parent_profile if hasattr(ticket.attendance.user, 'parent_profile') else None
             emit('verify_result', {
                 'valid': False,
                 'code': reason_code,  # 'ALREADY_CHECKED_IN', 'CHECKIN_CLOSED', or 'CHECKIN_FAILED'
@@ -3613,59 +3618,46 @@ def handle_verify_qr(user: User, data: dict):
                 'ticketCode': ticket.ticket_code
             })
             return
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 6: Extract user information
         # ─────────────────────────────────────────────────────────────────
-        ticket_holder = ticket.attendance.user
-        profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
-        
+        checked_in_at = time.time()
+ 
         user_info = {
             'userId': ticket_holder.id,
             'firstName': profile.first_name if profile else 'N/A',
             'lastName': profile.last_name if profile else 'N/A',
             'email': ticket_holder.email,
             'ticketCode': ticket.ticket_code,
-            'checkedInAt': time.time()
+            'checkedInAt': checked_in_at
         }
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 7: Send success result to scanner
         # ─────────────────────────────────────────────────────────────────
         elapsed_ms = (time.time() - start_time) * 1000
-        
+ 
         emit('verify_result', {
             'valid': True,
             'code': 'SUCCESS',
-            'userId': ticket_holder.id,
-            'firstName': profile.first_name if profile else 'N/A',
-            'lastName': profile.last_name if profile else 'N/A',
-            'email': ticket_holder.email,
-            'ticketCode': ticket.ticket_code,
-            'ticketUid': ticket_uid,  # ✅ ADD
-            'status': ticket.status,   # ✅ ADD
-            'checkedInAt': time.time(),
+            **user_info,
+            'ticketUid': ticket_uid,
+            'status': ticket.status,
             'processingTimeMs': elapsed_ms
         })
-        
+ 
         # ─────────────────────────────────────────────────────────────────
         # STEP 8: Broadcast check-in to event organizer room
         # ─────────────────────────────────────────────────────────────────
         room = f"event:{event_id}"
-        socketio.emit('user_checked_in', {
-            'userId': user_info['userId'],
-            'firstName': user_info['firstName'],
-            'lastName': user_info['lastName'],
-            'email': user_info['email'],
-            'ticketCode': user_info['ticketCode'],
-            'checkedInAt': user_info['checkedInAt']
-        }, room=room)
-        
+        socketio.emit('user_checked_in', user_info, room=room)
+ 
         app.logger.info(
             f"✓ QR verified & checked in: {ticket_uid[:8]}... | "
             f"User: {ticket_holder.id} | Event: {event_id} | Time: {elapsed_ms:.0f}ms"
         )
-        
+ 
     except Exception as e:
         app.logger.exception(f"Error in verify_qr: {e}")
         emit('error', {
@@ -3679,53 +3671,50 @@ def handle_verify_qr(user: User, data: dict):
 def handle_join_event_room(user: User, data: dict):
     """
     Join the event room to receive real-time check-in updates.
-    
+ 
     Called by organizer when they click "View Attendees".
     Organizer must be the event creator.
-    
+ 
     Expected data:
         - eventId: int - Event to join room for
     """
     try:
         event_id = data.get('eventId')
-        
+ 
         if not event_id:
             emit('error', {
                 'code': 'MISSING_EVENT_ID',
                 'message': 'eventId is required'
             })
             return
-        
-        # Verify event exists
-        event = Event.query.get(event_id)
+ 
+        event = db.session.get(Event, event_id)               # CHANGED: Query.get is legacy
         if not event:
             emit('error', {
                 'code': 'EVENT_NOT_FOUND',
                 'message': 'Event not found'
             })
             return
-        
-        # Verify user is organizer
-        if event.event_organizer_id != user.id:
+ 
+        if not _is_event_organizer(event, user):              # CHANGED: compares organizer.user_id
             emit('error', {
                 'code': 'UNAUTHORIZED',
                 'message': 'You are not the organizer of this event'
             })
             return
-        
-        # Join event room
+ 
         room = f"event:{event_id}"
         join_room(room)
-        
+ 
         emit('room_joined', {
             'room': room,
             'eventId': event_id,
             'eventName': event.event_name,
             'message': 'Joined event room - receiving live updates'
         })
-        
+ 
         app.logger.info(f"Organizer {user.id} joined event room: {room}")
-        
+ 
     except Exception as e:
         app.logger.exception(f"Error in join_event_room: {e}")
         emit('error', {
@@ -3738,11 +3727,11 @@ def handle_join_event_room(user: User, data: dict):
 def get_event_attendees(event_id: int):
     """
     Get list of all attendees for an event with check-in status.
-    
+ 
     Query parameters:
         - search: Filter by ticket ID or attendee name (first/last)
         - checkInStatus: 'all' (default), 'checked-in', or 'not-checked-in'
-    
+ 
     Returns:
         {
             'totalAttendees': int,
@@ -3755,39 +3744,35 @@ def get_event_attendees(event_id: int):
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-        
-        # Get event
-        event = Event.query.get(event_id)
+ 
+        event = db.session.get(Event, event_id)               # CHANGED: Query.get is legacy
         if not event:
             return jsonify({'error': 'Event not found'}), 404
-        
-        # Verify user is organizer
-        if event.event_organizer_id != user.id:
+ 
+        if not _is_event_organizer(event, user):              # CHANGED: compares organizer.user_id
             return jsonify({'error': 'Forbidden'}), 403
-        
-        # Get query parameters
+ 
         search_query = request.args.get('search', '').strip()
         check_in_status = request.args.get('checkInStatus', 'all')  # 'all', 'checked-in', 'not-checked-in'
-        
-        # Get all attendances for this event
-        attendances = Attendance.query.filter_by(location_id=event_id).all()
-        
-        # Build attendee lists separated by check-in status
+ 
+        # CHANGED: location_id -> event_id   (this was the crash)
+        attendances = Attendance.query.filter_by(event_id=event_id).all()
+ 
         checked_in = []
         not_checked_in = []
-        
+ 
         for attendance in attendances:
-            ticket_holder = attendance.user
-            profile = ticket_holder.parent_profile if hasattr(ticket_holder, 'parent_profile') else None
-            
-            # Check if this person is checked in
+            ticket_holder = attendance.parent                 # CHANGED: was .user
+            profile = getattr(ticket_holder, 'parent_profile', None)
+ 
+            # CHANGED: user_id -> parent_id, location_id -> event_id
             checkin = CheckIn.query.filter_by(
-                user_id=ticket_holder.id,
-                location_id=event_id
+                parent_id=ticket_holder.id,
+                event_id=event_id
             ).first()
-            
+ 
             is_checked_in = checkin is not None
-            
+ 
             attendee = {
                 'userId': ticket_holder.id,
                 'firstName': profile.first_name if profile else 'N/A',
@@ -3797,12 +3782,12 @@ def get_event_attendees(event_id: int):
                 'isCheckedIn': is_checked_in,
                 'checkedInAt': checkin.timestamp.timestamp() if checkin else None
             }
-            
+ 
             if is_checked_in:
                 checked_in.append(attendee)
             else:
                 not_checked_in.append(attendee)
-        
+ 
         # Apply filtering based on check-in status
         if check_in_status == 'checked-in':
             attendees_to_filter = checked_in
@@ -3810,15 +3795,14 @@ def get_event_attendees(event_id: int):
             attendees_to_filter = not_checked_in
         else:  # 'all'
             attendees_to_filter = checked_in + not_checked_in
-        
+ 
         # Apply search filter if provided
         if search_query:
             attendees_to_filter = filter_attendees_by_search(attendees_to_filter, search_query)
-        
-        # Rebuild lists after filtering
+ 
         filtered_checked_in = [a for a in attendees_to_filter if a['isCheckedIn']]
         filtered_not_checked_in = [a for a in attendees_to_filter if not a['isCheckedIn']]
-        
+ 
         response = {
             'totalAttendees': len(attendances),
             'checkedInCount': len(checked_in),
@@ -3826,15 +3810,15 @@ def get_event_attendees(event_id: int):
             'checkedIn': filtered_checked_in,
             'notCheckedIn': filtered_not_checked_in
         }
-        
+ 
         app.logger.info(f"Attendee list fetched for event {event_id} (search: {search_query}, status: {check_in_status})")
         return jsonify(response), 200
-        
+ 
     except Exception as e:
         app.logger.exception(f"Error fetching attendees: {e}")
         return jsonify({'error': 'Internal server error'}), 500
-
-
+ 
+ 
 def filter_attendees_by_search(attendees: list, search_query: str) -> list:
     """
     Filter attendees by ticket code or attendee name.
@@ -3844,25 +3828,12 @@ def filter_attendees_by_search(attendees: list, search_query: str) -> list:
     - lastName (contains)
     """
     search_lower = search_query.lower()
-    filtered = []
-    
-    for attendee in attendees:
-        # Search in ticket code
-        if search_lower in attendee['ticketCode'].lower():
-            filtered.append(attendee)
-            continue
-        
-        # Search in first name
-        if search_lower in attendee['firstName'].lower():
-            filtered.append(attendee)
-            continue
-        
-        # Search in last name
-        if search_lower in attendee['lastName'].lower():
-            filtered.append(attendee)
-            continue
-    
-    return filtered
+    return [
+        a for a in attendees
+        if search_lower in a['ticketCode'].lower()
+        or search_lower in a['firstName'].lower()
+        or search_lower in a['lastName'].lower()
+    ]
 
 
 @app.route('/events/<int:event_id>/attendees/<int:user_id>/check-in', methods=['POST'])
@@ -3871,83 +3842,75 @@ def manual_checkin_attendee(event_id: int, user_id: int):
     Manually check in an attendee. Only event organizer can do this.
     """
     try:
-        # Verify organizer
         user = get_current_user_from_token()
         if not user:
             return jsonify({'error': 'Unauthorized'}), 401
-
-        # Get event
+ 
         event = db.session.get(Event, event_id)
         if not event:
             return jsonify({'error': 'Event not found'}), 404
-
-        # Verify user is organizer
-        if event.event_organizer_id != user.id:
+ 
+        if not _is_event_organizer(event, user):              # CHANGED: compares organizer.user_id
             return jsonify({'error': 'Forbidden'}), 403
-
-        # Verify attendee exists and is registered for this event
+ 
+        # Verify attendee is registered for this event
         attendance = Attendance.query.filter_by(
-            location_id=event_id,
+            event_id=event_id,                                # CHANGED: was location_id
             parent_id=user_id
         ).first()
-
+ 
         if not attendance:
-            return jsonify({
-                'error': 'Attendee not found for this event'
-            }), 404
-
-        # Check if already checked in
+            return jsonify({'error': 'Attendee not found for this event'}), 404
+ 
+        # Already checked in?
         existing_checkin = CheckIn.query.filter_by(
-            user_id=user_id,
-            location_id=event_id
+            parent_id=user_id,                                # CHANGED: was user_id
+            event_id=event_id                                 # CHANGED: was location_id
         ).first()
-
+ 
         if existing_checkin:
             return jsonify({
                 'error': 'User already checked in',
-                'checkedInAt': int(
-                    existing_checkin.timestamp.timestamp()
-                )
+                'checkedInAt': int(existing_checkin.timestamp.timestamp())
             }), 400
-
-        # Create check-in record
+ 
+        # Create check-in record (timestamp comes from the model default)
         new_checkin = CheckIn(
-            user_id=user_id,
-            location_id=event_id,
-            timestamp=datetime.utcnow()
+            parent_id=user_id,                                # CHANGED: was user_id
+            event_id=event_id                                 # CHANGED: was location_id
         )
-
+ 
         db.session.add(new_checkin)
         db.session.commit()
-
+ 
         app.logger.info(
             f"User {user_id} manually checked in for event "
             f"{event_id} by organizer {user.id}"
         )
-
+ 
         return jsonify({
             'success': True,
             'message': 'Attendee checked in successfully',
             'checkedInAt': int(new_checkin.timestamp.timestamp())
         }), 200
-
+ 
     except Exception as e:
         db.session.rollback()
-        app.logger.exception(
-            f"Error checking in attendee: {e}"
-        )
-        return jsonify({
-            'error': 'Internal server error'
-        }), 500
+        app.logger.exception(f"Error checking in attendee: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
  
-
+ 
+# ═══════════════════════════════════════════════════════════════════════════
+# get_ticket
+# ═══════════════════════════════════════════════════════════════════════════
+ 
 @app.route('/tickets/<ticket_uid>', methods=['GET'])
 def get_ticket(ticket_uid: str):
     """Get a specific ticket by UID."""
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    
+ 
     ticket = (
         Ticket.query
         .filter_by(ticket_uid=ticket_uid)
@@ -3955,19 +3918,20 @@ def get_ticket(ticket_uid: str):
         .filter(Attendance.parent_id == user.id)
         .first_or_404()
     )
-    
+ 
     return jsonify(_ticket_to_json(ticket)), 200
-
-
+ 
+ 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helper - DRY JSON serialization
 # ═══════════════════════════════════════════════════════════════════════════
-
+ 
 def _ticket_to_json(ticket: Ticket) -> dict:
     """Serialize ticket to JSON following Google API guidelines."""
     attendance = ticket.attendance
-    location = attendance.location
-    
+    event = attendance.event                                  # CHANGED: was .location
+    location = event.event_location                           # CHANGED: EventLocation (address/lat/lng)
+ 
     return {
         'ticketUid': ticket.ticket_uid,
         'ticketCode': ticket.ticket_code,
@@ -3978,28 +3942,31 @@ def _ticket_to_json(ticket: Ticket) -> dict:
         'amountPaid': float(ticket.amount_paid) if ticket.amount_paid else None,
         'currency': ticket.currency,
         'event': {
-            'id': location.id,
-            'title': location.title,  # ✅ Add if missing
-            'startTime': location.start_time.isoformat(),
-            'endTime': location.end_time.isoformat() if location.end_time else None,
-            'category': location.event_category.name,
+            'id': event.id,
+            'title': event.event_name,                        # CHANGED: was .title
+            'startTime': event.start_time.isoformat(),
+            'endTime': event.end_time.isoformat() if event.end_time else None,
+            'category': event.event_category.name,
             'organizer': {
-                'id': location.event_organizer.id,
-                'name': location.event_organizer.name,
+                'id': event.event_organizer.id,
+                'name': event.event_organizer.name,
             },
         },
-        'event_coordinates': {
-            'id': location.event_coordinates.id,
-            'name': location.event_coordinates.name,
-            'address': location.event_coordinates.address,
-            'latitude': location.event_coordinates.latitude,
-            'longitude': location.event_coordinates.longitude,
+        # CHANGED: was 'event_coordinates' / location.event_coordinates.
+        # EventLocation has no 'name' column, so it is removed.
+        # If your app still expects the old key, rename 'event_location' back.
+        'event_location': {
+            'id': location.id,
+            'address': location.address,
+            'latitude': location.latitude,
+            'longitude': location.longitude,
         },
         'links': {
             'self': f'/api/v1/tickets/{ticket.ticket_uid}',
             'qrToken': f'/api/v1/tickets/{ticket.ticket_uid}/qr-token',
         }
-    } 
+    }
+
  
 # ─────────────────────────────────────────────────────────────────────────────
 # EVENT HOST PAYMENT DETAILS ✅
