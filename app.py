@@ -2856,9 +2856,12 @@ def get_event_details(event_id):
                 joinedload(Event.capacity),
                 joinedload(Event.cover_image),
                 joinedload(Event.images),
+                joinedload(Event.feature_assignments)
+                    .joinedload(EventFeatureAssignment.feature),
                 joinedload(Event.attendances)
-                    .joinedload(Attendance.parent)              # ✅ was Attendance.user
+                    .joinedload(Attendance.parent)
                     .joinedload(User.parent_profile)
+                    .joinedload(ParentsProfile.images),
             )
             .first()
         )
@@ -2907,12 +2910,12 @@ def get_event_details(event_id):
             'remaining_spots': max(0, max_attendees - event.total_participants),
             'total_male_attendees': sum(
                 1 for a in event.attendances
-                if a.parent and a.parent.parent_profile        # ✅ was a.user
+                if a.parent and a.parent.parent_profile
                 and a.parent.parent_profile.gender == GenderEnum.Male
             ),
             'total_female_attendees': sum(
                 1 for a in event.attendances
-                if a.parent and a.parent.parent_profile        # ✅ was a.user
+                if a.parent and a.parent.parent_profile
                 and a.parent.parent_profile.gender == GenderEnum.Female
             ),
             'cover_image': {
@@ -2935,6 +2938,40 @@ def get_event_details(event_id):
                 'avatar_url': event.event_organizer.avatar_url,
                 'is_approved': event.event_organizer.is_approved,
             } if event.event_organizer else None,
+            'features': [
+                {
+                    'id': fa.id,
+                    'feature_key': fa.feature.key,
+                    'feature_name': fa.feature.name,
+                    'feature_description': fa.feature.description,
+                    'feature_type': fa.feature_type.value,
+                    'display_order': fa.feature.display_order,
+                }
+                for fa in sorted(
+                    event.feature_assignments,
+                    key=lambda x: x.feature.display_order
+                )
+                if fa.feature and fa.feature.is_active
+            ],
+            'attendees_preview': [
+                {
+                    'user_id': a.parent_id,
+                    'first_name': (
+                        a.parent.parent_profile.first_name
+                        if a.parent and a.parent.parent_profile
+                        else None
+                    ),
+                    'avatar_url': (
+                        a.parent.parent_profile.images[0].image_url
+                        if a.parent
+                        and a.parent.parent_profile
+                        and a.parent.parent_profile.images
+                        else None
+                    ),
+                }
+                for a in event.attendances[:3]
+                if a.parent and a.parent.parent_profile
+            ],
             'has_attended': any(a.parent_id == user.id for a in event.attendances),
             'is_liked': is_liked,
         })
