@@ -2783,10 +2783,14 @@ def get_event_summary(event_id):
             Event.query
             .filter_by(id=event_id)
             .options(
-                joinedload(Event.event_location),   # ✅ was event_coordinates
+                joinedload(Event.event_location),
                 joinedload(Event.event_category),
-                joinedload(Event.capacity),          # ✅ needed for max_attendees
+                joinedload(Event.capacity),
                 joinedload(Event.cover_image),
+                joinedload(Event.attendances)          # ← new
+                    .joinedload(Attendance.parent)
+                    .joinedload(User.parent_profile)
+                    .joinedload(ParentsProfile.images),
             )
             .first()
         )
@@ -2811,7 +2815,7 @@ def get_event_summary(event_id):
             'end_time': event.end_time.isoformat() if event.end_time else None,
             'duration_minutes': event.duration_minutes,
             'remaining_spots': max(0, max_attendees - event.total_participants),
-            'max_attendees': max_attendees,                          # ✅ via capacity
+            'max_attendees': max_attendees,
             'age_range': event.age_range,
             'base_price': float(event.base_price) if event.base_price else None,
             'currency': event.currency,
@@ -2824,6 +2828,25 @@ def get_event_summary(event_id):
             'total_attendees': event.total_participants,
             'is_upcoming': event.is_upcoming,
             'is_ongoing': event.is_ongoing,
+            'attendees_preview': [              # ← new
+                {
+                    'user_id': a.parent_id,
+                    'first_name': (
+                        a.parent.parent_profile.first_name
+                        if a.parent and a.parent.parent_profile
+                        else None
+                    ),
+                    'avatar_url': (
+                        a.parent.parent_profile.images[0].image_url
+                        if a.parent
+                        and a.parent.parent_profile
+                        and a.parent.parent_profile.images
+                        else None
+                    ),
+                }
+                for a in event.attendances[:3]
+                if a.parent and a.parent.parent_profile
+            ],
         })
 
         response.cache_control.private = True
