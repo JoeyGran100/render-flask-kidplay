@@ -887,11 +887,11 @@ class EventLike(db.Model):
     __tablename__ = 'event_likes'
 
     user_id  = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='CASCADE'), primary_key=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('event_locations.id',  ondelete='CASCADE'), primary_key=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='CASCADE'), primary_key=True)
     liked_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
-    user  = db.relationship('User',          backref=db.backref('liked_events', lazy='dynamic'))
-    event = db.relationship('EventLocation', backref=db.backref('likes',        lazy='dynamic'))
+    user  = db.relationship('User',  backref=db.backref('liked_events', lazy='dynamic'))
+    event = db.relationship('Event', backref=db.backref('likes',        lazy='dynamic'))
 
 
 class ReportTargetType(enum.Enum):
@@ -4055,7 +4055,6 @@ def get_organizer_payment_details():
         'updated_at':           details.updated_at.isoformat() if details.updated_at else None,
     }), 200
  
- 
 @app.route('/organizer/payment-details', methods=['POST'])
 def post_organizer_payment_details():
     user = get_current_user_from_token()
@@ -4263,84 +4262,73 @@ def toggle_event_like():
 
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
-    """Get all events liked by the current user"""
-    logger.info("=== GET /favourites request started ===")
-    
     try:
         user = get_current_user_from_token()
         if not user:
-            logger.warning("Unauthorized request - no user token found")
             return jsonify({'error': 'Unauthorized'}), 401
-        
-        logger.info(f"User authenticated: {user.id}")
-        
-        # Query liked events with necessary joins
+
         liked_events = (
-            db.session.query(EventLocation)
-            .join(EventLike, EventLike.event_id == EventLocation.id)
+            db.session.query(Event)
+            .join(EventLike, EventLike.event_id == Event.id)
             .options(
-                joinedload(EventLocation.event_coordinates),
-                joinedload(EventLocation.event_organizer),
-                joinedload(EventLocation.event_category),
-                joinedload(EventLocation.cover_image),
-                joinedload(EventLocation.images),
-                joinedload(EventLocation.attendances)  # ✅ Load attendances
+                joinedload(Event.event_location),
+                joinedload(Event.event_organizer),
+                joinedload(Event.event_category),
+                joinedload(Event.cover_image),
+                joinedload(Event.images),
+                joinedload(Event.attendances),
+                joinedload(Event.capacity)
             )
             .filter(EventLike.user_id == user.id)
             .order_by(EventLike.liked_at.desc())
             .all()
         )
-        
-        logger.info(f"Found {len(liked_events)} liked events for user {user.id}")
-        
+
         response_data = []
-        for idx, e in enumerate(liked_events):
+        for e in liked_events:
             try:
-                logger.debug(f"Processing event {idx + 1}/{len(liked_events)}: Event ID {e.id}")
-                
                 like_record = (
                     db.session.query(EventLike)
                     .filter_by(user_id=user.id, event_id=e.id)
                     .first()
                 )
-                
+
                 if not like_record:
-                    logger.warning(f"Like record not found for event {e.id}, skipping")
                     continue
-                
+
                 event_data = {
                     'id': e.id,
-                    'venue_id': e.eventcoordinates_id,
+                    'event_name': e.event_name,
                     'event_category_id': e.event_category_id,
                     'event_organizer_id': e.event_organizer_id,
                     'start_time': e.start_time.isoformat(),
                     'end_time': e.end_time.isoformat() if e.end_time else None,
+                    'duration_minutes': e.duration_minutes,
                     'event_description': e.event_description,
-                    'max_attendees': e.max_attendees,
-                    'girls_attendees': e.girls_attendees,
-                    'boys_attendees': e.boys_attendees,
-                    'min_age': e.min_age,
-                    'max_age': e.max_age,
+                    'max_attendees': e.capacity.max_attendees if e.capacity else None,
+                    'girls_attendees': e.capacity.girls_attendees if e.capacity else None,
+                    'boys_attendees': e.capacity.boys_attendees if e.capacity else None,
+                    'min_age': e.capacity.min_age if e.capacity else None,
+                    'max_age': e.capacity.max_age if e.capacity else None,
                     'age_range': e.age_range,
                     'base_price': float(e.base_price) if e.base_price else None,
                     'currency': e.currency,
-                    'is_checkin_closed': e.is_checkin_closed,
                     'is_upcoming': e.is_upcoming,
                     'is_ongoing': e.is_ongoing,
                     'is_past': e.is_past,
                 }
-                
-                # ── Venue (Event Coordinates) ──
-                if e.event_coordinates:
+
+                # ── Venue ──
+                if e.event_location:
                     event_data['venue'] = {
-                        'id': e.event_coordinates.id,
-                        'address': e.event_coordinates.address,
-                        'latitude': float(e.event_coordinates.latitude) if e.event_coordinates.latitude else None,
-                        'longitude': float(e.event_coordinates.longitude) if e.event_coordinates.longitude else None,
+                        'id': e.event_location.id,
+                        'address': e.event_location.address,
+                        'latitude': float(e.event_location.latitude) if e.event_location.latitude else None,
+                        'longitude': float(e.event_location.longitude) if e.event_location.longitude else None,
                     }
                 else:
                     event_data['venue'] = None
-                
+
                 # ── Category ──
                 if e.event_category:
                     event_data['category'] = {
@@ -4349,7 +4337,7 @@ def get_favourite_events():
                     }
                 else:
                     event_data['category'] = None
-                
+
                 # ── Organizer ──
                 if e.event_organizer:
                     event_data['organizer'] = {
@@ -4360,11 +4348,9 @@ def get_favourite_events():
                         'is_approved': e.event_organizer.is_approved,
                         'follower_count': e.event_organizer.follower_count,
                     }
-                    logger.debug(f"  Organizer loaded: {e.event_organizer.name}")
                 else:
-                    logger.warning(f"  Event {e.id} has no organizer")
                     event_data['organizer'] = None
-                
+
                 # ── Cover Image ──
                 if e.cover_image:
                     event_data['cover_image'] = {
@@ -4374,7 +4360,7 @@ def get_favourite_events():
                     }
                 else:
                     event_data['cover_image'] = None
-                
+
                 # ── Gallery Images ──
                 event_data['gallery_images'] = [
                     {
@@ -4385,28 +4371,25 @@ def get_favourite_events():
                     }
                     for img in e.images
                 ] if e.images else []
-                
+
                 # ── Like Status ──
                 event_data['liked_at'] = like_record.liked_at.isoformat()
-                
-                # ✅ ADD THIS: Check if user has attended this event
+
+                # ── Attendance ──
                 event_data['has_attended'] = e.user_has_attended(user.id)
-                
+
                 response_data.append(event_data)
-                logger.debug(f"Event {e.id} processed successfully")
-                
+
             except Exception as event_error:
-                logger.error(f"Error processing event {e.id}: {str(event_error)}", exc_info=True)
+                traceback.print_exc()
                 continue
-        
-        logger.info(f"Successfully built response with {len(response_data)} events")
+
         return jsonify(response_data), 200
-        
+
     except Exception as e:
-        logger.error(f"Internal server error in /favourites: {str(e)}", exc_info=True)
         traceback.print_exc()
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
-
+ 
  
  
 # ─────────────────────────────────────────────────────────────────────────────
