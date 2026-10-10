@@ -1280,7 +1280,7 @@ def socketio_auth_required(f):
     return decorated_function
 
 
-def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str, str]:
+def perform_checkin(ticket: Ticket, event: Event) -> tuple[bool, str, str]:
     """
     Create a check-in record for a ticket at an event.
     Handles race conditions with unique constraint.
@@ -1291,16 +1291,16 @@ def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str,
             'SUCCESS', 'ALREADY_CHECKED_IN', 'CHECKIN_CLOSED', 'CHECKIN_FAILED'
     """
     try:
-        # Verify event allows check-ins
-        if location.is_checkin_closed:
+        # Verify event is not in the past
+        if event.is_past:
             return False, "Check-in is closed for this event", "CHECKIN_CLOSED"
 
         user_id = ticket.attendance.parent_id
 
         # Check if already checked in
         existing_checkin = CheckIn.query.filter_by(
-            user_id=user_id,
-            location_id=location.id
+            parent_id=user_id,
+            event_id=event.id
         ).first()
 
         if existing_checkin:
@@ -1309,23 +1309,22 @@ def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str,
 
         # Create check-in record
         checkin = CheckIn(
-            user_id=user_id,
-            location_id=location.id,
+            parent_id=user_id,
+            event_id=event.id,
             timestamp=datetime.now(timezone.utc)
         )
 
         db.session.add(checkin)
         db.session.commit()
 
-        app.logger.info(f"✓ Check-in created: User {user_id} at Event {location.id}")
+        app.logger.info(f"Check-in created: User {user_id} at Event {event.id}")
 
         return True, "Check-in successful", "SUCCESS"
 
     except IntegrityError as e:
-        # Handle race condition - another request created check-in between our check and insert
         db.session.rollback()
         if "unique_user_location_checkin" in str(e):
-            app.logger.info(f"Check-in already exists for user {ticket.attendance.parent_id} at event {location.id}")
+            app.logger.info(f"Check-in already exists for user {ticket.attendance.parent_id} at event {event.id}")
             return False, "Already checked in", "ALREADY_CHECKED_IN"
         raise
 
