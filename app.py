@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_10_user:5GT1daQWncKJVYVs0laBvgnYqhziW4FE@dpg-db2mciaj9qps73d22j4g-a.frankfurt-postgres.render.com/kidplay_render_database_10"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_11_user:eqVooC9cLpHf6YQ4lmNHwZ7IusbJbuNs@dpg-db51otnlot8c73ddli6g-a.frankfurt-postgres.render.com/kidplay_render_database_11"
 
 app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
 
