@@ -1340,96 +1340,74 @@ def perform_checkin(ticket: Ticket, location: EventLocation) -> tuple[bool, str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def get_socket_user():
+    sid = request.sid
+    user_id = next((uid for uid, s in active_connections.items() if s == sid), None)
+    if not user_id:
+        return None
+    return db.session.get(User, user_id)
+
+
 @socketio.on('connect')
 def handle_connect():
-    """
-    Handle user connection to Socket.IO server.
-    Authenticates user via JWT token and tracks connection.
-    """
-    print(f"\n{'='*60}")
-    print(f"🔗 NEW CONNECTION REQUEST")
-    print(f"{'='*60}")
-    
     try:
-        # Get token from query params or headers
         token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
-        print(f"🔑 Token received: {token[:20]}..." if token else "❌ No token provided")
-        
+
         if not token:
-            print(f"❌ REJECTED: No authentication token")
             return False
-        
-        # Decode token to get user
+
         try:
             decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
             user_id = decoded.get('user_id')
-            print(f"✅ Token decoded successfully, user_id: {user_id}")
-        except jwt.InvalidTokenError as e:
-            print(f"❌ REJECTED: Invalid token - {e}")
+        except jwt.InvalidTokenError:
             return False
-        
-        # Get user from database
+
         user = db.session.get(User, user_id)
         if not user:
-            print(f"❌ REJECTED: User not found (id: {user_id})")
             return False
-        
-        # Track this connection
-        sid = request.sid
-        active_connections[user_id] = sid
-        print(f"✅ ACCEPTED: User {user_id} connected (sid: {sid})")
-        print(f"📊 Active connections: {len(active_connections)}")
-        print(f"{'='*60}\n")
-        
-        # Emit confirmation to client
+
+        active_connections[user_id] = request.sid
+
         emit('connection_response', {
             'status': 'connected',
             'userId': user_id,
             'message': f'Successfully connected as user {user_id}'
         })
-        
+
     except Exception as e:
-        print(f"❌ ERROR during connect: {e}")
-        import traceback
-        traceback.print_exc()
+        app.logger.exception(f"Error during connect: {e}")
         return False
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Handle scanner disconnection from Socket.IO server."""
     try:
         sid = request.sid
-        print(f"\n{'='*60}")
-        print(f"🔌 SCANNER DISCONNECTED")
-        print(f"{'='*60}")
-        
-        # Find which scanner this sid belongs to
-        disconnected_scanner = None
-        for user_id, user_sid in list(active_scanners.items()):
+
+        # Find user by sid across all tracking dicts
+        disconnected_user = None
+        for user_id, user_sid in list(active_connections.items()):
             if user_sid == sid:
-                disconnected_scanner = user_id
+                disconnected_user = user_id
                 break
-        
-        if disconnected_scanner:
-            del active_scanners[disconnected_scanner]
-            print(f"✅ Scanner {disconnected_scanner} disconnected (sid: {sid})")
-            print(f"📊 Active scanners: {len(active_scanners)}")
-        else:
-            print(f"⚠️ Unknown session {sid} disconnected")
-        
-        # Remove from map viewers if they were viewing map
-        if disconnected_scanner and disconnected_scanner in map_viewers:
-            del map_viewers[disconnected_scanner]
+
+        if not disconnected_user:
+            return
+
+        # Clean up active connections
+        active_connections.pop(disconnected_user, None)
+
+        # Clean up if they were a scanner
+        if disconnected_user in active_scanners:
+            active_scanners.pop(disconnected_user, None)
+
+        # Clean up if they were a map viewer
+        if disconnected_user in map_viewers:
+            map_viewers.pop(disconnected_user, None)
             leave_room('map')
-            print(f"✅ Removed scanner {disconnected_scanner} from map viewers")
-        
-        print(f"{'='*60}\n")
-        
+
     except Exception as e:
-        app.logger.exception(f"ERROR in handle_disconnect: {e}")
-        import traceback
-        traceback.print_exc()
+        app.logger.exception(f"Error in handle_disconnect: {e}")
         
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3545,32 +3523,22 @@ def _is_event_organizer(event: Event, user: User) -> bool:
 
 
 @socketio.on('verify_qr')
-def handle_verify_qr(user: User, data: dict):
-    """
-    Verify a scanned QR code and automatically check in the ticket holder.
- 
-    Performs:
-    1. QR signature verification
-    2. Ticket validity check
-    3. Event validation
-    4. Auto check-in
-    5. Broadcasts check-in to event room
- 
-    Expected data:
-        - token: str - Signed QR token from scanned code
-        - eventId: int - Event being scanned at
- 
-    Emits:
-        - verify_result: Success with user details or error code
-        - error: General error message
-    """
+def handle_verify_qr(data: dict):
+    user = get_socket_user()
+    if not user:
+        emit('verify_result', {
+            'valid': False,
+            'code': 'UNAUTHORIZED',
+            'message': 'Authentication required'
+        })
+        return
+
     start_time = time.time()
- 
+
     try:
-        # Validate input
         token = data.get('token', '').strip()
         event_id = data.get('eventId')
- 
+
         if not token or not event_id:
             emit('verify_result', {
                 'valid': False,
@@ -3578,7 +3546,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'token and eventId are required'
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 1: Verify QR token signature
         # ─────────────────────────────────────────────────────────────────
@@ -3590,12 +3558,12 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'QR code is invalid or tampered'
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 2: Fetch and validate ticket
         # ─────────────────────────────────────────────────────────────────
         ticket = Ticket.query.filter_by(ticket_uid=ticket_uid).first()
- 
+
         if not ticket:
             emit('verify_result', {
                 'valid': False,
@@ -3603,7 +3571,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Ticket not found'
             })
             return
- 
+
         if ticket.is_void:
             emit('verify_result', {
                 'valid': False,
@@ -3611,7 +3579,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket has been voided'
             })
             return
- 
+
         if ticket.cancelled_at:
             emit('verify_result', {
                 'valid': False,
@@ -3619,7 +3587,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket was cancelled'
             })
             return
- 
+
         if ticket.is_expired:
             emit('verify_result', {
                 'valid': False,
@@ -3627,12 +3595,12 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This ticket has expired'
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 3: Validate event
         # ─────────────────────────────────────────────────────────────────
-        event = ticket.attendance.event                       # CHANGED: was .location
- 
+        event = ticket.attendance.event
+
         if not event:
             emit('verify_result', {
                 'valid': False,
@@ -3640,7 +3608,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Event not found'
             })
             return
- 
+
         if event.end_time and datetime.now(timezone.utc) > event.end_time:
             emit('verify_result', {
                 'valid': False,
@@ -3648,7 +3616,7 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'This event has ended'
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 4: Verify ticket is for the scanned event
         # ─────────────────────────────────────────────────────────────────
@@ -3659,32 +3627,31 @@ def handle_verify_qr(user: User, data: dict):
                 'message': 'Ticket is for a different event'
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 5: Auto check-in
-        # (NOTE: perform_checkin must also use parent_id / event_id)
         # ─────────────────────────────────────────────────────────────────
         success, checkin_msg, reason_code = perform_checkin(ticket, event)
- 
-        ticket_holder = ticket.attendance.parent              # CHANGED: was .user
+
+        ticket_holder = ticket.attendance.parent
         profile = getattr(ticket_holder, 'parent_profile', None)
- 
+
         if not success:
             emit('verify_result', {
                 'valid': False,
-                'code': reason_code,  # 'ALREADY_CHECKED_IN', 'CHECKIN_CLOSED', or 'CHECKIN_FAILED'
+                'code': reason_code,
                 'message': checkin_msg,
                 'firstName': profile.first_name if profile else 'N/A',
                 'lastName': profile.last_name if profile else 'N/A',
                 'ticketCode': ticket.ticket_code
             })
             return
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 6: Extract user information
         # ─────────────────────────────────────────────────────────────────
         checked_in_at = time.time()
- 
+
         user_info = {
             'userId': ticket_holder.id,
             'firstName': profile.first_name if profile else 'N/A',
@@ -3693,12 +3660,12 @@ def handle_verify_qr(user: User, data: dict):
             'ticketCode': ticket.ticket_code,
             'checkedInAt': checked_in_at
         }
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 7: Send success result to scanner
         # ─────────────────────────────────────────────────────────────────
         elapsed_ms = (time.time() - start_time) * 1000
- 
+
         emit('verify_result', {
             'valid': True,
             'code': 'SUCCESS',
@@ -3707,18 +3674,18 @@ def handle_verify_qr(user: User, data: dict):
             'status': ticket.status,
             'processingTimeMs': elapsed_ms
         })
- 
+
         # ─────────────────────────────────────────────────────────────────
         # STEP 8: Broadcast check-in to event organizer room
         # ─────────────────────────────────────────────────────────────────
         room = f"event:{event_id}"
         socketio.emit('user_checked_in', user_info, room=room)
- 
+
         app.logger.info(
-            f"✓ QR verified & checked in: {ticket_uid[:8]}... | "
+            f"QR verified & checked in: {ticket_uid[:8]}... | "
             f"User: {ticket_holder.id} | Event: {event_id} | Time: {elapsed_ms:.0f}ms"
         )
- 
+
     except Exception as e:
         app.logger.exception(f"Error in verify_qr: {e}")
         emit('error', {
@@ -3728,53 +3695,52 @@ def handle_verify_qr(user: User, data: dict):
 
 
 @socketio.on('join_event_room')
-def handle_join_event_room(user: User, data: dict):
-    """
-    Join the event room to receive real-time check-in updates.
- 
-    Called by organizer when they click "View Attendees".
-    Organizer must be the event creator.
- 
-    Expected data:
-        - eventId: int - Event to join room for
-    """
+def handle_join_event_room(data: dict):
+    user = get_socket_user()
+    if not user:
+        emit('error', {
+            'code': 'UNAUTHORIZED',
+            'message': 'Authentication required'
+        })
+        return
+
     try:
         event_id = data.get('eventId')
- 
+
         if not event_id:
             emit('error', {
                 'code': 'MISSING_EVENT_ID',
                 'message': 'eventId is required'
             })
             return
- 
-        event = db.session.get(Event, event_id)               # CHANGED: Query.get is legacy
+
+        event = db.session.get(Event, event_id)
         if not event:
             emit('error', {
                 'code': 'EVENT_NOT_FOUND',
                 'message': 'Event not found'
             })
             return
- 
-        if not _is_event_organizer(event, user):              # CHANGED: compares organizer.user_id
+
+        if not _is_event_organizer(event, user):
             emit('error', {
                 'code': 'UNAUTHORIZED',
                 'message': 'You are not the organizer of this event'
             })
             return
- 
+
         room = f"event:{event_id}"
         join_room(room)
- 
+
         emit('room_joined', {
             'room': room,
             'eventId': event_id,
             'eventName': event.event_name,
             'message': 'Joined event room - receiving live updates'
         })
- 
+
         app.logger.info(f"Organizer {user.id} joined event room: {room}")
- 
+
     except Exception as e:
         app.logger.exception(f"Error in join_event_room: {e}")
         emit('error', {
