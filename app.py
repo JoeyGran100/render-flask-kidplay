@@ -880,12 +880,6 @@ class Report(db.Model):
     )
 
 
-import enum
-from datetime import datetime, timezone
-
-from app import db  # adjust to your project layout
-
-
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
 class OrganizerType(enum.Enum):
