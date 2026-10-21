@@ -27,6 +27,8 @@ import hashlib   # Built-in
 import qrcode
 import time
 from datetime import date, datetime, timedelta, timezone
+from sqlalchemy import func
+
 
 # Add this to your Flask app setup
 logging.basicConfig(
@@ -94,6 +96,13 @@ active_connections = {}  # Format: { user_id: sid, ... }
 active_scanners = {}  # {user_id: socket_id}
 map_viewers = {}  # user_id -> sid
 qr_refresh_thread = None  # Will be assigned after function is defined
+
+
+REAPPLY_COOLDOWN_DAYS = 30
+COMPANY_REQUIRED_FIELDS = [
+    'company_name', 'organisationsnummer', 'address_line',
+    'postal_code', 'city', 'contact_person_name', 'contact_email',
+]
 
 
 # SWISH_CERT          = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])
@@ -196,85 +205,10 @@ class KidsProfileImages(db.Model):
     created_at = db.Column(db.DateTime,default=lambda: datetime.now(timezone.utc))
 
     kid = db.relationship('KidsProfile',back_populates='image')
-
-
-class OrganizerVerificationStatus(enum.Enum):
-    pending  = 'pending'   # applied, waiting for review
-    approved = 'approved'  # verified, can create events
-    rejected = 'rejected'  # denied, cannot create events    
+ 
 
 
 # Observe!! total events and participants are calculated properties, not stored in DB. This is to avoid denormalization issues and ensure real-time accuracy.
-class EventOrganizer(db.Model):
-    """Created when a user chooses to become an organizer/Host. One-to-one with User."""
-    __tablename__ = 'event_organizers'
-
-    id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='SET NULL'), nullable=True, unique=True)
-    verified_at = db.Column(db.DateTime, nullable=True)  # set only when status → approved
-    name    = db.Column(db.String(100), unique=True, nullable=False)
-
-    organizer_bio           = db.Column(db.Text, nullable=True)
-    avatar_url              = db.Column(db.String(500), nullable=True)  # Profile picture
-    top_event_hashtags = db.Column(db.ARRAY(db.String), nullable=True)
-
-    verification_status = db.Column(db.Enum(OrganizerVerificationStatus),default=OrganizerVerificationStatus.pending,nullable=False)
-
-    # Relationships
-    owner  = db.relationship('User', backref=db.backref('event_organizer', uselist=False))
-    images = db.relationship('EventOrganizerImage', back_populates='organizer', cascade='all, delete-orphan', order_by='EventOrganizerImage.display_order')
-    events = db.relationship('Event', back_populates='event_organizer')
-
-    # ── Derived from ParentsProfile via owner ─────────────────────────────
-
-    @property
-    def _user_profile(self):
-        return self.owner.parent_profile  # ✅ Matches User model's relationship
-
-    @property
-    def first_name(self):
-        return self._user_profile.first_name if self._user_profile else None
-
-    @property
-    def last_name(self):
-        return self._user_profile.last_name if self._user_profile else None
-
-    @property
-    def date_of_birth(self):
-        return self._user_profile.date_of_birth if self._user_profile else None
-
-    @property
-    def gender(self):
-        return self._user_profile.gender if self._user_profile else None
-
-    @property
-    def phone_number(self):
-        return self._user_profile.phone_number if self._user_profile else None
-
-    # ── Derived from related tables ────────────────────────────────────────
-
-    @property
-    def follower_count(self) -> int:
-        return Follow.query.filter_by(following_id=self.user_id).count()
-
-    @property
-    def total_events_created(self):
-        return len(self.events)
-
-    # ✅ NEW - replace with this
-    @property
-    def total_participants(self):
-        return (
-        Attendance.query
-        .join(Event, Event.id == Attendance.event_id)
-        .filter(Event.event_organizer_id == self.id)
-        .count()
-        )
-
-    @property
-    def is_approved(self):
-        return self.verification_status == OrganizerVerificationStatus.approved
-
 
 class EventOrganizerImage(db.Model):
     """
@@ -946,6 +880,266 @@ class Report(db.Model):
     )
 
 
+import enum
+from datetime import datetime, timezone
+
+from app import db  # adjust to your project layout
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
+
+class OrganizerType(enum.Enum):
+    private = 'private'   # Private person / personnummer
+    company = 'company'   # Aktiebolag
+
+
+class OrganizerVerificationStatus(enum.Enum):
+    pending   = 'pending'    # Applied, waiting for review
+    approved  = 'approved'   # Verified, can create events
+    rejected  = 'rejected'   # Denied, can reapply after 30 days
+    suspended = 'suspended'  # Was approved, now suspended by admin
+
+
+class OrganizerReviewAction(enum.Enum):
+    approved   = 'approved'
+    rejected   = 'rejected'
+    suspended  = 'suspended'
+    reinstated = 'reinstated'
+
+
+# ── Core organizer record ─────────────────────────────────────────────────────
+
+class EventOrganizer(db.Model):
+    """
+    Created when a user applies to become a host.
+    One-to-one with User. Holds status + public profile.
+    The detail tables (private / company) hold identity info.
+    """
+    __tablename__ = 'event_organizers'
+
+    id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user_credentials.id', ondelete='SET NULL'),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
+    type = db.Column(db.Enum(OrganizerType), nullable=False)
+
+    # Public profile
+    name           = db.Column(db.String(100), unique=True, nullable=False)
+    organizer_bio  = db.Column(db.Text, nullable=True)
+    avatar_url     = db.Column(db.String(500), nullable=True)
+
+    # Status
+    verification_status = db.Column(
+        db.Enum(OrganizerVerificationStatus),
+        default=OrganizerVerificationStatus.pending,
+        nullable=False,
+        index=True,
+    )
+
+    # Key timestamps
+    submitted_at = db.Column(db.DateTime(timezone=True), nullable=True)  # set on apply / reapply
+    verified_at  = db.Column(db.DateTime(timezone=True), nullable=True)  # set on approval
+    rejected_at  = db.Column(db.DateTime(timezone=True), nullable=True)  # set on rejection, drives cooldown
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+
+    owner = db.relationship(
+        'User',
+        backref=db.backref('event_organizer', uselist=False),
+    )
+    private_details = db.relationship(
+        'OrganizerPrivateDetails',
+        back_populates='organizer',
+        uselist=False,
+        cascade='all, delete-orphan',
+    )
+    company_details = db.relationship(
+        'OrganizerCompanyDetails',
+        back_populates='organizer',
+        uselist=False,
+        cascade='all, delete-orphan',
+    )
+    reviews = db.relationship(
+        'OrganizerReview',
+        back_populates='organizer',
+        cascade='all, delete-orphan',
+        order_by='OrganizerReview.created_at.asc()',
+    )
+    images = db.relationship(
+        'EventOrganizerImage',
+        back_populates='organizer',
+        cascade='all, delete-orphan',
+        order_by='EventOrganizerImage.display_order',
+    )
+    events = db.relationship('Event', back_populates='event_organizer')
+
+    # ── Derived from related tables ────────────────────────────────────────────
+
+    @property
+    def follower_count(self) -> int:
+        return Follow.query.filter_by(following_id=self.user_id).count()
+
+    @property
+    def total_events_created(self) -> int:
+        return len(self.events)
+
+    @property
+    def total_participants(self) -> int:
+        return (
+            Attendance.query
+            .join(Event, Event.id == Attendance.event_id)
+            .filter(Event.event_organizer_id == self.id)
+            .count()
+        )
+
+    # ── Status helpers ─────────────────────────────────────────────────────────
+
+    @property
+    def is_approved(self) -> bool:
+        return self.verification_status == OrganizerVerificationStatus.approved
+
+    @property
+    def is_pending(self) -> bool:
+        return self.verification_status == OrganizerVerificationStatus.pending
+
+    @property
+    def is_rejected(self) -> bool:
+        return self.verification_status == OrganizerVerificationStatus.rejected
+
+    @property
+    def is_suspended(self) -> bool:
+        return self.verification_status == OrganizerVerificationStatus.suspended
+
+    @property
+    def can_reapply(self) -> bool:
+        """True if rejected and the 30-day cooldown has passed."""
+        if not self.is_rejected or not self.rejected_at:
+            return False
+        now = datetime.now(timezone.utc)
+        delta = now - self.rejected_at.replace(tzinfo=timezone.utc)
+        return delta.days >= 30
+
+    @property
+    def retry_at(self):
+        """
+        The earliest datetime the user may reapply.
+        Returns None if they are not rejected or cooldown has already passed.
+        """
+        if not self.is_rejected or not self.rejected_at:
+            return None
+        from datetime import timedelta
+        eligible = self.rejected_at.replace(tzinfo=timezone.utc) + timedelta(days=30)
+        now = datetime.now(timezone.utc)
+        return None if now >= eligible else eligible
+
+
+# ── Identity detail tables ─────────────────────────────────────────────────────
+
+class OrganizerPrivateDetails(db.Model):
+    """
+    Identity details for a private-person host.
+    Personnummer is never stored raw — only a one-way hash for duplicate detection.
+    Legal name and date of birth come from BankID and are safe to store.
+    """
+    __tablename__ = 'organizer_private_details'
+
+    id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    organizer_id = db.Column(
+        db.Integer,
+        db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # From BankID — safe to store
+    legal_first_name  = db.Column(db.String(100), nullable=False)
+    legal_last_name   = db.Column(db.String(100), nullable=False)
+    date_of_birth     = db.Column(db.Date, nullable=False)
+    bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
+
+    # Hashed personnummer — for duplicate detection only, never raw
+    personnummer_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+
+    contact_phone = db.Column(db.String(20), nullable=True)
+
+    organizer = db.relationship('EventOrganizer', back_populates='private_details')
+
+
+class OrganizerCompanyDetails(db.Model):
+    """
+    Identity details for a company (aktiebolag) host.
+    Organisationsnummer is public record and safe to store.
+    BankID verifies the company representative.
+    """
+    __tablename__ = 'organizer_company_details'
+
+    id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    organizer_id = db.Column(
+        db.Integer,
+        db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Company info
+    company_name        = db.Column(db.String(200), nullable=False)
+    organisationsnummer = db.Column(db.String(20),  nullable=False, unique=True, index=True)
+    address_line        = db.Column(db.String(200), nullable=False)
+    postal_code         = db.Column(db.String(10),  nullable=False)
+    city                = db.Column(db.String(100), nullable=False)
+
+    # Contact person at the company
+    contact_person_name = db.Column(db.String(150), nullable=False)
+    contact_email       = db.Column(db.String(200), nullable=False)
+    contact_phone       = db.Column(db.String(20),  nullable=True)
+
+    # BankID verification of the representative
+    representative_bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
+
+    organizer = db.relationship('EventOrganizer', back_populates='company_details')
+
+
+# ── Audit trail ────────────────────────────────────────────────────────────────
+
+class OrganizerReview(db.Model):
+    """
+    One row per admin action on an organizer application.
+    Gives a full audit trail: who did what, when, and why.
+    """
+    __tablename__ = 'organizer_reviews'
+
+    id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    organizer_id = db.Column(
+        db.Integer,
+        db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    admin_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user_credentials.id', ondelete='SET NULL'),
+        nullable=True,   # nullable so the row survives if the admin account is deleted
+    )
+
+    action    = db.Column(db.Enum(OrganizerReviewAction), nullable=False)
+    reason    = db.Column(db.Text, nullable=True)   # required for reject / suspend
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    organizer = db.relationship('EventOrganizer', back_populates='reviews')
+    admin     = db.relationship('User', foreign_keys=[admin_id])
+
+
 
 with app.app_context():
     db.create_all()
@@ -1332,6 +1526,183 @@ def perform_checkin(ticket: Ticket, event: Event) -> tuple[bool, str, str]:
         db.session.rollback()
         app.logger.exception(f"Error during check-in: {e}")
         return False, "Check-in failed", "CHECKIN_FAILED"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt):
+    return dt.isoformat() if dt else None
+
+
+def _get_organizer(user) -> EventOrganizer | None:
+    return EventOrganizer.query.filter_by(user_id=user.id).first()
+
+
+def _hash_personnummer(raw: str) -> str:
+    """One-way hash — never store the raw personnummer."""
+    return hashlib.sha256(raw.strip().encode()).hexdigest()
+
+
+def _latest_review(organizer: EventOrganizer, action: OrganizerReviewAction):
+    return (
+        OrganizerReview.query
+        .filter_by(organizer_id=organizer.id, action=action)
+        .order_by(OrganizerReview.created_at.desc())
+        .first()
+    )
+
+
+def _add_review(organizer: EventOrganizer, admin_id: int,
+                action: OrganizerReviewAction, reason: str = None):
+    review = OrganizerReview(
+        organizer_id=organizer.id,
+        admin_id=admin_id,
+        action=action,
+        reason=reason or None,
+    )
+    db.session.add(review)
+
+
+def admin_required(fn):
+    from functools import wraps
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        if not getattr(user, 'is_admin', False):
+            return jsonify({'error': 'Admin only'}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+# ── Serializers ───────────────────────────────────────────────────────────────
+
+def _public_profile(o: EventOrganizer) -> dict:
+    """Safe for anyone — no identity or contact data."""
+    return {
+        'id':                   o.id,
+        'type':                 o.type.value,
+        'name':                 o.name,
+        'bio':                  o.organizer_bio,
+        'avatar_url':           o.avatar_url,
+        'follower_count':       o.follower_count,
+        'total_events_created': o.total_events_created,
+        'total_participants':   o.total_participants,
+        'images':               [{'url': i.image_url} for i in o.images],
+    }
+
+
+def _host_status(o: EventOrganizer | None) -> dict:
+    """
+    Everything the frontend Home screen needs to decide which button to show.
+
+    status = none       → "Become a Host"
+    status = pending    → "Pending Review"
+    status = rejected   → "Reapply" or "Reapply in X days"
+    status = suspended  → "Account Suspended"
+    status = approved   → "View Host Profile"
+    """
+    if o is None:
+        return {'status': 'none'}
+
+    status = o.verification_status
+    data = {
+        'status':       status.value,
+        'type':         o.type.value,
+        'submitted_at': _iso(o.submitted_at),
+    }
+
+    if status == OrganizerVerificationStatus.rejected:
+        review = _latest_review(o, OrganizerReviewAction.rejected)
+        data.update({
+            'rejection_reason': review.reason if review else None,
+            'can_reapply':      o.can_reapply,
+            'retry_at':         _iso(o.retry_at),
+        })
+
+    elif status == OrganizerVerificationStatus.suspended:
+        review = _latest_review(o, OrganizerReviewAction.suspended)
+        data['suspension_reason'] = review.reason if review else None
+
+    elif status == OrganizerVerificationStatus.approved:
+        data['profile'] = {
+            **_public_profile(o),
+            'verified_at': _iso(o.verified_at),
+        }
+
+    return data
+
+
+def _admin_summary(o: EventOrganizer) -> dict:
+    """Short row for the admin list view."""
+    if o.type == OrganizerType.private and o.private_details:
+        applicant = f'{o.private_details.legal_first_name} {o.private_details.legal_last_name}'
+    elif o.company_details:
+        applicant = o.company_details.company_name
+    else:
+        applicant = None
+
+    return {
+        'id':           o.id,
+        'type':         o.type.value,
+        'name':         o.name,
+        'applicant':    applicant,
+        'status':       o.verification_status.value,
+        'submitted_at': _iso(o.submitted_at),
+    }
+
+
+def _admin_detail(o: EventOrganizer) -> dict:
+    """Full detail for the admin review screen, including identity and history."""
+    data = _admin_summary(o)
+    data.update(
+        user_id=o.user_id,
+        email=o.owner.email if o.owner else None,
+        verified_at=_iso(o.verified_at),
+        rejected_at=_iso(o.rejected_at),
+    )
+
+    if o.private_details:
+        p = o.private_details
+        data['private_details'] = {
+            'legal_first_name':   p.legal_first_name,
+            'legal_last_name':    p.legal_last_name,
+            'date_of_birth':      p.date_of_birth.isoformat(),
+            'bankid_verified_at': _iso(p.bankid_verified_at),
+            'contact_phone':      p.contact_phone,
+            # personnummer_hash intentionally omitted from API responses
+        }
+
+    if o.company_details:
+        c = o.company_details
+        data['company_details'] = {
+            'company_name':                    c.company_name,
+            'organisationsnummer':             c.organisationsnummer,
+            'address_line':                    c.address_line,
+            'postal_code':                     c.postal_code,
+            'city':                            c.city,
+            'contact_person_name':             c.contact_person_name,
+            'contact_email':                   c.contact_email,
+            'contact_phone':                   c.contact_phone,
+            'representative_bankid_verified_at': _iso(c.representative_bankid_verified_at),
+        }
+
+    data['history'] = [
+        {
+            'action':     r.action.value,
+            'admin_id':   r.admin_id,
+            'reason':     r.reason,
+            'created_at': _iso(r.created_at),
+        }
+        for r in o.reviews
+    ]
+
+    return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5465,6 +5836,434 @@ def get_active_users_count():
     """Get total count of active connections."""
     return len(active_connections)
 
+
+
+@app.route('/host/me', methods=['GET'])
+def get_host_status():
+    """
+    Home screen calls this to decide which button to show the user.
+    Returns {'status': 'none'} if the user has never applied.
+    """
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    return jsonify(_host_status(_get_organizer(user))), 200
+
+
+@app.route('/host/apply', methods=['POST'])
+def post_host_apply():
+    """
+    First application and reapplication share this endpoint.
+
+    Private person body:
+        type, name, personnummer (raw — hashed here, never stored),
+        bankid_verified_at, legal_first_name, legal_last_name,
+        date_of_birth, contact_phone (optional)
+
+    Company body:
+        type, name, company_name, organisationsnummer, address_line,
+        postal_code, city, contact_person_name, contact_email,
+        contact_phone (optional), representative_bankid_verified_at
+    """
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json(silent=True) or {}
+
+    # ── Type ──────────────────────────────────────────────────────────────────
+    try:
+        org_type = OrganizerType(data.get('type'))
+    except ValueError:
+        return jsonify({'error': "type must be 'private' or 'company'"}), 422
+
+    # ── Display name ──────────────────────────────────────────────────────────
+    name = (data.get('name') or '').strip()
+    if not 2 <= len(name) <= 100:
+        return jsonify({'error': 'name must be 2-100 characters'}), 422
+
+    # ── Existing application check ────────────────────────────────────────────
+    existing = _get_organizer(user)
+    if existing:
+        if existing.verification_status == OrganizerVerificationStatus.pending:
+            return jsonify({'error': 'Your application is already under review'}), 409
+
+        if existing.verification_status == OrganizerVerificationStatus.approved:
+            return jsonify({'error': 'You are already an approved host'}), 409
+
+        if existing.verification_status == OrganizerVerificationStatus.suspended:
+            return jsonify({'error': 'Your host account is suspended'}), 403
+
+        # Rejected — check cooldown
+        if existing.verification_status == OrganizerVerificationStatus.rejected:
+            if not existing.can_reapply:
+                return jsonify({
+                    'error':    'You must wait before reapplying',
+                    'retry_at': _iso(existing.retry_at),
+                }), 429
+
+            # Cannot switch type on reapplication
+            if existing.type != org_type:
+                return jsonify({'error': 'You must reapply with the same host type'}), 422
+
+    # ── Name uniqueness ───────────────────────────────────────────────────────
+    name_clash = EventOrganizer.query.filter(
+        func.lower(EventOrganizer.name) == name.lower()
+    )
+    if existing:
+        name_clash = name_clash.filter(EventOrganizer.id != existing.id)
+    if name_clash.first():
+        return jsonify({'error': 'That host name is already taken'}), 409
+
+    # ── Type-specific validation ──────────────────────────────────────────────
+    if org_type == OrganizerType.private:
+        raw_personnummer = (data.get('personnummer') or '').strip()
+        if not raw_personnummer:
+            return jsonify({'error': 'personnummer is required'}), 422
+
+        legal_first_name = (data.get('legal_first_name') or '').strip()
+        legal_last_name  = (data.get('legal_last_name') or '').strip()
+        date_of_birth    = data.get('date_of_birth')
+        bankid_verified_at = data.get('bankid_verified_at')
+        contact_phone    = (data.get('contact_phone') or '').strip() or None
+
+        if not all([legal_first_name, legal_last_name, date_of_birth, bankid_verified_at]):
+            return jsonify({'error': 'Missing required BankID fields'}), 422
+
+        try:
+            date_of_birth = datetime.strptime(date_of_birth, '%Y-%m-%d').date()
+            bankid_verified_at = datetime.fromisoformat(bankid_verified_at).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid date format, expected YYYY-MM-DD / ISO 8601'}), 422
+
+        personnummer_hash = _hash_personnummer(raw_personnummer)
+
+        # Check this identity isn't already registered under another account
+        duplicate = OrganizerPrivateDetails.query.filter_by(
+            personnummer_hash=personnummer_hash
+        )
+        if existing and existing.private_details:
+            duplicate = duplicate.filter(
+                OrganizerPrivateDetails.organizer_id != existing.id
+            )
+        if duplicate.first():
+            return jsonify({'error': 'This identity is already registered as a host'}), 409
+
+    else:  # company
+        missing = [f for f in COMPANY_REQUIRED_FIELDS if not (data.get(f) or '').strip()]
+        if missing:
+            return jsonify({'error': 'Missing required fields', 'fields': missing}), 422
+
+        company_name        = data['company_name'].strip()
+        organisationsnummer = data['organisationsnummer'].strip()
+        address_line        = data['address_line'].strip()
+        postal_code         = data['postal_code'].strip()
+        city                = data['city'].strip()
+        contact_person_name = data['contact_person_name'].strip()
+        contact_email       = data['contact_email'].strip()
+        contact_phone       = (data.get('contact_phone') or '').strip() or None
+        rep_bankid_verified_at = data.get('representative_bankid_verified_at')
+
+        if '@' not in contact_email:
+            return jsonify({'error': 'Invalid contact_email'}), 422
+
+        if not rep_bankid_verified_at:
+            return jsonify({'error': 'representative_bankid_verified_at is required'}), 422
+
+        try:
+            rep_bankid_verified_at = datetime.fromisoformat(
+                rep_bankid_verified_at
+            ).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid representative_bankid_verified_at format'}), 422
+
+        # Check organisationsnummer isn't already registered
+        duplicate = OrganizerCompanyDetails.query.filter_by(
+            organisationsnummer=organisationsnummer
+        )
+        if existing and existing.company_details:
+            duplicate = duplicate.filter(
+                OrganizerCompanyDetails.organizer_id != existing.id
+            )
+        if duplicate.first():
+            return jsonify({'error': 'This organisationsnummer is already registered'}), 409
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    try:
+        if existing:
+            organizer = existing
+            organizer.name         = name
+            organizer.submitted_at = _utcnow()
+            organizer.rejected_at  = None
+            organizer.verification_status = OrganizerVerificationStatus.pending
+        else:
+            organizer = EventOrganizer(
+                user_id=user.id,
+                type=org_type,
+                name=name,
+                submitted_at=_utcnow(),
+                verification_status=OrganizerVerificationStatus.pending,
+            )
+            db.session.add(organizer)
+            db.session.flush()  # get organizer.id before writing detail rows
+
+        if org_type == OrganizerType.private:
+            details = organizer.private_details or OrganizerPrivateDetails()
+            details.organizer_id      = organizer.id
+            details.legal_first_name  = legal_first_name
+            details.legal_last_name   = legal_last_name
+            details.date_of_birth     = date_of_birth
+            details.bankid_verified_at = bankid_verified_at
+            details.personnummer_hash  = personnummer_hash
+            details.contact_phone      = contact_phone
+            if not organizer.private_details:
+                db.session.add(details)
+
+        else:
+            details = organizer.company_details or OrganizerCompanyDetails()
+            details.organizer_id                   = organizer.id
+            details.company_name                   = company_name
+            details.organisationsnummer            = organisationsnummer
+            details.address_line                   = address_line
+            details.postal_code                    = postal_code
+            details.city                           = city
+            details.contact_person_name            = contact_person_name
+            details.contact_email                  = contact_email
+            details.contact_phone                  = contact_phone
+            details.representative_bankid_verified_at = rep_bankid_verified_at
+            if not organizer.company_details:
+                db.session.add(details)
+
+        db.session.commit()
+
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'Could not save application, please try again'}), 409
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Unexpected error'}), 500
+
+    return jsonify(_host_status(organizer)), 201
+
+
+@app.route('/host/me/profile', methods=['PATCH'])
+def patch_host_profile():
+    """Approved hosts can update their public profile (name, bio, avatar)."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    o = _get_organizer(user)
+    if not o or not o.is_approved:
+        return jsonify({'error': 'Only approved hosts can edit their profile'}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    if 'name' in data:
+        name = (data['name'] or '').strip()
+        if not 2 <= len(name) <= 100:
+            return jsonify({'error': 'name must be 2-100 characters'}), 422
+        taken = EventOrganizer.query.filter(
+            func.lower(EventOrganizer.name) == name.lower(),
+            EventOrganizer.id != o.id,
+        ).first()
+        if taken:
+            return jsonify({'error': 'That host name is already taken'}), 409
+        o.name = name
+
+    if 'bio' in data:
+        bio = (data['bio'] or '').strip()
+        if len(bio) > 2000:
+            return jsonify({'error': 'bio must be 2000 characters or less'}), 422
+        o.organizer_bio = bio or None
+
+    if 'avatar_url' in data:
+        avatar = (data['avatar_url'] or '').strip()
+        if len(avatar) > 500:
+            return jsonify({'error': 'avatar_url is too long'}), 422
+        o.avatar_url = avatar or None
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'That host name is already taken'}), 409
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to save profile'}), 500
+
+    return jsonify(_host_status(o)), 200
+
+
+@app.route('/hosts/<int:organizer_id>', methods=['GET'])
+def get_public_host_profile(organizer_id: int):
+    """Public profile — only visible for approved hosts."""
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o or not o.is_approved:
+        return jsonify({'error': 'Host not found'}), 404
+    return jsonify(_public_profile(o)), 200
+
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
+
+@app.route('/admin/host-applications', methods=['GET'])
+def admin_list_applications():
+    """
+    List applications by status. Defaults to pending.
+    Query params: status, page, per_page
+    """
+    try:
+        status = OrganizerVerificationStatus(request.args.get('status', 'pending'))
+    except ValueError:
+        return jsonify({'error': 'Invalid status'}), 422
+
+    page     = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+
+    pagination = (
+        EventOrganizer.query
+        .filter_by(verification_status=status)
+        .order_by(EventOrganizer.submitted_at.asc())  # oldest first
+        .paginate(page=page, per_page=per_page, error_out=False)
+    )
+
+    return jsonify({
+        'items':  [_admin_summary(o) for o in pagination.items],
+        'page':   pagination.page,
+        'pages':  pagination.pages,
+        'total':  pagination.total,
+    }), 200
+
+
+@app.route('/admin/host-applications/<int:organizer_id>', methods=['GET'])
+def admin_get_application(organizer_id: int):
+    """Full detail for a single application including identity and review history."""
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+    return jsonify(_admin_detail(o)), 200
+
+
+@app.route('/admin/host-applications/<int:organizer_id>/approve', methods=['POST'])
+def admin_approve(organizer_id: int):
+    """Approve a pending application."""
+    admin = get_current_user_from_token()
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+
+    if o.verification_status != OrganizerVerificationStatus.pending:
+        return jsonify({
+            'error':  'Only pending applications can be approved',
+            'status': o.verification_status.value,
+        }), 409
+
+    try:
+        o.verification_status = OrganizerVerificationStatus.approved
+        o.verified_at         = _utcnow()
+        _add_review(o, admin.id, OrganizerReviewAction.approved)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to approve application'}), 500
+
+    return jsonify(_admin_detail(o)), 200
+
+
+@app.route('/admin/host-applications/<int:organizer_id>/reject', methods=['POST'])
+def admin_reject(organizer_id: int):
+    """
+    Reject a pending application. A reason is required.
+    The user can reapply after 30 days.
+    """
+    admin = get_current_user_from_token()
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+
+    if o.verification_status != OrganizerVerificationStatus.pending:
+        return jsonify({
+            'error':  'Only pending applications can be rejected',
+            'status': o.verification_status.value,
+        }), 409
+
+    data   = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return jsonify({'error': 'A rejection reason is required'}), 422
+
+    try:
+        o.verification_status = OrganizerVerificationStatus.rejected
+        o.rejected_at         = _utcnow()
+        _add_review(o, admin.id, OrganizerReviewAction.rejected, reason)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to reject application'}), 500
+
+    return jsonify(_admin_detail(o)), 200
+
+
+@app.route('/admin/host-applications/<int:organizer_id>/suspend', methods=['POST'])
+def admin_suspend(organizer_id: int):
+    """Suspend an approved host. A reason is required."""
+    admin = get_current_user_from_token()
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+
+    if o.verification_status != OrganizerVerificationStatus.approved:
+        return jsonify({
+            'error':  'Only approved hosts can be suspended',
+            'status': o.verification_status.value,
+        }), 409
+
+    data   = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return jsonify({'error': 'A suspension reason is required'}), 422
+
+    try:
+        o.verification_status = OrganizerVerificationStatus.suspended
+        _add_review(o, admin.id, OrganizerReviewAction.suspended, reason)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to suspend host'}), 500
+
+    return jsonify(_admin_detail(o)), 200
+
+
+@app.route('/admin/host-applications/<int:organizer_id>/reinstate', methods=['POST'])
+def admin_reinstate(organizer_id: int):
+    """Reinstate a suspended host back to approved."""
+    admin = get_current_user_from_token()
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+
+    if o.verification_status != OrganizerVerificationStatus.suspended:
+        return jsonify({
+            'error':  'Only suspended hosts can be reinstated',
+            'status': o.verification_status.value,
+        }), 409
+
+    try:
+        o.verification_status = OrganizerVerificationStatus.approved
+        _add_review(o, admin.id, OrganizerReviewAction.reinstated)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to reinstate host'}), 500
+
+    return jsonify(_admin_detail(o)), 200
 
 
 
