@@ -1,5 +1,6 @@
 import re, os
 from threading import Thread
+from urllib.parse import urlparse
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit, leave_room, join_room
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_12_user:wFuDQ85ZTVXuiSSbXhXGY2slgf0yizQP@dpg-dbcd3oei0phs7382spp0-a.frankfurt-postgres.render.com/kidplay_render_database_12"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_13_user:iGnK1NzmyaysYvkHzU1xgrzcy2dhRA1i@dpg-dbd6d08473hc73dihldg-a.frankfurt-postgres.render.com/kidplay_render_database_13"
 
 app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
 
@@ -104,6 +105,27 @@ COMPANY_REQUIRED_FIELDS = [
     'postal_code', 'city', 'contact_person_name', 'contact_email',
 ]
 
+ 
+BANKID_MAX_AGE = timedelta(minutes=30)
+RENAME_COOLDOWN = timedelta(days=30)
+ 
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+ 
+# Mirrors the column sizes on OrganizerCompanyDetails
+COMPANY_FIELD_LIMITS = {
+    'company_name':        200,
+    'address_line':        200,
+    'postal_code':         10,
+    'city':                100,
+    'contact_person_name': 150,
+    'contact_email':       200,
+}
+PHONE_MAX = 20
+MAX_ORGANIZER_CATEGORIES = 5   # keep equal to MAX_TAGS in the app
+ 
+# Set to your OLD _hash_personnummer while rows with legacy SHA-256 hashes exist.
+# It must produce exactly the old hash from the raw value. Set to None afterwards.
+LEGACY_HASH_FN = None
 
 # SWISH_CERT          = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])
 # YOUR_SWISH_NUMBER   = os.environ["SWISH_PLATFORM_NUMBER"]   # e.g. "1231234567"
@@ -885,32 +907,49 @@ class Report(db.Model):
 class OrganizerType(enum.Enum):
     private = 'private'   # Private person / personnummer
     company = 'company'   # Aktiebolag
-
-
+ 
+ 
 class OrganizerVerificationStatus(enum.Enum):
     pending   = 'pending'    # Applied, waiting for review
     approved  = 'approved'   # Verified, can create events
     rejected  = 'rejected'   # Denied, can reapply after 30 days
     suspended = 'suspended'  # Was approved, now suspended by admin
-
-
+ 
+ 
 class OrganizerReviewAction(enum.Enum):
     approved   = 'approved'
     rejected   = 'rejected'
     suspended  = 'suspended'
     reinstated = 'reinstated'
-
-
+    submitted  = 'submitted'   # NEW: host applied / reapplied (admin_id is NULL)
+    renamed    = 'renamed'     # NEW: approved host changed name (admin_id is NULL)
+ 
+ 
+# ── NEW: which event categories a host likes to create ───────────────────────
+ 
+organizer_categories = db.Table(
+    'organizer_categories',
+    db.Column('organizer_id', db.Integer,
+              db.ForeignKey('event_organizers.id', ondelete='CASCADE'), primary_key=True),
+    db.Column('category_id', db.Integer,
+              db.ForeignKey('event_categories.id', ondelete='CASCADE'), primary_key=True),
+)
+ 
+ 
+S = OrganizerVerificationStatus
+R = OrganizerReviewAction
+ 
 # ── Core organizer record ─────────────────────────────────────────────────────
-
+ 
 class EventOrganizer(db.Model):
     """
-    Created when a user applies to become a host.
+    Created when a user applies to become a host (name + type only).
+    Bio and avatar are filled in after approval.
     One-to-one with User. Holds status + public profile.
     The detail tables (private / company) hold identity info.
     """
     __tablename__ = 'event_organizers'
-
+ 
     id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(
         db.Integer,
@@ -919,14 +958,16 @@ class EventOrganizer(db.Model):
         unique=True,
         index=True,
     )
-
+ 
     type = db.Column(db.Enum(OrganizerType), nullable=False)
-
+ 
     # Public profile
-    name           = db.Column(db.String(100), unique=True, nullable=False)
+    # CHANGED: unique=True removed, uniqueness is enforced case-insensitively
+    # by the functional index in __table_args__ below.
+    name           = db.Column(db.String(100), nullable=False)
     organizer_bio  = db.Column(db.Text, nullable=True)
     avatar_url     = db.Column(db.String(500), nullable=True)
-
+ 
     # Status
     verification_status = db.Column(
         db.Enum(OrganizerVerificationStatus),
@@ -934,14 +975,19 @@ class EventOrganizer(db.Model):
         nullable=False,
         index=True,
     )
-
+ 
     # Key timestamps
-    submitted_at = db.Column(db.DateTime(timezone=True), nullable=True)  # set on apply / reapply
+    submitted_at = db.Column(db.DateTime(timezone=True), nullable=True)  # set on submit / resubmit
     verified_at  = db.Column(db.DateTime(timezone=True), nullable=True)  # set on approval
     rejected_at  = db.Column(db.DateTime(timezone=True), nullable=True)  # set on rejection, drives cooldown
-
+ 
+    # NEW: case-insensitive unique name (Postgres / SQLite)
+    __table_args__ = (
+        db.Index('uq_event_organizers_name_lower', func.lower(name), unique=True),
+    )
+ 
     # ── Relationships ──────────────────────────────────────────────────────────
-
+ 
     owner = db.relationship(
         'User',
         backref=db.backref('event_organizer', uselist=False),
@@ -971,17 +1017,27 @@ class EventOrganizer(db.Model):
         order_by='EventOrganizerImage.display_order',
     )
     events = db.relationship('Event', back_populates='event_organizer')
-
+ 
+    # NEW: the categories this host likes to create events in
+    categories = db.relationship(
+        'EventCategory',
+        secondary=organizer_categories,
+        lazy='selectin',
+    )
+ 
     # ── Derived from related tables ────────────────────────────────────────────
-
+ 
     @property
     def follower_count(self) -> int:
+        if self.user_id is None:          # CHANGED: user deleted, don't count NULL follows
+            return 0
         return Follow.query.filter_by(following_id=self.user_id).count()
-
+ 
     @property
     def total_events_created(self) -> int:
-        return len(self.events)
-
+        # CHANGED: count in the database instead of loading every Event
+        return Event.query.filter_by(event_organizer_id=self.id).count()
+ 
     @property
     def total_participants(self) -> int:
         return (
@@ -990,25 +1046,33 @@ class EventOrganizer(db.Model):
             .filter(Event.event_organizer_id == self.id)
             .count()
         )
-
+ 
     # ── Status helpers ─────────────────────────────────────────────────────────
-
+ 
+    @property
+    def has_profile(self) -> bool:         # NEW
+        """
+        The public profile is created after approval by filling in bio and/or avatar.
+        Drives "Create a Host Profile" vs "My Host Profile" and the Create Event gate.
+        """
+        return bool((self.organizer_bio or '').strip() or self.avatar_url)
+ 
     @property
     def is_approved(self) -> bool:
         return self.verification_status == OrganizerVerificationStatus.approved
-
+ 
     @property
     def is_pending(self) -> bool:
         return self.verification_status == OrganizerVerificationStatus.pending
-
+ 
     @property
     def is_rejected(self) -> bool:
         return self.verification_status == OrganizerVerificationStatus.rejected
-
+ 
     @property
     def is_suspended(self) -> bool:
         return self.verification_status == OrganizerVerificationStatus.suspended
-
+ 
     @property
     def can_reapply(self) -> bool:
         """True if rejected and the 30-day cooldown has passed."""
@@ -1017,7 +1081,7 @@ class EventOrganizer(db.Model):
         now = datetime.now(timezone.utc)
         delta = now - self.rejected_at.replace(tzinfo=timezone.utc)
         return delta.days >= 30
-
+ 
     @property
     def retry_at(self):
         """
@@ -1026,22 +1090,21 @@ class EventOrganizer(db.Model):
         """
         if not self.is_rejected or not self.rejected_at:
             return None
-        from datetime import timedelta
         eligible = self.rejected_at.replace(tzinfo=timezone.utc) + timedelta(days=30)
         now = datetime.now(timezone.utc)
         return None if now >= eligible else eligible
-
-
-# ── Identity detail tables ─────────────────────────────────────────────────────
-
+ 
+ 
+# ── Identity detail tables (unchanged) ─────────────────────────────────────────
+ 
 class OrganizerPrivateDetails(db.Model):
     """
     Identity details for a private-person host.
-    Personnummer is never stored raw — only a one-way hash for duplicate detection.
-    Legal name and date of birth come from BankID and are safe to store.
+    Personnummer is never stored raw, only a keyed hash (HMAC) for duplicate detection.
+    Legal name and date of birth come from BankID.
     """
     __tablename__ = 'organizer_private_details'
-
+ 
     id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
     organizer_id = db.Column(
         db.Integer,
@@ -1050,29 +1113,27 @@ class OrganizerPrivateDetails(db.Model):
         unique=True,
         index=True,
     )
-
-    # From BankID — safe to store
-    legal_first_name  = db.Column(db.String(100), nullable=False)
-    legal_last_name   = db.Column(db.String(100), nullable=False)
-    date_of_birth     = db.Column(db.Date, nullable=False)
+ 
+    legal_first_name   = db.Column(db.String(100), nullable=False)
+    legal_last_name    = db.Column(db.String(100), nullable=False)
+    date_of_birth      = db.Column(db.Date, nullable=False)
     bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
-
-    # Hashed personnummer — for duplicate detection only, never raw
+ 
     personnummer_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-
+ 
     contact_phone = db.Column(db.String(20), nullable=True)
-
+ 
     organizer = db.relationship('EventOrganizer', back_populates='private_details')
-
-
+ 
+ 
 class OrganizerCompanyDetails(db.Model):
     """
-    Identity details for a company (aktiebolag) host.
+    Identity details for a company host.
     Organisationsnummer is public record and safe to store.
-    BankID verifies the company representative.
+    BankID identifies the company representative only.
     """
     __tablename__ = 'organizer_company_details'
-
+ 
     id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
     organizer_id = db.Column(
         db.Integer,
@@ -1081,34 +1142,32 @@ class OrganizerCompanyDetails(db.Model):
         unique=True,
         index=True,
     )
-
-    # Company info
+ 
     company_name        = db.Column(db.String(200), nullable=False)
     organisationsnummer = db.Column(db.String(20),  nullable=False, unique=True, index=True)
     address_line        = db.Column(db.String(200), nullable=False)
     postal_code         = db.Column(db.String(10),  nullable=False)
     city                = db.Column(db.String(100), nullable=False)
-
-    # Contact person at the company
+ 
     contact_person_name = db.Column(db.String(150), nullable=False)
     contact_email       = db.Column(db.String(200), nullable=False)
     contact_phone       = db.Column(db.String(20),  nullable=True)
-
-    # BankID verification of the representative
+ 
     representative_bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
-
+ 
     organizer = db.relationship('EventOrganizer', back_populates='company_details')
-
-
+ 
+ 
 # ── Audit trail ────────────────────────────────────────────────────────────────
-
+ 
 class OrganizerReview(db.Model):
     """
-    One row per admin action on an organizer application.
-    Gives a full audit trail: who did what, when, and why.
+    One row per action on an organizer application.
+    admin_id is NULL for host-initiated actions (submitted, renamed)
+    and when the admin account has been deleted.
     """
     __tablename__ = 'organizer_reviews'
-
+ 
     id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
     organizer_id = db.Column(
         db.Integer,
@@ -1119,20 +1178,54 @@ class OrganizerReview(db.Model):
     admin_id = db.Column(
         db.Integer,
         db.ForeignKey('user_credentials.id', ondelete='SET NULL'),
-        nullable=True,   # nullable so the row survives if the admin account is deleted
+        nullable=True,
     )
-
-    action    = db.Column(db.Enum(OrganizerReviewAction), nullable=False)
-    reason    = db.Column(db.Text, nullable=True)   # required for reject / suspend
+ 
+    action     = db.Column(db.Enum(OrganizerReviewAction), nullable=False)
+    reason     = db.Column(db.Text, nullable=True)   # required for reject / suspend
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-
+ 
     organizer = db.relationship('EventOrganizer', back_populates='reviews')
     admin     = db.relationship('User', foreign_keys=[admin_id])
-
+ 
+ 
+# ── NEW: BankID result, written only by your server-side BankID callback ──────
+ 
+class BankIDVerification(db.Model):
+    __tablename__ = 'bankid_verifications'
+ 
+    id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user_credentials.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+ 
+    # Keyed hash (see hmac_personnummer in host_routes.py). Raw value is never persisted.
+    personnummer_hmac = db.Column(db.String(64), nullable=False)
+    given_name        = db.Column(db.String(100), nullable=False)
+    surname           = db.Column(db.String(100), nullable=False)
+    date_of_birth     = db.Column(db.Date, nullable=False)
+    verified_at       = db.Column(db.DateTime(timezone=True), nullable=False)
+ 
+ 
+# ── NEW: identities that may not register as hosts again ──────────────────────
+ 
+class BlockedIdentity(db.Model):
+    """
+    Minimal record kept for banned hosts after their identity details are deleted:
+    only the keyed hash, with no name or birth date attached.
+    """
+    __tablename__ = 'blocked_identities'
+ 
+    id                = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    personnummer_hmac = db.Column(db.String(64), unique=True, nullable=False, index=True)
+ 
 
 
 with app.app_context():
@@ -1536,11 +1629,6 @@ def _get_organizer(user) -> EventOrganizer | None:
     return EventOrganizer.query.filter_by(user_id=user.id).first()
 
 
-def _hash_personnummer(raw: str) -> str:
-    """One-way hash — never store the raw personnummer."""
-    return hashlib.sha256(raw.strip().encode()).hexdigest()
-
-
 def _latest_review(organizer: EventOrganizer, action: OrganizerReviewAction):
     return (
         OrganizerReview.query
@@ -1561,19 +1649,6 @@ def _add_review(organizer: EventOrganizer, admin_id: int,
     db.session.add(review)
 
 
-def admin_required(fn):
-    from functools import wraps
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        user = get_current_user_from_token()
-        if not user:
-            return jsonify({'error': 'Unauthorized'}), 401
-        if not getattr(user, 'is_admin', False):
-            return jsonify({'error': 'Admin only'}), 403
-        return fn(*args, **kwargs)
-    return wrapper
-
-
 # ── Serializers ───────────────────────────────────────────────────────────────
 
 def _public_profile(o: EventOrganizer) -> dict:
@@ -1588,6 +1663,7 @@ def _public_profile(o: EventOrganizer) -> dict:
         'total_events_created': o.total_events_created,
         'total_participants':   o.total_participants,
         'images':               [{'url': i.image_url} for i in o.images],
+        'categories':           _category_dicts(o.categories),
     }
 
 
@@ -1697,6 +1773,290 @@ def _admin_detail(o: EventOrganizer) -> dict:
     ]
 
     return data
+
+
+def _json_body() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+ 
+ 
+def _str(data: dict, key: str) -> str:
+    """Stripped string value, or '' if missing / not a string."""
+    v = data.get(key)
+    return v.strip() if isinstance(v, str) else ''
+ 
+ 
+def _aware(dt):
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+ 
+ 
+def _is_admin(user) -> bool:
+    # Replace with your real admin check (role column, permission table ...)
+    return bool(getattr(user, 'is_admin', False))
+ 
+ 
+def hmac_personnummer(raw: str) -> str:
+    """
+    Keyed hash for duplicate detection; call it in the BankID callback.
+    A plain SHA-256 of a personnummer is brute-forceable. The secret key is not.
+    BankID returns a 12-digit personnummer.
+    """
+    digits = re.sub(r'\D', '', raw or '')
+    if len(digits) != 12:
+        raise ValueError('personnummer must have 12 digits')
+    key = app.config['PNR_HMAC_KEY']
+    if isinstance(key, str):
+        key = key.encode()
+    return hmac.new(key, digits.encode(), hashlib.sha256).hexdigest()
+ 
+ 
+def record_bankid_verification(user, raw_personnummer, given_name, surname, date_of_birth):
+    """
+    Call this from your BankID callback after BankID has completed successfully.
+    This is the only place BankID data enters the system. The client never sends it.
+    """
+    pnr_hmac = hmac_personnummer(raw_personnummer)
+ 
+    # Upgrade a legacy SHA-256 row to the HMAC in place (if one exists for this person)
+    if LEGACY_HASH_FN:
+        legacy = LEGACY_HASH_FN(raw_personnummer)
+        row = OrganizerPrivateDetails.query.filter_by(personnummer_hash=legacy).first()
+        if row:
+            try:
+                row.personnummer_hash = pnr_hmac
+                db.session.commit()
+            except IntegrityError:   # same person already has an HMAC row: needs manual review
+                db.session.rollback()
+                traceback.print_exc()
+ 
+    db.session.add(BankIDVerification(
+        user_id=user.id,
+        personnummer_hmac=pnr_hmac,
+        given_name=given_name,
+        surname=surname,
+        date_of_birth=date_of_birth,
+        verified_at=_utcnow(),
+    ))
+    db.session.commit()
+ 
+ 
+def _latest_bankid(user):
+    cutoff = _utcnow() - BANKID_MAX_AGE
+    return (
+        BankIDVerification.query
+        .filter(BankIDVerification.user_id == user.id,
+                BankIDVerification.verified_at >= cutoff)
+        .order_by(BankIDVerification.verified_at.desc())
+        .first()
+    )
+ 
+ 
+_LOCKED = {
+    S.pending:   ('Your application is already under review', 409),
+    S.approved:  ('You are already an approved host', 409),
+    S.suspended: ('Your host account is suspended', 403),
+}
+ 
+ 
+def _validate_name(raw):
+    if not isinstance(raw, str):
+        return None
+    name = raw.strip()
+    return name if 2 <= len(name) <= 100 else None
+ 
+ 
+def _name_taken(name, exclude_id=None):
+    q = EventOrganizer.query.filter(func.lower(EventOrganizer.name) == name.lower())
+    if exclude_id:
+        q = q.filter(EventOrganizer.id != exclude_id)
+    return q.first() is not None
+ 
+ 
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+ 
+ 
+def _normalize_orgnr(raw):
+    """'556016-0680' / '5560160680' -> '556016-0680', or None if invalid."""
+    digits = re.sub(r'\D', '', raw or '')
+    if len(digits) != 10 or not _luhn_ok(digits):
+        return None
+    return f'{digits[:6]}-{digits[6:]}'
+ 
+ 
+def _valid_avatar_url(url: str) -> bool:
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    allowed = app.config.get('AVATAR_ALLOWED_HOSTS', ())
+    return p.scheme == 'https' and p.hostname in allowed
+ 
+ 
+def _parse_bio_avatar(data: dict):
+    """
+    Validate bio / avatar_url if present. Returns (updates, error_response).
+    Nothing is mutated here, so callers can validate everything before touching the DB.
+    """
+    updates = {}
+ 
+    if 'bio' in data:
+        if data['bio'] is not None and not isinstance(data['bio'], str):
+            return None, (jsonify({'error': 'bio must be a string'}), 422)
+        bio = _str(data, 'bio')
+        if len(bio) > 2000:
+            return None, (jsonify({'error': 'bio must be 2000 characters or less'}), 422)
+        updates['organizer_bio'] = bio or None
+ 
+    if 'avatar_url' in data:
+        if data['avatar_url'] is not None and not isinstance(data['avatar_url'], str):
+            return None, (jsonify({'error': 'avatar_url must be a string'}), 422)
+        avatar = _str(data, 'avatar_url')
+        if avatar:
+            if len(avatar) > 500:
+                return None, (jsonify({'error': 'avatar_url is too long'}), 422)
+            if not _valid_avatar_url(avatar):
+                return None, (jsonify({
+                    'error': 'avatar_url must be an https URL on an allowed host',
+                }), 422)
+        updates['avatar_url'] = avatar or None
+ 
+    return updates, None
+ 
+ 
+def _category_dicts(categories):
+    return [{'id': c.id, 'name': c.name} for c in categories]
+ 
+ 
+def _parse_category_ids(data: dict):
+    """
+    Validate category_ids if present. Returns (categories, error_response).
+    categories is None when the key is absent (leave unchanged); [] clears them.
+    """
+    if 'category_ids' not in data:
+        return None, None
+ 
+    raw = data['category_ids']
+    if not isinstance(raw, list) or any(
+        not isinstance(i, int) or isinstance(i, bool) for i in raw
+    ):
+        return None, (jsonify({'error': 'category_ids must be a list of integers'}), 422)
+ 
+    ids = list(dict.fromkeys(raw))   # de-duplicate, keep order
+    if len(ids) > MAX_ORGANIZER_CATEGORIES:
+        return None, (jsonify({
+            'error': f'You can pick at most {MAX_ORGANIZER_CATEGORIES} categories',
+        }), 422)
+    if not ids:
+        return [], None
+ 
+    found = EventCategory.query.filter(EventCategory.id.in_(ids)).all()
+    if len(found) != len(ids):
+        return None, (jsonify({'error': 'One or more categories do not exist'}), 422)
+ 
+    by_id = {c.id: c for c in found}
+    return [by_id[i] for i in ids], None
+ 
+ 
+def _status_payload(o):
+    """Your _host_status plus has_profile and categories, so the client doesn't have to guess."""
+    payload = dict(_host_status(o))
+    payload['has_profile'] = bool(o and o.has_profile)
+    payload['categories'] = _category_dicts(o.categories) if o else []
+    return payload
+ 
+ 
+# ══ Access control & visibility ═══════════════════════════════════════════════
+ 
+def require_admin(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = get_current_user_from_token()
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+        if not _is_admin(user):
+            return jsonify({'error': 'Forbidden'}), 403
+        return fn(*args, admin=user, **kwargs)
+    return wrapper
+ 
+ 
+def _current_approved_host():
+    """Returns (organizer, error_response). Status is checked on every request."""
+    user = get_current_user_from_token()
+    if not user:
+        return None, (jsonify({'error': 'Unauthorized'}), 401)
+    organizer = _get_organizer(user)
+    if not organizer or organizer.verification_status != S.approved:
+        return None, (jsonify({'error': 'Only approved hosts can do this'}), 403)
+    return organizer, None
+ 
+ 
+def require_approved_host(fn):
+    """Approved hosts only (e.g. creating the profile). Injects `organizer`."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        organizer, err = _current_approved_host()
+        if err:
+            return err
+        return fn(*args, organizer=organizer, **kwargs)
+    return wrapper
+ 
+ 
+def require_host_with_profile(fn):
+    """
+    Approved AND profile created. Use this on event creation / editing so the
+    frontend rule ("Create an Event" only after the profile exists) is also
+    enforced server-side. Injects `organizer`.
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        organizer, err = _current_approved_host()
+        if err:
+            return err
+        if not organizer.has_profile:
+            return jsonify({
+                'error': 'Create your host profile first',
+                'code':  'profile_required',
+            }), 403
+        return fn(*args, organizer=organizer, **kwargs)
+    return wrapper
+ 
+ 
+def public_organizers_query():
+    """Use for EVERY public organizer listing / lookup."""
+    return EventOrganizer.query.filter(EventOrganizer.verification_status == S.approved)
+ 
+ 
+def public_events_query():
+    """
+    Use for EVERY public event listing / lookup. Events of pending, rejected
+    and suspended hosts are hidden, and come back on reinstatement.
+    """
+    return (
+        Event.query
+        .join(EventOrganizer, EventOrganizer.id == Event.event_organizer_id)
+        .filter(EventOrganizer.verification_status == S.approved)
+    )
+
+
+def anonymize_host_identity(organizer):
+    """Call from your account-deletion flow (caller commits)."""
+    d = organizer.private_details
+    if d and organizer.verification_status == S.suspended:
+        if not BlockedIdentity.query.filter_by(personnummer_hmac=d.personnummer_hash).first():
+            db.session.add(BlockedIdentity(personnummer_hmac=d.personnummer_hash))
+    if d:
+        db.session.delete(d)
+    if organizer.company_details:
+        db.session.delete(organizer.company_details)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5832,410 +6192,7 @@ def get_active_users_count():
 
 
 
-@app.route('/host/me', methods=['GET'])
-def get_host_status():
-    """
-    Home screen calls this to decide which button to show the user.
-    Returns {'status': 'none'} if the user has never applied.
-    """
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
 
-    return jsonify(_host_status(_get_organizer(user))), 200
-
-
-@app.route('/host/apply', methods=['POST'])
-def post_host_apply():
-    """
-    First application and reapplication share this endpoint.
-
-    Private person body:
-        type, name, personnummer (raw — hashed here, never stored),
-        bankid_verified_at, legal_first_name, legal_last_name,
-        date_of_birth, contact_phone (optional)
-
-    Company body:
-        type, name, company_name, organisationsnummer, address_line,
-        postal_code, city, contact_person_name, contact_email,
-        contact_phone (optional), representative_bankid_verified_at
-    """
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    data = request.get_json(silent=True) or {}
-
-    # ── Type ──────────────────────────────────────────────────────────────────
-    try:
-        org_type = OrganizerType(data.get('type'))
-    except ValueError:
-        return jsonify({'error': "type must be 'private' or 'company'"}), 422
-
-    # ── Display name ──────────────────────────────────────────────────────────
-    name = (data.get('name') or '').strip()
-    if not 2 <= len(name) <= 100:
-        return jsonify({'error': 'name must be 2-100 characters'}), 422
-
-    # ── Existing application check ────────────────────────────────────────────
-    existing = _get_organizer(user)
-    if existing:
-        if existing.verification_status == OrganizerVerificationStatus.pending:
-            return jsonify({'error': 'Your application is already under review'}), 409
-
-        if existing.verification_status == OrganizerVerificationStatus.approved:
-            return jsonify({'error': 'You are already an approved host'}), 409
-
-        if existing.verification_status == OrganizerVerificationStatus.suspended:
-            return jsonify({'error': 'Your host account is suspended'}), 403
-
-        # Rejected — check cooldown
-        if existing.verification_status == OrganizerVerificationStatus.rejected:
-            if not existing.can_reapply:
-                return jsonify({
-                    'error':    'You must wait before reapplying',
-                    'retry_at': _iso(existing.retry_at),
-                }), 429
-
-            # Cannot switch type on reapplication
-            if existing.type != org_type:
-                return jsonify({'error': 'You must reapply with the same host type'}), 422
-
-    # ── Name uniqueness ───────────────────────────────────────────────────────
-    name_clash = EventOrganizer.query.filter(
-        func.lower(EventOrganizer.name) == name.lower()
-    )
-    if existing:
-        name_clash = name_clash.filter(EventOrganizer.id != existing.id)
-    if name_clash.first():
-        return jsonify({'error': 'That host name is already taken'}), 409
-
-    # ── Type-specific validation ──────────────────────────────────────────────
-    if org_type == OrganizerType.private:
-        raw_personnummer = (data.get('personnummer') or '').strip()
-        if not raw_personnummer:
-            return jsonify({'error': 'personnummer is required'}), 422
-
-        legal_first_name = (data.get('legal_first_name') or '').strip()
-        legal_last_name  = (data.get('legal_last_name') or '').strip()
-        date_of_birth    = data.get('date_of_birth')
-        bankid_verified_at = data.get('bankid_verified_at')
-        contact_phone    = (data.get('contact_phone') or '').strip() or None
-
-        if not all([legal_first_name, legal_last_name, date_of_birth, bankid_verified_at]):
-            return jsonify({'error': 'Missing required BankID fields'}), 422
-
-        try:
-            date_of_birth = datetime.strptime(date_of_birth, '%Y-%m-%d').date()
-            bankid_verified_at = datetime.fromisoformat(bankid_verified_at).replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid date format, expected YYYY-MM-DD / ISO 8601'}), 422
-
-        personnummer_hash = _hash_personnummer(raw_personnummer)
-
-        # Check this identity isn't already registered under another account
-        duplicate = OrganizerPrivateDetails.query.filter_by(
-            personnummer_hash=personnummer_hash
-        )
-        if existing and existing.private_details:
-            duplicate = duplicate.filter(
-                OrganizerPrivateDetails.organizer_id != existing.id
-            )
-        if duplicate.first():
-            return jsonify({'error': 'This identity is already registered as a host'}), 409
-
-    else:  # company
-        missing = [f for f in COMPANY_REQUIRED_FIELDS if not (data.get(f) or '').strip()]
-        if missing:
-            return jsonify({'error': 'Missing required fields', 'fields': missing}), 422
-
-        company_name        = data['company_name'].strip()
-        organisationsnummer = data['organisationsnummer'].strip()
-        address_line        = data['address_line'].strip()
-        postal_code         = data['postal_code'].strip()
-        city                = data['city'].strip()
-        contact_person_name = data['contact_person_name'].strip()
-        contact_email       = data['contact_email'].strip()
-        contact_phone       = (data.get('contact_phone') or '').strip() or None
-        rep_bankid_verified_at = data.get('representative_bankid_verified_at')
-
-        if '@' not in contact_email:
-            return jsonify({'error': 'Invalid contact_email'}), 422
-
-        if not rep_bankid_verified_at:
-            return jsonify({'error': 'representative_bankid_verified_at is required'}), 422
-
-        try:
-            rep_bankid_verified_at = datetime.fromisoformat(
-                rep_bankid_verified_at
-            ).replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid representative_bankid_verified_at format'}), 422
-
-        # Check organisationsnummer isn't already registered
-        duplicate = OrganizerCompanyDetails.query.filter_by(
-            organisationsnummer=organisationsnummer
-        )
-        if existing and existing.company_details:
-            duplicate = duplicate.filter(
-                OrganizerCompanyDetails.organizer_id != existing.id
-            )
-        if duplicate.first():
-            return jsonify({'error': 'This organisationsnummer is already registered'}), 409
-
-    # ── Save ──────────────────────────────────────────────────────────────────
-    try:
-        if existing:
-            organizer = existing
-            organizer.name         = name
-            organizer.submitted_at = _utcnow()
-            organizer.rejected_at  = None
-            organizer.verification_status = OrganizerVerificationStatus.pending
-        else:
-            organizer = EventOrganizer(
-                user_id=user.id,
-                type=org_type,
-                name=name,
-                submitted_at=_utcnow(),
-                verification_status=OrganizerVerificationStatus.pending,
-            )
-            db.session.add(organizer)
-            db.session.flush()  # get organizer.id before writing detail rows
-
-        if org_type == OrganizerType.private:
-            details = organizer.private_details or OrganizerPrivateDetails()
-            details.organizer_id      = organizer.id
-            details.legal_first_name  = legal_first_name
-            details.legal_last_name   = legal_last_name
-            details.date_of_birth     = date_of_birth
-            details.bankid_verified_at = bankid_verified_at
-            details.personnummer_hash  = personnummer_hash
-            details.contact_phone      = contact_phone
-            if not organizer.private_details:
-                db.session.add(details)
-
-        else:
-            details = organizer.company_details or OrganizerCompanyDetails()
-            details.organizer_id                   = organizer.id
-            details.company_name                   = company_name
-            details.organisationsnummer            = organisationsnummer
-            details.address_line                   = address_line
-            details.postal_code                    = postal_code
-            details.city                           = city
-            details.contact_person_name            = contact_person_name
-            details.contact_email                  = contact_email
-            details.contact_phone                  = contact_phone
-            details.representative_bankid_verified_at = rep_bankid_verified_at
-            if not organizer.company_details:
-                db.session.add(details)
-
-        db.session.commit()
-
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({'error': 'Could not save application, please try again'}), 409
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Unexpected error'}), 500
-
-    return jsonify(_host_status(organizer)), 201
-
-
-@app.route('/host/me/profile', methods=['PATCH'])
-def patch_host_profile():
-    """Approved hosts can update their public profile (name, bio, avatar)."""
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    o = _get_organizer(user)
-    if not o or not o.is_approved:
-        return jsonify({'error': 'Only approved hosts can edit their profile'}), 403
-
-    data = request.get_json(silent=True) or {}
-
-    if 'name' in data:
-        name = (data['name'] or '').strip()
-        if not 2 <= len(name) <= 100:
-            return jsonify({'error': 'name must be 2-100 characters'}), 422
-        taken = EventOrganizer.query.filter(
-            func.lower(EventOrganizer.name) == name.lower(),
-            EventOrganizer.id != o.id,
-        ).first()
-        if taken:
-            return jsonify({'error': 'That host name is already taken'}), 409
-        o.name = name
-
-    if 'bio' in data:
-        bio = (data['bio'] or '').strip()
-        if len(bio) > 2000:
-            return jsonify({'error': 'bio must be 2000 characters or less'}), 422
-        o.organizer_bio = bio or None
-
-    if 'avatar_url' in data:
-        avatar = (data['avatar_url'] or '').strip()
-        if len(avatar) > 500:
-            return jsonify({'error': 'avatar_url is too long'}), 422
-        o.avatar_url = avatar or None
-
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({'error': 'That host name is already taken'}), 409
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to save profile'}), 500
-
-    return jsonify(_host_status(o)), 200
-
-
-@app.route('/hosts/<int:organizer_id>', methods=['GET'])
-def get_public_host_profile(organizer_id: int):
-    """Public profile — only visible for approved hosts."""
-    o = db.session.get(EventOrganizer, organizer_id)
-    if not o or not o.is_approved:
-        return jsonify({'error': 'Host not found'}), 404
-    return jsonify(_public_profile(o)), 200
-
-
-# ── Admin endpoints ───────────────────────────────────────────────────────────
-
-@app.route('/admin/host-applications', methods=['GET'])
-def admin_list_applications():
-    """
-    List applications by status. Defaults to pending.
-    Query params: status, page, per_page
-    """
-    try:
-        status = OrganizerVerificationStatus(request.args.get('status', 'pending'))
-    except ValueError:
-        return jsonify({'error': 'Invalid status'}), 422
-
-    page     = request.args.get('page', 1, type=int)
-    per_page = min(request.args.get('per_page', 20, type=int), 100)
-
-    pagination = (
-        EventOrganizer.query
-        .filter_by(verification_status=status)
-        .order_by(EventOrganizer.submitted_at.asc())  # oldest first
-        .paginate(page=page, per_page=per_page, error_out=False)
-    )
-
-    return jsonify({
-        'items':  [_admin_summary(o) for o in pagination.items],
-        'page':   pagination.page,
-        'pages':  pagination.pages,
-        'total':  pagination.total,
-    }), 200
-
-
-@app.route('/admin/host-applications/<int:organizer_id>', methods=['GET'])
-def admin_get_application(organizer_id: int):
-    """Full detail for a single application including identity and review history."""
-    o = db.session.get(EventOrganizer, organizer_id)
-    if not o:
-        return jsonify({'error': 'Application not found'}), 404
-    return jsonify(_admin_detail(o)), 200
-
-
-@app.route('/admin/host-applications/<int:organizer_id>/approve', methods=['POST'])
-def admin_approve(organizer_id: int):
-    """Approve a pending application."""
-    admin = get_current_user_from_token()
-    o = db.session.get(EventOrganizer, organizer_id)
-    if not o:
-        return jsonify({'error': 'Application not found'}), 404
-
-    if o.verification_status != OrganizerVerificationStatus.pending:
-        return jsonify({
-            'error':  'Only pending applications can be approved',
-            'status': o.verification_status.value,
-        }), 409
-
-    try:
-        o.verification_status = OrganizerVerificationStatus.approved
-        o.verified_at         = _utcnow()
-        _add_review(o, admin.id, OrganizerReviewAction.approved)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to approve application'}), 500
-
-    return jsonify(_admin_detail(o)), 200
-
-
-@app.route('/admin/host-applications/<int:organizer_id>/reject', methods=['POST'])
-def admin_reject(organizer_id: int):
-    """
-    Reject a pending application. A reason is required.
-    The user can reapply after 30 days.
-    """
-    admin = get_current_user_from_token()
-    o = db.session.get(EventOrganizer, organizer_id)
-    if not o:
-        return jsonify({'error': 'Application not found'}), 404
-
-    if o.verification_status != OrganizerVerificationStatus.pending:
-        return jsonify({
-            'error':  'Only pending applications can be rejected',
-            'status': o.verification_status.value,
-        }), 409
-
-    data   = request.get_json(silent=True) or {}
-    reason = (data.get('reason') or '').strip()
-    if not reason:
-        return jsonify({'error': 'A rejection reason is required'}), 422
-
-    try:
-        o.verification_status = OrganizerVerificationStatus.rejected
-        o.rejected_at         = _utcnow()
-        _add_review(o, admin.id, OrganizerReviewAction.rejected, reason)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to reject application'}), 500
-
-    return jsonify(_admin_detail(o)), 200
-
-
-@app.route('/admin/host-applications/<int:organizer_id>/suspend', methods=['POST'])
-def admin_suspend(organizer_id: int):
-    """Suspend an approved host. A reason is required."""
-    admin = get_current_user_from_token()
-    o = db.session.get(EventOrganizer, organizer_id)
-    if not o:
-        return jsonify({'error': 'Application not found'}), 404
-
-    if o.verification_status != OrganizerVerificationStatus.approved:
-        return jsonify({
-            'error':  'Only approved hosts can be suspended',
-            'status': o.verification_status.value,
-        }), 409
-
-    data   = request.get_json(silent=True) or {}
-    reason = (data.get('reason') or '').strip()
-    if not reason:
-        return jsonify({'error': 'A suspension reason is required'}), 422
-
-    try:
-        o.verification_status = OrganizerVerificationStatus.suspended
-        _add_review(o, admin.id, OrganizerReviewAction.suspended, reason)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        traceback.print_exc()
-        return jsonify({'error': 'Failed to suspend host'}), 500
-
-    return jsonify(_admin_detail(o)), 200
-
-
-@app.route('/admin/host-applications/<int:organizer_id>/reinstate', methods=['POST'])
-def admin_reinstate(organizer_id: int):
     """Reinstate a suspended host back to approved."""
     admin = get_current_user_from_token()
     o = db.session.get(EventOrganizer, organizer_id)
@@ -6259,6 +6216,423 @@ def admin_reinstate(organizer_id: int):
 
     return jsonify(_admin_detail(o)), 200
 
+
+
+# ══ Host: status ══════════════════════════════════════════════════════════════
+ 
+@app.route('/host/me', methods=['GET'])
+def get_host_status():
+    """Home screen calls this to decide which button to show."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+    return jsonify(_status_payload(_get_organizer(user))), 200
+ 
+ 
+# ══ Host: apply (first application and reapplication) ═════════════════════════
+ 
+@app.route('/host/apply', methods=['POST'])
+def post_host_apply():
+    """
+    Single endpoint for first application and reapplication.
+ 
+    Private body:  type, name, contact_phone (optional)
+    Company body:  type, name, company_name, organisationsnummer, address_line,
+                   postal_code, city, contact_person_name, contact_email,
+                   contact_phone (optional)
+ 
+    Legal name, date of birth, personnummer hash and verification time are
+    NOT in the body. They come from the user's recent BankID result on the
+    server (see record_bankid_verification). For companies, BankID identifies
+    the representative only; signatory rights are checked by the reviewer.
+ 
+    Errors the client should handle:
+        403 bankid_required    run BankID, then retry
+        403 identity_blocked   this identity can't be used for hosting
+        429 retry_at           rejected, still in the 30-day cooldown
+    """
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+ 
+    data = _json_body()
+ 
+    # ── Type & name ───────────────────────────────────────────────────────────
+    try:
+        org_type = OrganizerType(data.get('type'))
+    except ValueError:
+        return jsonify({'error': "type must be 'private' or 'company'"}), 422
+ 
+    name = _validate_name(data.get('name'))
+    if not name:
+        return jsonify({'error': 'name must be 2-100 characters'}), 422
+ 
+    # ── Existing application ──────────────────────────────────────────────────
+    existing = _get_organizer(user)
+    if existing:
+        locked = _LOCKED.get(existing.verification_status)
+        if locked:
+            return jsonify({'error': locked[0]}), locked[1]
+ 
+        # Only rejected remains here
+        if not existing.can_reapply:
+            return jsonify({
+                'error':    'You must wait before reapplying',
+                'retry_at': _iso(existing.retry_at),
+            }), 429
+ 
+        if existing.type != org_type:
+            return jsonify({'error': 'You must reapply with the same host type'}), 422
+ 
+    if _name_taken(name, existing.id if existing else None):
+        return jsonify({'error': 'That host name is already taken'}), 409
+ 
+    # ── Contact phone (both types) ────────────────────────────────────────────
+    contact_phone = _str(data, 'contact_phone') or None
+    if contact_phone and len(contact_phone) > PHONE_MAX:
+        return jsonify({'error': f'contact_phone must be at most {PHONE_MAX} characters'}), 422
+ 
+    # ── Company body validation (before BankID, so form mistakes surface first) ─
+    fields = {}
+    orgnr = None
+    if org_type == OrganizerType.company:
+        missing = []
+        for field, max_len in COMPANY_FIELD_LIMITS.items():
+            value = _str(data, field)
+            if not value:
+                missing.append(field)
+            elif len(value) > max_len:
+                return jsonify({'error': f'{field} must be at most {max_len} characters'}), 422
+            fields[field] = value
+ 
+        orgnr_raw = _str(data, 'organisationsnummer')
+        if not orgnr_raw:
+            missing.append('organisationsnummer')
+        if missing:
+            return jsonify({'error': 'Missing required fields', 'fields': missing}), 422
+ 
+        orgnr = _normalize_orgnr(orgnr_raw)
+        if not orgnr:
+            return jsonify({'error': 'Invalid organisationsnummer'}), 422
+ 
+        if not EMAIL_RE.match(fields['contact_email']):
+            return jsonify({'error': 'Invalid contact_email'}), 422
+ 
+    # ── BankID (server-side result, never from the client) ────────────────────
+    bankid = _latest_bankid(user)
+    if not bankid:
+        return jsonify({
+            'error': 'A recent BankID verification is required',
+            'code':  'bankid_required',
+        }), 403
+ 
+    # ── Duplicate identity checks ─────────────────────────────────────────────
+    if org_type == OrganizerType.private:
+        if BlockedIdentity.query.filter_by(
+            personnummer_hmac=bankid.personnummer_hmac
+        ).first():
+            return jsonify({
+                'error': 'This identity cannot be registered as a host',
+                'code':  'identity_blocked',
+            }), 403
+ 
+        duplicate = OrganizerPrivateDetails.query.filter(
+            OrganizerPrivateDetails.personnummer_hash == bankid.personnummer_hmac
+        )
+        if existing:
+            duplicate = duplicate.filter(OrganizerPrivateDetails.organizer_id != existing.id)
+        if duplicate.first():
+            return jsonify({'error': 'This identity is already registered as a host'}), 409
+ 
+    else:
+        duplicate = OrganizerCompanyDetails.query.filter(
+            OrganizerCompanyDetails.organisationsnummer == orgnr
+        )
+        if existing:
+            duplicate = duplicate.filter(OrganizerCompanyDetails.organizer_id != existing.id)
+        if duplicate.first():
+            return jsonify({'error': 'This organisationsnummer is already registered'}), 409
+ 
+    # ── Save (organizer + details in one transaction) ─────────────────────────
+    try:
+        if existing:
+            organizer = existing
+            organizer.name = name
+        else:
+            organizer = EventOrganizer(user_id=user.id, type=org_type, name=name)
+            db.session.add(organizer)
+            db.session.flush()   # organizer.id is needed by details and the audit row
+ 
+        organizer.verification_status = S.pending
+        organizer.submitted_at = _utcnow()
+        organizer.rejected_at = None
+ 
+        if org_type == OrganizerType.private:
+            details = organizer.private_details or OrganizerPrivateDetails()
+            details.organizer          = organizer
+            details.legal_first_name   = bankid.given_name
+            details.legal_last_name    = bankid.surname
+            details.date_of_birth      = bankid.date_of_birth
+            details.bankid_verified_at = bankid.verified_at
+            details.personnummer_hash  = bankid.personnummer_hmac
+            details.contact_phone      = contact_phone
+        else:
+            details = organizer.company_details or OrganizerCompanyDetails()
+            details.organizer           = organizer
+            details.organisationsnummer = orgnr
+            details.contact_phone       = contact_phone
+            details.representative_bankid_verified_at = bankid.verified_at
+            for field, value in fields.items():
+                setattr(details, field, value)
+ 
+        db.session.add(details)
+        _add_review(organizer, None, R.submitted)
+        db.session.commit()
+ 
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'Could not save application, please try again'}), 409
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Unexpected error'}), 500
+ 
+    return jsonify(_status_payload(organizer)), 201
+ 
+ 
+# ══ Host: create / edit public profile (approved hosts only) ══════════════════
+ 
+@app.route('/host/me/profile', methods=['PATCH'])
+@require_approved_host
+def patch_host_profile(organizer):
+    """
+    "Create a Host Profile" and later edits: name, bio, avatar_url (all optional per call).
+ 
+    - The profile counts as created once bio or avatar is set (organizer.has_profile).
+    - Once created it can't be emptied again, since that would silently remove
+      the host's ability to create events.
+    - Renames are logged in the audit trail and limited to one per 30 days.
+    """
+    data = _json_body()
+ 
+    updates, err = _parse_bio_avatar(data)
+    if err:
+        return err
+ 
+    categories, err = _parse_category_ids(data)
+    if err:
+        return err
+ 
+    if 'organizer_bio' in updates or 'avatar_url' in updates:
+        new_bio = updates.get('organizer_bio', organizer.organizer_bio)
+        new_avatar = updates.get('avatar_url', organizer.avatar_url)
+        if not (new_bio or new_avatar):
+            return jsonify({
+                'error': 'A host profile needs a bio or an avatar',
+                'code':  'profile_empty',
+            }), 422
+ 
+    new_name = None
+    if 'name' in data:
+        new_name = _validate_name(data['name'])
+        if not new_name:
+            return jsonify({'error': 'name must be 2-100 characters'}), 422
+ 
+        if new_name != organizer.name:
+            if _name_taken(new_name, organizer.id):
+                return jsonify({'error': 'That host name is already taken'}), 409
+ 
+            last = (
+                OrganizerReview.query
+                .filter_by(organizer_id=organizer.id, action=R.renamed)
+                .order_by(OrganizerReview.created_at.desc())
+                .first()
+            )
+            if last:
+                next_ok = _aware(last.created_at) + RENAME_COOLDOWN
+                if _utcnow() < next_ok:
+                    return jsonify({
+                        'error':    'You can only change your host name once every 30 days',
+                        'retry_at': _iso(next_ok),
+                    }), 429
+ 
+    try:
+        if new_name and new_name != organizer.name:
+            _add_review(organizer, None, R.renamed, f'{organizer.name} -> {new_name}')
+            organizer.name = new_name
+        for field, value in updates.items():
+            setattr(organizer, field, value)
+        if categories is not None:
+            organizer.categories = categories
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'That host name is already taken'}), 409
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to save profile'}), 500
+ 
+    return jsonify(_status_payload(organizer)), 200
+ 
+ 
+# ══ Public profile ════════════════════════════════════════════════════════════
+ 
+@app.route('/hosts/<int:organizer_id>', methods=['GET'])
+def get_public_host_profile(organizer_id: int):
+    """Public profile, only visible for approved hosts."""
+    o = public_organizers_query().filter(EventOrganizer.id == organizer_id).first()
+    if not o:
+        return jsonify({'error': 'Host not found'}), 404
+    return jsonify(_public_profile(o)), 200
+ 
+ 
+@app.route('/categories', methods=['GET'])
+def get_categories():
+    """Category list for the interest chips (public)."""
+    cats = EventCategory.query.order_by(EventCategory.name.asc()).all()
+    return jsonify(_category_dicts(cats)), 200
+ 
+ 
+# ══ Admin ═════════════════════════════════════════════════════════════════════
+ 
+@app.route('/admin/host-applications', methods=['GET'])
+@require_admin
+def admin_list_applications(admin):
+    """List applications by status. Defaults to pending. Query params: status, page, per_page"""
+    try:
+        status = S(request.args.get('status', 'pending'))
+    except ValueError:
+        return jsonify({'error': 'Invalid status'}), 422
+ 
+    page     = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+ 
+    pagination = (
+        EventOrganizer.query
+        .filter_by(verification_status=status)
+        .order_by(EventOrganizer.submitted_at.asc())  # oldest first
+        .paginate(page=page, per_page=per_page, error_out=False)
+    )
+ 
+    return jsonify({
+        'items': [_admin_summary(o) for o in pagination.items],
+        'page':  pagination.page,
+        'pages': pagination.pages,
+        'total': pagination.total,
+    }), 200
+ 
+ 
+@app.route('/admin/host-applications/<int:organizer_id>', methods=['GET'])
+@require_admin
+def admin_get_application(organizer_id: int, admin):
+    """Full detail for a single application including identity and review history."""
+    o = db.session.get(EventOrganizer, organizer_id)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+    return jsonify(_admin_detail(o)), 200
+ 
+ 
+def _admin_transition(organizer_id, admin, *, allowed_from, to, action,
+                      conflict_error, fail_error, reason_error=None,
+                      require_details=False, extra=None):
+    """
+    Shared status change for approve / reject / suspend / reinstate.
+    The row is locked (SELECT ... FOR UPDATE) so two admins acting at the
+    same moment can't both succeed.
+    """
+    o = db.session.get(EventOrganizer, organizer_id, with_for_update=True)
+    if not o:
+        return jsonify({'error': 'Application not found'}), 404
+ 
+    if o.verification_status != allowed_from:
+        return jsonify({
+            'error':  conflict_error,
+            'status': o.verification_status.value,
+        }), 409
+ 
+    if require_details and not (o.private_details or o.company_details):
+        return jsonify({'error': 'Application has no identity details'}), 409
+ 
+    reason = None
+    if reason_error:
+        reason = _str(_json_body(), 'reason')
+        if not reason:
+            return jsonify({'error': reason_error}), 422
+ 
+    try:
+        o.verification_status = to
+        if extra:
+            extra(o)
+        _add_review(o, admin.id, action, reason)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': fail_error}), 500
+ 
+    return jsonify(_admin_detail(o)), 200
+ 
+ 
+def _set_verified(o):
+    o.verified_at = _utcnow()
+ 
+ 
+def _set_rejected(o):
+    o.rejected_at = _utcnow()
+ 
+ 
+@app.route('/admin/host-applications/<int:organizer_id>/approve', methods=['POST'])
+@require_admin
+def admin_approve(organizer_id: int, admin):
+    """Approve a pending application."""
+    return _admin_transition(
+        organizer_id, admin,
+        allowed_from=S.pending, to=S.approved, action=R.approved,
+        conflict_error='Only pending applications can be approved',
+        fail_error='Failed to approve application',
+        require_details=True,
+        extra=_set_verified,
+    )
+ 
+ 
+@app.route('/admin/host-applications/<int:organizer_id>/reject', methods=['POST'])
+@require_admin
+def admin_reject(organizer_id: int, admin):
+    """Reject a pending application. A reason is required. The user can reapply after 30 days."""
+    return _admin_transition(
+        organizer_id, admin,
+        allowed_from=S.pending, to=S.rejected, action=R.rejected,
+        conflict_error='Only pending applications can be rejected',
+        fail_error='Failed to reject application',
+        reason_error='A rejection reason is required',
+        extra=_set_rejected,
+    )
+ 
+ 
+@app.route('/admin/host-applications/<int:organizer_id>/suspend', methods=['POST'])
+@require_admin
+def admin_suspend(organizer_id: int, admin):
+    """Suspend an approved host. A reason is required."""
+    return _admin_transition(
+        organizer_id, admin,
+        allowed_from=S.approved, to=S.suspended, action=R.suspended,
+        conflict_error='Only approved hosts can be suspended',
+        fail_error='Failed to suspend host',
+        reason_error='A suspension reason is required',
+    )
+ 
+ 
+@app.route('/admin/host-applications/<int:organizer_id>/reinstate', methods=['POST'])
+@require_admin
+def admin_reinstate(organizer_id: int, admin):
+    """Reinstate a suspended host back to approved."""
+    return _admin_transition(
+        organizer_id, admin,
+        allowed_from=S.suspended, to=S.approved, action=R.reinstated,
+        conflict_error='Only suspended hosts can be reinstated',
+        fail_error='Failed to reinstate host',
+    )
 
 
 # SWISH_CERT = ("/path/to/swish.crt", "/path/to/swish.key")  # from your bank
