@@ -6295,14 +6295,15 @@ def get_host_status():
 @app.route('/host/apply', methods=['POST'])
 def post_host_apply():
     """
-    Step 1: identity + payment details. Creates or updates a DRAFT.
-    Nothing is reviewed here; the host submits later with POST /host/submit.
+    Step 1: identity. Creates or updates a DRAFT.
+    Nothing is reviewed here. The host adds a profile and Swish number,
+    then submits with POST /host/submit.
 
-    Private body:  type, swish_number, contact_phone (optional)
+    Private body:  type, contact_phone (optional)
                    (name comes from BankID and is ignored if sent)
     Company body:  type, name, company_name, organisationsnummer, address_line,
                    postal_code, city, contact_person_name, contact_email,
-                   swish_number, contact_phone (optional)
+                   contact_phone (optional)
 
     Errors the client should handle:
         403 bankid_required    run BankID, then retry
@@ -6349,14 +6350,10 @@ def post_host_apply():
         if _name_taken(name, existing.id if existing else None):
             return jsonify({'error': 'That host name is already taken'}), 409
 
-    # ── Contact phone & Swish (both types) ────────────────────────────────────
+    # ── Contact phone (both types) ────────────────────────────────────────────
     contact_phone = _str(data, 'contact_phone') or None
     if contact_phone and len(contact_phone) > PHONE_MAX:
         return jsonify({'error': f'contact_phone must be at most {PHONE_MAX} characters'}), 422
-
-    swish_number = _normalize_swish(_str(data, 'swish_number'), org_type)
-    if not swish_number:
-        return jsonify({'error': 'Invalid swish_number'}), 422
 
     # ── Company body validation (before BankID, so form mistakes surface first) ─
     fields = {}
@@ -6448,6 +6445,8 @@ def post_host_apply():
         organizer.submitted_at = None
         organizer.rejected_at = None
 
+        # swish_number is not touched here, so a saved number survives a repeat
+        # call or a reapplication. It is set via PUT /host/payout.
         if org_type == OrganizerType.private:
             details = organizer.private_details or OrganizerPrivateDetails()
             details.organizer          = organizer
@@ -6457,13 +6456,11 @@ def post_host_apply():
             details.bankid_verified_at = bankid.verified_at
             details.personnummer_hash  = bankid.personnummer_hmac
             details.contact_phone      = contact_phone
-            details.swish_number       = swish_number
         else:
             details = organizer.company_details or OrganizerCompanyDetails()
             details.organizer           = organizer
             details.organisationsnummer = orgnr
             details.contact_phone       = contact_phone
-            details.swish_number        = swish_number
             details.representative_bankid_verified_at = bankid.verified_at
             for field, value in fields.items():
                 setattr(details, field, value)
@@ -6481,6 +6478,7 @@ def post_host_apply():
 
     return jsonify(_status_payload(organizer)), 200
  
+
  
 @app.route('/host/submit', methods=['POST'])
 def post_host_submit():
@@ -6514,7 +6512,37 @@ def post_host_submit():
 
     return jsonify(_status_payload(organizer)), 200
  
- 
+
+@app.route('/host/payout', methods=['PUT'])
+def put_host_payout():
+    """Save or update the Swish number while the application is still a draft."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    organizer = _get_organizer(user)
+    if not organizer or not organizer.is_draft:
+        return jsonify({'error': 'Payout details can only be edited on a draft'}), 409
+
+    details = organizer.private_details or organizer.company_details
+    if not details:
+        return jsonify({'error': 'Identity details are missing, run BankID again'}), 422
+
+    swish = _normalize_swish(_str(_json_body(), 'swish_number'), organizer.type)
+    if not swish:
+        return jsonify({'error': 'Invalid swish_number'}), 422
+
+    try:
+        details.swish_number = swish
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Unexpected error'}), 500
+
+    return jsonify(_status_payload(organizer)), 200
+
+
 # ══ Host: create / edit public profile (approved hosts only) ══════════════════
  
 @app.route('/host/me/profile', methods=['PATCH'])
