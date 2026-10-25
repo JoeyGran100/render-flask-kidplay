@@ -1,5 +1,6 @@
 import re, os
 from threading import Thread
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
@@ -6217,6 +6218,27 @@ def get_active_users_count():
     return jsonify(_admin_detail(o)), 200
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FAKE BANKID (for development only) - NEEDS TO BE REMOVED IN PRODUCTION!!!
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── DEV ONLY: remove before production ───────────────────────────────────────
+def _dev_fake_bankid(user, data):
+    """Returns a fake BankID result if ALLOW_FAKE_BANKID=1 and the body asks for it."""
+    if os.environ.get('ALLOW_FAKE_BANKID') != '1' or not data.get('fake_bankid'):
+        return None
+
+    pnr = str(data.get('fake_personnummer') or f'19900101{user.id % 10000:04d}')
+    if len(pnr) != 12 or not pnr.isdigit():
+        raise ValueError('fake_personnummer must be 12 digits')
+
+    return SimpleNamespace(
+        personnummer_hmac=hmac_personnummer(pnr),
+        given_name=data.get('fake_given_name', 'Test'),
+        surname=data.get('fake_surname', 'Testsson'),
+        date_of_birth=date(int(pnr[:4]), int(pnr[4:6]), int(pnr[6:8])),
+        verified_at=datetime.now(timezone.utc),
+    )
 
 # ══ Host: status ══════════════════════════════════════════════════════════════
  
@@ -6235,17 +6257,17 @@ def get_host_status():
 def post_host_apply():
     """
     Single endpoint for first application and reapplication.
- 
+
     Private body:  type, name, contact_phone (optional)
     Company body:  type, name, company_name, organisationsnummer, address_line,
                    postal_code, city, contact_person_name, contact_email,
                    contact_phone (optional)
- 
+
     Legal name, date of birth, personnummer hash and verification time are
     NOT in the body. They come from the user's recent BankID result on the
     server (see record_bankid_verification). For companies, BankID identifies
     the representative only; signatory rights are checked by the reviewer.
- 
+
     Errors the client should handle:
         403 bankid_required    run BankID, then retry
         403 identity_blocked   this identity can't be used for hosting
@@ -6254,44 +6276,44 @@ def post_host_apply():
     user = get_current_user_from_token()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
- 
+
     data = _json_body()
- 
+
     # ── Type & name ───────────────────────────────────────────────────────────
     try:
         org_type = OrganizerType(data.get('type'))
     except ValueError:
         return jsonify({'error': "type must be 'private' or 'company'"}), 422
- 
+
     name = _validate_name(data.get('name'))
     if not name:
         return jsonify({'error': 'name must be 2-100 characters'}), 422
- 
+
     # ── Existing application ──────────────────────────────────────────────────
     existing = _get_organizer(user)
     if existing:
         locked = _LOCKED.get(existing.verification_status)
         if locked:
             return jsonify({'error': locked[0]}), locked[1]
- 
+
         # Only rejected remains here
         if not existing.can_reapply:
             return jsonify({
                 'error':    'You must wait before reapplying',
                 'retry_at': _iso(existing.retry_at),
             }), 429
- 
+
         if existing.type != org_type:
             return jsonify({'error': 'You must reapply with the same host type'}), 422
- 
+
     if _name_taken(name, existing.id if existing else None):
         return jsonify({'error': 'That host name is already taken'}), 409
- 
+
     # ── Contact phone (both types) ────────────────────────────────────────────
     contact_phone = _str(data, 'contact_phone') or None
     if contact_phone and len(contact_phone) > PHONE_MAX:
         return jsonify({'error': f'contact_phone must be at most {PHONE_MAX} characters'}), 422
- 
+
     # ── Company body validation (before BankID, so form mistakes surface first) ─
     fields = {}
     orgnr = None
@@ -6304,28 +6326,31 @@ def post_host_apply():
             elif len(value) > max_len:
                 return jsonify({'error': f'{field} must be at most {max_len} characters'}), 422
             fields[field] = value
- 
+
         orgnr_raw = _str(data, 'organisationsnummer')
         if not orgnr_raw:
             missing.append('organisationsnummer')
         if missing:
             return jsonify({'error': 'Missing required fields', 'fields': missing}), 422
- 
+
         orgnr = _normalize_orgnr(orgnr_raw)
         if not orgnr:
             return jsonify({'error': 'Invalid organisationsnummer'}), 422
- 
+
         if not EMAIL_RE.match(fields['contact_email']):
             return jsonify({'error': 'Invalid contact_email'}), 422
- 
+
     # ── BankID (server-side result, never from the client) ────────────────────
-    bankid = _latest_bankid(user)
+    try:
+        bankid = _dev_fake_bankid(user, data) or _latest_bankid(user)   # DEV: remove fake part
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid fake_personnummer'}), 422     # DEV: remove
     if not bankid:
         return jsonify({
             'error': 'A recent BankID verification is required',
             'code':  'bankid_required',
         }), 403
- 
+
     # ── Duplicate identity checks ─────────────────────────────────────────────
     if org_type == OrganizerType.private:
         if BlockedIdentity.query.filter_by(
@@ -6335,7 +6360,7 @@ def post_host_apply():
                 'error': 'This identity cannot be registered as a host',
                 'code':  'identity_blocked',
             }), 403
- 
+
         duplicate = OrganizerPrivateDetails.query.filter(
             OrganizerPrivateDetails.personnummer_hash == bankid.personnummer_hmac
         )
@@ -6343,7 +6368,7 @@ def post_host_apply():
             duplicate = duplicate.filter(OrganizerPrivateDetails.organizer_id != existing.id)
         if duplicate.first():
             return jsonify({'error': 'This identity is already registered as a host'}), 409
- 
+
     else:
         duplicate = OrganizerCompanyDetails.query.filter(
             OrganizerCompanyDetails.organisationsnummer == orgnr
@@ -6352,7 +6377,7 @@ def post_host_apply():
             duplicate = duplicate.filter(OrganizerCompanyDetails.organizer_id != existing.id)
         if duplicate.first():
             return jsonify({'error': 'This organisationsnummer is already registered'}), 409
- 
+
     # ── Save (organizer + details in one transaction) ─────────────────────────
     try:
         if existing:
@@ -6362,11 +6387,11 @@ def post_host_apply():
             organizer = EventOrganizer(user_id=user.id, type=org_type, name=name)
             db.session.add(organizer)
             db.session.flush()   # organizer.id is needed by details and the audit row
- 
+
         organizer.verification_status = S.pending
         organizer.submitted_at = _utcnow()
         organizer.rejected_at = None
- 
+
         if org_type == OrganizerType.private:
             details = organizer.private_details or OrganizerPrivateDetails()
             details.organizer          = organizer
@@ -6384,11 +6409,11 @@ def post_host_apply():
             details.representative_bankid_verified_at = bankid.verified_at
             for field, value in fields.items():
                 setattr(details, field, value)
- 
+
         db.session.add(details)
         _add_review(organizer, None, R.submitted)
         db.session.commit()
- 
+
     except IntegrityError:
         db.session.rollback()
         return jsonify({'error': 'Could not save application, please try again'}), 409
@@ -6396,8 +6421,8 @@ def post_host_apply():
         db.session.rollback()
         traceback.print_exc()
         return jsonify({'error': 'Unexpected error'}), 500
- 
-    return jsonify(_status_payload(organizer)), 201
+
+    return jsonify(_status_payload(organizer)), 200
  
  
 # ══ Host: create / edit public profile (approved hosts only) ══════════════════
