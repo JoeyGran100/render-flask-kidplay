@@ -1681,6 +1681,23 @@ def _public_profile(o: EventOrganizer) -> dict:
     }
 
 
+def _identity_payload(o):
+    """Verified identity, for the owner only. Never put this in a public profile."""
+    d = o.private_details
+    if d:
+        return {
+            'full_name':     f'{d.legal_first_name} {d.legal_last_name}'.strip(),
+            'date_of_birth': d.date_of_birth.isoformat(),
+        }
+    c = o.company_details
+    if c:
+        return {
+            'company_name':        c.company_name,
+            'organisationsnummer': c.organisationsnummer,
+        }
+    return None
+
+
 def _host_status(o: EventOrganizer | None) -> dict:
     """
     Everything the frontend Home screen needs to decide which button to show.
@@ -1705,7 +1722,10 @@ def _host_status(o: EventOrganizer | None) -> dict:
     if status in (OrganizerVerificationStatus.draft,
                   OrganizerVerificationStatus.pending):
         # The host's own work in progress, so the client can prefill the form
-        data['profile'] = _public_profile(o)
+        details = o.private_details or o.company_details
+        data['profile']   = _public_profile(o)
+        data['identity']  = _identity_payload(o)
+        data['has_swish'] = bool(details and details.swish_number)
 
     elif status == OrganizerVerificationStatus.rejected:
         review = _latest_review(o, OrganizerReviewAction.rejected)
