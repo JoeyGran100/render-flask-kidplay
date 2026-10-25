@@ -29,7 +29,7 @@ import hashlib   # Built-in
 import qrcode
 import time
 from datetime import date, datetime, timedelta, timezone
-from sqlalchemy import func
+from sqlalchemy import func, text 
 
 
 # Add this to your Flask app setup
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_13_user:iGnK1NzmyaysYvkHzU1xgrzcy2dhRA1i@dpg-dbd6d08473hc73dihldg-a.frankfurt-postgres.render.com/kidplay_render_database_13"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_14_user:RSMcENMsLZfUwSA9BygR0DemYSLHKDBB@dpg-dbf4if8473hc73br1f6g-a.frankfurt-postgres.render.com/kidplay_render_database_14"
 
 app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
 
@@ -914,7 +914,8 @@ class OrganizerType(enum.Enum):
  
  
 class OrganizerVerificationStatus(enum.Enum):
-    pending   = 'pending'    # Applied, waiting for review
+    draft     = 'draft'      # NEW: BankID done, profile not submitted yet
+    pending   = 'pending'    # Submitted, waiting for review
     approved  = 'approved'   # Verified, can create events
     rejected  = 'rejected'   # Denied, can reapply after 30 days
     suspended = 'suspended'  # Was approved, now suspended by admin
@@ -946,12 +947,7 @@ R = OrganizerReviewAction
 # ── Core organizer record ─────────────────────────────────────────────────────
  
 class EventOrganizer(db.Model):
-    """
-    Created when a user applies to become a host (name + type only).
-    Bio and avatar are filled in after approval.
-    One-to-one with User. Holds status + public profile.
-    The detail tables (private / company) hold identity info.
-    """
+
     __tablename__ = 'event_organizers'
  
     id      = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -975,7 +971,7 @@ class EventOrganizer(db.Model):
     # Status
     verification_status = db.Column(
         db.Enum(OrganizerVerificationStatus),
-        default=OrganizerVerificationStatus.pending,
+        default=OrganizerVerificationStatus.draft,      # CHANGED
         nullable=False,
         index=True,
     )
@@ -986,8 +982,15 @@ class EventOrganizer(db.Model):
     rejected_at  = db.Column(db.DateTime(timezone=True), nullable=True)  # set on rejection, drives cooldown
  
     # NEW: case-insensitive unique name (Postgres / SQLite)
+        # CHANGED: case-insensitive unique name for companies only
     __table_args__ = (
-        db.Index('uq_event_organizers_name_lower', func.lower(name), unique=True),
+        db.Index(
+            'uq_event_organizers_company_name_lower',
+            func.lower(name),
+            unique=True,
+            postgresql_where=text("type = 'company'"),
+            sqlite_where=text("type = 'company'"),
+        ),
     )
  
     # ── Relationships ──────────────────────────────────────────────────────────
@@ -1055,10 +1058,6 @@ class EventOrganizer(db.Model):
  
     @property
     def has_profile(self) -> bool:         # NEW
-        """
-        The public profile is created after approval by filling in bio and/or avatar.
-        Drives "Create a Host Profile" vs "My Host Profile" and the Create Event gate.
-        """
         return bool((self.organizer_bio or '').strip() or self.avatar_url)
  
     @property
@@ -1097,6 +1096,15 @@ class EventOrganizer(db.Model):
         eligible = self.rejected_at.replace(tzinfo=timezone.utc) + timedelta(days=30)
         now = datetime.now(timezone.utc)
         return None if now >= eligible else eligible
+    
+    @property
+    def is_draft(self) -> bool:
+        return self.verification_status == OrganizerVerificationStatus.draft
+
+    @property
+    def can_edit_profile(self) -> bool:
+        """Bio, avatar and categories can be edited while draft or approved."""
+        return self.is_draft or self.is_approved
  
  
 # ── Identity detail tables (unchanged) ─────────────────────────────────────────
@@ -1121,6 +1129,7 @@ class OrganizerPrivateDetails(db.Model):
     legal_first_name   = db.Column(db.String(100), nullable=False)
     legal_last_name    = db.Column(db.String(100), nullable=False)
     date_of_birth      = db.Column(db.Date, nullable=False)
+    swish_number = db.Column(db.String(20), nullable=True)
     bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
  
     personnummer_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
@@ -1156,6 +1165,7 @@ class OrganizerCompanyDetails(db.Model):
     contact_person_name = db.Column(db.String(150), nullable=False)
     contact_email       = db.Column(db.String(200), nullable=False)
     contact_phone       = db.Column(db.String(20),  nullable=True)
+    swish_number        = db.Column(db.String(20),  nullable=True)
  
     representative_bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
  
@@ -1676,10 +1686,11 @@ def _host_status(o: EventOrganizer | None) -> dict:
     Everything the frontend Home screen needs to decide which button to show.
 
     status = none       → "Become a Host"
-    status = pending    → "Pending Review"
+    status = draft      → "Finish your host profile"
+    status = pending    → "Application under review"
     status = rejected   → "Reapply" or "Reapply in X days"
     status = suspended  → "Account Suspended"
-    status = approved   → "View Host Profile"
+    status = approved   → "My Host Profile"
     """
     if o is None:
         return {'status': 'none'}
@@ -1691,7 +1702,12 @@ def _host_status(o: EventOrganizer | None) -> dict:
         'submitted_at': _iso(o.submitted_at),
     }
 
-    if status == OrganizerVerificationStatus.rejected:
+    if status in (OrganizerVerificationStatus.draft,
+                  OrganizerVerificationStatus.pending):
+        # The host's own work in progress, so the client can prefill the form
+        data['profile'] = _public_profile(o)
+
+    elif status == OrganizerVerificationStatus.rejected:
         review = _latest_review(o, OrganizerReviewAction.rejected)
         data.update({
             'rejection_reason': review.reason if review else None,
@@ -2061,6 +2077,26 @@ def anonymize_host_identity(organizer):
         db.session.delete(d)
     if organizer.company_details:
         db.session.delete(organizer.company_details)
+
+
+def _is_adult(dob: date) -> bool:
+    today = datetime.now(timezone.utc).date()
+    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    return age >= 18
+
+
+def _normalize_swish(raw, org_type):
+    """Private: Swedish mobile (07XXXXXXXX). Company: Swish 123-number or mobile."""
+    digits = re.sub(r'[\s\-]', '', raw or '')
+    if digits.startswith('+46'):
+        digits = '0' + digits[3:]
+    elif digits.startswith('0046'):
+        digits = '0' + digits[4:]
+    if re.fullmatch(r'07\d{8}', digits):
+        return digits
+    if org_type == OrganizerType.company and re.fullmatch(r'123\d{7}', digits):
+        return digits
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6259,21 +6295,19 @@ def get_host_status():
 @app.route('/host/apply', methods=['POST'])
 def post_host_apply():
     """
-    Single endpoint for first application and reapplication.
+    Step 1: identity + payment details. Creates or updates a DRAFT.
+    Nothing is reviewed here; the host submits later with POST /host/submit.
 
-    Private body:  type, name, contact_phone (optional)
+    Private body:  type, swish_number, contact_phone (optional)
+                   (name comes from BankID and is ignored if sent)
     Company body:  type, name, company_name, organisationsnummer, address_line,
                    postal_code, city, contact_person_name, contact_email,
-                   contact_phone (optional)
-
-    Legal name, date of birth, personnummer hash and verification time are
-    NOT in the body. They come from the user's recent BankID result on the
-    server (see record_bankid_verification). For companies, BankID identifies
-    the representative only; signatory rights are checked by the reviewer.
+                   swish_number, contact_phone (optional)
 
     Errors the client should handle:
         403 bankid_required    run BankID, then retry
         403 identity_blocked   this identity can't be used for hosting
+        403 underage           BankID identity is under 18
         429 retry_at           rejected, still in the 30-day cooldown
     """
     user = get_current_user_from_token()
@@ -6282,40 +6316,47 @@ def post_host_apply():
 
     data = _json_body()
 
-    # ── Type & name ───────────────────────────────────────────────────────────
+    # ── Type ──────────────────────────────────────────────────────────────────
     try:
         org_type = OrganizerType(data.get('type'))
     except ValueError:
         return jsonify({'error': "type must be 'private' or 'company'"}), 422
 
-    name = _validate_name(data.get('name'))
-    if not name:
-        return jsonify({'error': 'name must be 2-100 characters'}), 422
-
     # ── Existing application ──────────────────────────────────────────────────
     existing = _get_organizer(user)
     if existing:
-        locked = _LOCKED.get(existing.verification_status)
+        locked = _LOCKED.get(existing.verification_status)   # must not contain draft
         if locked:
             return jsonify({'error': locked[0]}), locked[1]
 
-        # Only rejected remains here
-        if not existing.can_reapply:
-            return jsonify({
-                'error':    'You must wait before reapplying',
-                'retry_at': _iso(existing.retry_at),
-            }), 429
+        # Only draft or rejected remain here
+        if existing.is_rejected:
+            if not existing.can_reapply:
+                return jsonify({
+                    'error':    'You must wait before reapplying',
+                    'retry_at': _iso(existing.retry_at),
+                }), 429
+            if existing.type != org_type:
+                return jsonify({'error': 'You must reapply with the same host type'}), 422
+        # A draft may switch type; the old type's details are dropped on save.
 
-        if existing.type != org_type:
-            return jsonify({'error': 'You must reapply with the same host type'}), 422
+    # ── Company name (private name comes from BankID) ─────────────────────────
+    name = None
+    if org_type == OrganizerType.company:
+        name = _validate_name(data.get('name'))
+        if not name:
+            return jsonify({'error': 'name must be 2-100 characters'}), 422
+        if _name_taken(name, existing.id if existing else None):
+            return jsonify({'error': 'That host name is already taken'}), 409
 
-    if _name_taken(name, existing.id if existing else None):
-        return jsonify({'error': 'That host name is already taken'}), 409
-
-    # ── Contact phone (both types) ────────────────────────────────────────────
+    # ── Contact phone & Swish (both types) ────────────────────────────────────
     contact_phone = _str(data, 'contact_phone') or None
     if contact_phone and len(contact_phone) > PHONE_MAX:
         return jsonify({'error': f'contact_phone must be at most {PHONE_MAX} characters'}), 422
+
+    swish_number = _normalize_swish(_str(data, 'swish_number'), org_type)
+    if not swish_number:
+        return jsonify({'error': 'Invalid swish_number'}), 422
 
     # ── Company body validation (before BankID, so form mistakes surface first) ─
     fields = {}
@@ -6354,15 +6395,24 @@ def post_host_apply():
             'code':  'bankid_required',
         }), 403
 
-    # ── Duplicate identity checks ─────────────────────────────────────────────
+    # ── Identity checks (both types) ──────────────────────────────────────────
+    if BlockedIdentity.query.filter_by(
+        personnummer_hmac=bankid.personnummer_hmac
+    ).first():
+        return jsonify({
+            'error': 'This identity cannot be registered as a host',
+            'code':  'identity_blocked',
+        }), 403
+
+    if not _is_adult(bankid.date_of_birth):
+        return jsonify({
+            'error': 'You must be at least 18 years old to become a host',
+            'code':  'underage',
+        }), 403
+
+    # ── Duplicate checks ──────────────────────────────────────────────────────
     if org_type == OrganizerType.private:
-        if BlockedIdentity.query.filter_by(
-            personnummer_hmac=bankid.personnummer_hmac
-        ).first():
-            return jsonify({
-                'error': 'This identity cannot be registered as a host',
-                'code':  'identity_blocked',
-            }), 403
+        name = f'{bankid.given_name} {bankid.surname}'.strip()[:100]
 
         duplicate = OrganizerPrivateDetails.query.filter(
             OrganizerPrivateDetails.personnummer_hash == bankid.personnummer_hmac
@@ -6371,7 +6421,6 @@ def post_host_apply():
             duplicate = duplicate.filter(OrganizerPrivateDetails.organizer_id != existing.id)
         if duplicate.first():
             return jsonify({'error': 'This identity is already registered as a host'}), 409
-
     else:
         duplicate = OrganizerCompanyDetails.query.filter(
             OrganizerCompanyDetails.organisationsnummer == orgnr
@@ -6385,14 +6434,18 @@ def post_host_apply():
     try:
         if existing:
             organizer = existing
+            if organizer.type != org_type:        # draft switching type
+                organizer.private_details = None
+                organizer.company_details = None
+                organizer.type = org_type
             organizer.name = name
         else:
             organizer = EventOrganizer(user_id=user.id, type=org_type, name=name)
             db.session.add(organizer)
-            db.session.flush()   # organizer.id is needed by details and the audit row
+            db.session.flush()
 
-        organizer.verification_status = S.pending
-        organizer.submitted_at = _utcnow()
+        organizer.verification_status = S.draft
+        organizer.submitted_at = None
         organizer.rejected_at = None
 
         if org_type == OrganizerType.private:
@@ -6404,22 +6457,56 @@ def post_host_apply():
             details.bankid_verified_at = bankid.verified_at
             details.personnummer_hash  = bankid.personnummer_hmac
             details.contact_phone      = contact_phone
+            details.swish_number       = swish_number
         else:
             details = organizer.company_details or OrganizerCompanyDetails()
             details.organizer           = organizer
             details.organisationsnummer = orgnr
             details.contact_phone       = contact_phone
+            details.swish_number        = swish_number
             details.representative_bankid_verified_at = bankid.verified_at
             for field, value in fields.items():
                 setattr(details, field, value)
 
         db.session.add(details)
-        _add_review(organizer, None, R.submitted)
         db.session.commit()
 
     except IntegrityError:
         db.session.rollback()
         return jsonify({'error': 'Could not save application, please try again'}), 409
+    except Exception:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({'error': 'Unexpected error'}), 500
+
+    return jsonify(_status_payload(organizer)), 200
+ 
+ 
+@app.route('/host/submit', methods=['POST'])
+def post_host_submit():
+    """Step 2: send the finished draft (identity + profile) to admin review."""
+    user = get_current_user_from_token()
+    if not user:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    organizer = _get_organizer(user)
+    if not organizer or not organizer.is_draft:
+        return jsonify({'error': 'There is no draft application to submit'}), 409
+
+    if not (organizer.private_details or organizer.company_details):
+        return jsonify({'error': 'Identity details are missing, run BankID again'}), 422
+
+    if not organizer.has_profile:
+        return jsonify({
+            'error': 'Complete your host profile before submitting',
+            'code':  'profile_incomplete',
+        }), 422
+
+    try:
+        organizer.verification_status = S.pending
+        organizer.submitted_at = _utcnow()
+        _add_review(organizer, None, R.submitted)
+        db.session.commit()
     except Exception:
         db.session.rollback()
         traceback.print_exc()
