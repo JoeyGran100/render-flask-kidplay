@@ -6611,7 +6611,6 @@ def _set_rejected(o):
  
  
 @app.route('/admin/host-applications/<int:organizer_id>/approve', methods=['POST'])
-@require_admin
 def admin_approve(organizer_id: int, admin):
     """Approve a pending application."""
     return _admin_transition(
