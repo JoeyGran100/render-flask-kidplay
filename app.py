@@ -80,6 +80,8 @@ socketio = SocketIO(
 # ============================================================================
 SECRET_KEY = app.config['SECRET_KEY'].encode()
 
+app.config['PNR_HMAC_KEY'] = os.environ.get('PNR_HMAC_KEY') or 'dev-only-hmac-key-change-me'
+
 def _derive_key(purpose: str) -> bytes:
     """
     Derive a purpose-specific key from the Flask SECRET_KEY.
@@ -127,6 +129,7 @@ MAX_ORGANIZER_CATEGORIES = 5   # keep equal to MAX_TAGS in the app
 # Set to your OLD _hash_personnummer while rows with legacy SHA-256 hashes exist.
 # It must produce exactly the old hash from the raw value. Set to None afterwards.
 LEGACY_HASH_FN = None
+
 
 # SWISH_CERT          = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])
 # YOUR_SWISH_NUMBER   = os.environ["SWISH_PLATFORM_NUMBER"]   # e.g. "1231234567"
