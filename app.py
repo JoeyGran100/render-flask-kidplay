@@ -147,12 +147,16 @@ LEGACY_HASH_FN = None
 # SWISH_PAYOUT_URL    = "https://cpc.getswish.net/swish-cpcapi/api/v1/payouts"
 
 SWISH_BASE = os.environ.get("SWISH_BASE_URL", "https://mss.cpc.getswish.net/swish-cpcapi")
-SWISH_CERT = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])  # PEM, not .p12
-SWISH_CA = os.environ["SWISH_CA_PATH"]            # Swish TLS root CA bundle (PEM)
-YOUR_SWISH_NUMBER = os.environ["SWISH_PLATFORM_NUMBER"]
-SWISH_CALLBACK_URL = os.environ["SWISH_CALLBACK_URL"]   # e.g. https://api.yourapp.com (no trailing slash)
+SWISH_CERT_PATH = os.environ.get("SWISH_CERT_PATH")
+SWISH_KEY_PATH = os.environ.get("SWISH_KEY_PATH")
+SWISH_CA = os.environ.get("SWISH_CA_PATH")
+YOUR_SWISH_NUMBER = os.environ.get("SWISH_PLATFORM_NUMBER")
+SWISH_CALLBACK_URL = os.environ.get("SWISH_CALLBACK_URL")
 PLATFORM_FEE_RATE = Decimal(os.environ.get("PLATFORM_FEE_RATE", "0.10"))
  
+SWISH_CERT = (SWISH_CERT_PATH, SWISH_KEY_PATH) if SWISH_CERT_PATH and SWISH_KEY_PATH else None
+SWISH_CONFIGURED = bool(SWISH_CERT and SWISH_CA and YOUR_SWISH_NUMBER and SWISH_CALLBACK_URL)
+
 # Payouts use a separate signing certificate
 SWISH_SIGNING_KEY_PATH = os.environ.get("SWISH_SIGNING_KEY_PATH")
 SWISH_SIGNING_CERT_PATH = os.environ.get("SWISH_SIGNING_CERT_PATH")
