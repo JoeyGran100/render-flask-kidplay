@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_14_user:RSMcENMsLZfUwSA9BygR0DemYSLHKDBB@dpg-dbf4if8473hc73br1f6g-a.frankfurt-postgres.render.com/kidplay_render_database_14"
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://kidplay_render_database_15_user:6zKvfGhesYIxtf7bB5ma7izZhpwl5UHY@dpg-dbk8skvf3r2c73926cr0-a.frankfurt-postgres.render.com/kidplay_render_database_15"
 
 app.config['SECRET_KEY'] = 'a8f4c2e1b5d6f7a8c9e0d1f2b3a4c5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2'
 
@@ -318,7 +318,7 @@ class Event(db.Model):
     transactions        = db.relationship('EventTransaction', back_populates='event', lazy=True, cascade='all, delete-orphan')
 
     # Payouts
-    payouts             = db.relationship('EventPayout', back_populates='event', lazy=True)
+    payouts = db.relationship('EventPayout', back_populates='event',lazy=True, passive_deletes='all')
 
     conversations       = db.relationship('Conversation', foreign_keys='Conversation.event_id', lazy=True, overlaps="event")
     feature_assignments = db.relationship("EventFeatureAssignment", back_populates="event", cascade="all, delete-orphan", lazy="selectin")
@@ -586,6 +586,7 @@ class Ticket(db.Model):
     __tablename__ = 'tickets'
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    transaction_id = db.Column(db.Integer,db.ForeignKey('event_transactions.id', ondelete='RESTRICT'),nullable=True,unique=True,index=True)
     ticket_uid    = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     ticket_code   = db.Column(db.String(10), unique=True, nullable=False, default=generate_short_code)
     attendance_id = db.Column(db.Integer, db.ForeignKey('user_attendance.id', ondelete='CASCADE'), nullable=False, unique=True)
@@ -604,6 +605,8 @@ class Ticket(db.Model):
     cancellation_reason = db.Column(db.String(200), nullable=True)
 
     attendance = db.relationship('Attendance', back_populates='ticket')
+    transaction = db.relationship('EventTransaction')   # NEW
+
 
     @property
     def is_expired(self) -> bool:
@@ -789,15 +792,13 @@ class EventOrganizerPaymentDetails(db.Model):
     __tablename__ = 'event_organizer_payment_details'
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='CASCADE'), nullable=False, unique=True)
+    event_organizer_id = db.Column(db.Integer,db.ForeignKey('event_organizers.id', ondelete='CASCADE'),nullable=False, unique=True)
 
-    organisation_number = db.Column(db.String(11), nullable=True)   # XXXXXX-XXXX Swedish format
-    swish_number        = db.Column(db.String(11), nullable=False)   # 10 digits for Swish för företag
-
+    swish_number   = db.Column(db.String(20), nullable=False)
     swish_verified = db.Column(db.Boolean, default=False, nullable=False)  # must be True before first payout
 
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime(timezone=True),default=lambda: datetime.now(timezone.utc),onupdate=lambda: datetime.now(timezone.utc))
 
     event_organizer = db.relationship('EventOrganizer', backref=db.backref('payment_details', uselist=False))
 
@@ -814,21 +815,50 @@ class EventTransaction(db.Model):
     __tablename__ = 'event_transactions'
  
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)  # ✅ Changed
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)
     attendee_user_id = db.Column(db.Integer, db.ForeignKey('user_credentials.id', ondelete='RESTRICT'), nullable=False)
-    amount = db.Column(db.Numeric(10, 2), nullable=False)
-    currency = db.Column(db.String(10), default='SEK', nullable=False)
-    swish_reference = db.Column(db.String(100), unique=True, nullable=False)
-    status = db.Column(db.Enum(TransactionStatus), default=TransactionStatus.pending, nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
  
-    event = db.relationship('Event', back_populates='transactions')
+    # NEW: which payout this transaction was paid out in. NULL = not paid out yet.
+    payout_id = db.Column(
+        db.Integer,
+        db.ForeignKey('event_payouts.id', ondelete='RESTRICT'),
+        nullable=True,
+        index=True,
+    )
+ 
+    amount   = db.Column(db.Numeric(10, 2), nullable=False)
+    currency = db.Column(db.String(10), default='SEK', nullable=False)
+ 
+    # Your own id, sent to Swish as instructionUUID
+    swish_reference = db.Column(db.String(100), unique=True, nullable=False)
+    # NEW: Swish's own paymentReference from the callback, for reconciliation / support
+    swish_payment_reference = db.Column(db.String(100), unique=True, nullable=True)
+ 
+    status = db.Column(db.Enum(TransactionStatus), default=TransactionStatus.pending, nullable=False)
+ 
+    # CHANGED: timezone-aware, plus new lifecycle columns
+    created_at       = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at       = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
+    paid_at          = db.Column(db.DateTime(timezone=True), nullable=True)
+    refunded_at      = db.Column(db.DateTime(timezone=True), nullable=True)
+    refund_reference = db.Column(db.String(100), unique=True, nullable=True)
+ 
+    event    = db.relationship('Event', back_populates='transactions')
     attendee = db.relationship('User')
-    
-#     __table_args__ = (
-#         db.Index("uq_active_txn_per_attendee", "event_id", "attendee_user_id", unique=True,
-#                  postgresql_where=db.text("status IN ('pending', 'completed')")),
-#     )
+    payout   = db.relationship('EventPayout', back_populates='transactions')   # NEW
+ 
+    __table_args__ = (
+        db.Index(
+            "uq_active_txn_per_attendee", "event_id", "attendee_user_id", unique=True,
+            postgresql_where=db.text("status IN ('pending', 'completed')"),
+        ),
+        db.CheckConstraint('amount > 0', name='txn_amount_positive'),
+        # Only completed (or later refunded) transactions can belong to a payout
+        db.CheckConstraint(
+            "payout_id IS NULL OR status IN ('completed', 'refunded')",
+            name='txn_payout_only_when_paid',
+        ),
+    )
 
 
 class PayoutStatus(enum.Enum):
@@ -841,27 +871,42 @@ class EventPayout(db.Model):
     __tablename__ = 'event_payouts'
  
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)  # ✅ Changed
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='RESTRICT'), nullable=False)
     event_organizer_id = db.Column(db.Integer, db.ForeignKey('event_organizers.id', ondelete='RESTRICT'), nullable=False)
  
-    gross_amount = db.Column(db.Numeric(10, 2), nullable=False)
-    platform_fee = db.Column(db.Numeric(10, 2), nullable=False)
+    gross_amount  = db.Column(db.Numeric(10, 2), nullable=False)
+    platform_fee  = db.Column(db.Numeric(10, 2), nullable=False)
     payout_amount = db.Column(db.Numeric(10, 2), nullable=False)
+    currency      = db.Column(db.String(10), default='SEK', nullable=False)
  
-    currency = db.Column(db.String(10), default='SEK', nullable=False)
+    # NEW: snapshot of where the money actually went
+    payee_swish_number = db.Column(db.String(20), nullable=False)
+ 
     swish_reference = db.Column(db.String(100), unique=True, nullable=False)
     status = db.Column(db.Enum(PayoutStatus), default=PayoutStatus.processing, nullable=False)
  
-    initiated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    completed_at = db.Column(db.DateTime, nullable=True)
+    # CHANGED: timezone-aware
+    initiated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    updated_at   = db.Column(db.DateTime(timezone=True), onupdate=lambda: datetime.now(timezone.utc))
  
-    event = db.relationship('Event', back_populates='payouts')
+    event           = db.relationship('Event', back_populates='payouts')
     event_organizer = db.relationship('EventOrganizer')
-
-#     __table_args__ = (
-#         db.Index("uq_active_payout_per_event", "event_id", unique=True,
-#                  postgresql_where=db.text("status IN ('processing', 'completed')")),
-#     )
+    transactions    = db.relationship('EventTransaction', back_populates='payout')   # NEW
+ 
+    __table_args__ = (
+        # CHANGED: was "one processing OR completed payout per event".
+        # Now only one payout can be IN FLIGHT per event, so late transactions
+        # can get a second payout later. Double payment is prevented by
+        # EventTransaction.payout_id, not by this index.
+        db.Index(
+            "uq_one_processing_payout_per_event", "event_id", unique=True,
+            postgresql_where=db.text("status = 'processing'"),
+        ),
+        db.CheckConstraint('gross_amount > 0', name='payout_gross_positive'),
+        db.CheckConstraint('platform_fee >= 0 AND payout_amount >= 0', name='payout_non_negative'),
+        db.CheckConstraint('gross_amount = platform_fee + payout_amount', name='payout_amounts_balance'),
+    )
     
 
 class Follow(db.Model):
@@ -921,7 +966,7 @@ class Report(db.Model):
     # what is being reported
     target_type = db.Column(db.Enum(ReportTargetType), nullable=False)
     target_user_id  = db.Column(db.Integer, db.ForeignKey('user_credentials.id',  ondelete='SET NULL'), nullable=True)
-    target_event_id = db.Column(db.Integer, db.ForeignKey('event_locations.id',   ondelete='SET NULL'), nullable=True)
+    target_event_id = db.Column(db.Integer, db.ForeignKey('event.id', ondelete='SET NULL'), nullable=True)
 
     reason = db.Column(db.String(100), nullable=False)  # keep as string, validate at service layer
     details    = db.Column(db.Text, nullable=True)   # optional free-text from reporter
@@ -931,7 +976,7 @@ class Report(db.Model):
 
     reporter     = db.relationship('User', foreign_keys=[reporter_id])
     target_user  = db.relationship('User', foreign_keys=[target_user_id])
-    target_event = db.relationship('EventLocation', foreign_keys=[target_event_id])
+    target_event = db.relationship('Event', foreign_keys=[target_event_id])
 
     __table_args__ = (
         # exactly one target must be set, not both, not neither
@@ -1166,7 +1211,6 @@ class OrganizerPrivateDetails(db.Model):
     legal_first_name   = db.Column(db.String(100), nullable=False)
     legal_last_name    = db.Column(db.String(100), nullable=False)
     date_of_birth      = db.Column(db.Date, nullable=False)
-    swish_number = db.Column(db.String(20), nullable=True)
     bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
  
     personnummer_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
@@ -1202,7 +1246,6 @@ class OrganizerCompanyDetails(db.Model):
     contact_person_name = db.Column(db.String(150), nullable=False)
     contact_email       = db.Column(db.String(200), nullable=False)
     contact_phone       = db.Column(db.String(20),  nullable=True)
-    swish_number        = db.Column(db.String(20),  nullable=True)
  
     representative_bankid_verified_at = db.Column(db.DateTime(timezone=True), nullable=False)
  
@@ -1281,59 +1324,6 @@ class BlockedIdentity(db.Model):
 
 with app.app_context():
     db.create_all()
-
-
-# class PrivatePerson(db.Model):
-#     __tablename__ = 'private_persons'
-
-#     id = db.Column(db.Integer, primary_key=True)
-
-#     organizer_id = db.Column(
-#         db.Integer,
-#         db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
-#         unique=True,
-#         nullable=False
-#     )
-
-#     personnummer = db.Column(
-#         db.String(12),
-#         unique=True,
-#         nullable=False
-#     )
-
-#     organizer = db.relationship(
-#         'EventOrganizer',
-#         back_populates='private_person'
-#     )
-
-
-# class Company(db.Model):
-#     __tablename__ = 'companies'
-
-#     id = db.Column(db.Integer, primary_key=True)
-
-#     organizer_id = db.Column(
-#         db.Integer,
-#         db.ForeignKey('event_organizers.id', ondelete='CASCADE'),
-#         unique=True,
-#         nullable=False
-#     )
-
-#     organization_number = db.Column(
-#         db.String(20),
-#         unique=True,
-#         nullable=False
-#     )
-
-#     company_name = db.Column(
-#         db.String(200),
-#         nullable=False
-#     )
-
-#     organizer = db.relationship(
-#         'EventOrganizer',
-#         back_populates='company'
-#     )
 
 
 # ============================================================================
@@ -1933,8 +1923,11 @@ _LOCKED = {
     S.approved:  ('You are already an approved host', 409),
     S.suspended: ('Your host account is suspended', 403),
 }
+
+# ══ 1. Name & organisation number validation ══════════════════════════════════
  
- 
+# Trims the name and checks it is a string of 2-100 characters.
+# Returns the cleaned name, or None if invalid.
 def _validate_name(raw):
     if not isinstance(raw, str):
         return None
@@ -1942,6 +1935,8 @@ def _validate_name(raw):
     return name if 2 <= len(name) <= 100 else None
  
  
+# Checks if another organizer already uses this name (case-insensitive).
+# Pass exclude_id when an organizer edits their own name, so they don't clash with themselves.
 def _name_taken(name, exclude_id=None):
     q = EventOrganizer.query.filter(func.lower(EventOrganizer.name) == name.lower())
     if exclude_id:
@@ -1949,6 +1944,8 @@ def _name_taken(name, exclude_id=None):
     return q.first() is not None
  
  
+# Luhn checksum, used to validate Swedish organisation numbers.
+# Returns True if the digit string passes.
 def _luhn_ok(digits: str) -> bool:
     total = 0
     for i, ch in enumerate(reversed(digits)):
@@ -1961,6 +1958,8 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
  
  
+# Cleans up an organisation number and validates it (10 digits + Luhn).
+# Returns the normalized form, or None if invalid.
 def _normalize_orgnr(raw):
     """'556016-0680' / '5560160680' -> '556016-0680', or None if invalid."""
     digits = re.sub(r'\D', '', raw or '')
@@ -1969,6 +1968,9 @@ def _normalize_orgnr(raw):
     return f'{digits[:6]}-{digits[6:]}'
  
  
+# ══ 2. Profile input parsing (bio, avatar, categories) ════════════════════════
+ 
+# Checks that an avatar URL is https and on one of the hosts allowed in app config.
 def _valid_avatar_url(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -1978,6 +1980,8 @@ def _valid_avatar_url(url: str) -> bool:
     return p.scheme == 'https' and p.hostname in allowed
  
  
+# Validates 'bio' and 'avatar_url' from the request body, only for keys that are present.
+# Returns (updates_dict, None) or (None, error_response). Does not touch the DB.
 def _parse_bio_avatar(data: dict):
     """
     Validate bio / avatar_url if present. Returns (updates, error_response).
@@ -2009,10 +2013,14 @@ def _parse_bio_avatar(data: dict):
     return updates, None
  
  
+# Turns category objects into plain {id, name} dicts for JSON responses.
 def _category_dicts(categories):
     return [{'id': c.id, 'name': c.name} for c in categories]
  
  
+# Validates 'category_ids' from the request body: list of ints, no duplicates,
+# within the max, and all existing. Returns (categories, None) or (None, error_response).
+# categories is None when the key is absent (leave unchanged); [] clears them.
 def _parse_category_ids(data: dict):
     """
     Validate category_ids if present. Returns (categories, error_response).
@@ -2043,6 +2051,7 @@ def _parse_category_ids(data: dict):
     return [by_id[i] for i in ids], None
  
  
+# Builds the host status JSON for the client: your _host_status plus has_profile and categories.
 def _status_payload(o):
     """Your _host_status plus has_profile and categories, so the client doesn't have to guess."""
     payload = dict(_host_status(o))
@@ -2051,8 +2060,10 @@ def _status_payload(o):
     return payload
  
  
-# ══ Access control & visibility ═══════════════════════════════════════════════
+# ══ 3. Access control (decorators) ════════════════════════════════════════════
  
+# Decorator: only admins may call the route. Injects `admin` into the view function.
+# 401 if not logged in, 403 if logged in but not an admin.
 def require_admin(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -2065,6 +2076,8 @@ def require_admin(fn):
     return wrapper
  
  
+# Shared check behind the two host decorators: is the caller a logged-in, approved host?
+# Returns (organizer, None) or (None, error_response). Status is re-checked on every request.
 def _current_approved_host():
     """Returns (organizer, error_response). Status is checked on every request."""
     user = get_current_user_from_token()
@@ -2076,6 +2089,7 @@ def _current_approved_host():
     return organizer, None
  
  
+# Decorator: approved hosts only (e.g. creating the host profile). Injects `organizer`.
 def require_approved_host(fn):
     """Approved hosts only (e.g. creating the profile). Injects `organizer`."""
     @wraps(fn)
@@ -2087,6 +2101,8 @@ def require_approved_host(fn):
     return wrapper
  
  
+# Decorator: approved host AND profile already created. Use on event create/edit routes.
+# Injects `organizer`.
 def require_host_with_profile(fn):
     """
     Approved AND profile created. Use this on event creation / editing so the
@@ -2107,11 +2123,16 @@ def require_host_with_profile(fn):
     return wrapper
  
  
+# ══ 4. Public visibility (what the public may see) ════════════════════════════
+ 
+# Base query for EVERY public organizer listing/lookup: approved organizers only.
 def public_organizers_query():
     """Use for EVERY public organizer listing / lookup."""
     return EventOrganizer.query.filter(EventOrganizer.verification_status == S.approved)
  
  
+# Base query for EVERY public event listing/lookup: only events whose organizer is approved.
+# Events of pending, rejected and suspended hosts are hidden and return on reinstatement.
 def public_events_query():
     """
     Use for EVERY public event listing / lookup. Events of pending, rejected
@@ -2122,8 +2143,13 @@ def public_events_query():
         .join(EventOrganizer, EventOrganizer.id == Event.event_organizer_id)
         .filter(EventOrganizer.verification_status == S.approved)
     )
-
-
+ 
+ 
+# ══ 5. Identity & privacy ═════════════════════════════════════════════════════
+ 
+# Removes a host's personal data when their account is deleted (GDPR).
+# If the host was suspended, their personnummer hash is first saved to BlockedIdentity
+# so they cannot register again. Does not commit; the caller does.
 def anonymize_host_identity(organizer):
     """Call from your account-deletion flow (caller commits)."""
     d = organizer.private_details
@@ -2134,14 +2160,25 @@ def anonymize_host_identity(organizer):
         db.session.delete(d)
     if organizer.company_details:
         db.session.delete(organizer.company_details)
-
-
+    # NEW: the Swish number of a private host is personal data too
+    if organizer.payment_details:
+        db.session.delete(organizer.payment_details)
+ 
+ 
+# Checks that a date of birth means the person is 18 or older today.
 def _is_adult(dob: date) -> bool:
     today = datetime.now(timezone.utc).date()
     age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
     return age >= 18
-
-
+ 
+ 
+# ══ 6. Swish number (validate + save) ═════════════════════════════════════════
+# One Swish number per organizer, stored in EventOrganizerPaymentDetails.
+# Private and company hosts share the same column; only the validation differs.
+ 
+# Cleans up a Swish number and validates it for the organizer type.
+# Private: Swedish mobile (07XXXXXXXX). Company: Swish 123-number or mobile.
+# Returns the stored format, or None if invalid.
 def _normalize_swish(raw, org_type):
     """Private: Swedish mobile (07XXXXXXXX). Company: Swish 123-number or mobile."""
     digits = re.sub(r'[\s\-]', '', raw or '')
@@ -2154,23 +2191,49 @@ def _normalize_swish(raw, org_type):
     if org_type == OrganizerType.company and re.fullmatch(r'123\d{7}', digits):
         return digits
     return None
-
-
-# ── Swish Helpers ──────────────────────────────────────────────────────────────────
  
+ 
+# NEW: Validates and saves the organizer's Swish number on their payment details
+# (creates the row if missing). If the number changes, swish_verified is reset to False
+# so a new number must be re-verified before any payout.
+# Returns False if the number is invalid. Does not commit; call it only after the rest
+# of the request is validated, and let the route commit.
+def _set_swish_number(organizer, raw) -> bool:
+    number = _normalize_swish(raw, organizer.type)
+    if not number:
+        return False
+ 
+    pd = organizer.payment_details
+    if pd is None:
+        db.session.add(EventOrganizerPaymentDetails(
+            event_organizer_id=organizer.id, swish_number=number))
+    elif pd.swish_number != number:
+        pd.swish_number = number
+        pd.swish_verified = False      # a changed number must be re-verified before payout
+    return True
+ 
+ 
+# ══ 7. Swish API helpers ══════════════════════════════════════════════════════
+ 
+# Creates a new Swish instruction UUID: 32 uppercase hex characters.
+# Used as swish_reference for payments and payouts.
 def _make_ref() -> str:
     """Swish instruction UUID: 32 hex chars, uppercase."""
     return uuid.uuid4().hex.upper()
  
  
+# PUT request to Swish with our client certificate, Swish CA and timeout.
 def _swish_put(url, payload):
     return requests.put(url, json=payload, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
  
  
+# GET request to Swish with our client certificate, Swish CA and timeout.
 def _swish_get(url):
     return requests.get(url, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
  
  
+# Converts a Swedish mobile number to the 46XXXXXXXXX format the Swish API expects.
+# Returns None if it doesn't look like a Swedish mobile. Note: 123-numbers return None.
 def _normalize_msisdn(raw: str):
     """'070-123 45 67' -> '46701234567'. Returns None if it does not look like a Swedish mobile."""
     digits = re.sub(r"\D", "", raw or "")
@@ -2181,12 +2244,15 @@ def _normalize_msisdn(raw: str):
     return digits if re.fullmatch(r"46\d{8,10}", digits) else None
  
  
+# Converts any number-like value to a Decimal rounded to 2 decimals (öre).
 def _money(value) -> Decimal:
     return Decimal(str(value)).quantize(CENTS, rounding=ROUND_HALF_UP)
  
  
-# ── Reconciliation: Swish is the source of truth, never the callback body ────
+# ══ 8. Reconciliation: Swish is the source of truth, never the callback body ══
  
+# Checks that what Swish says was paid matches our transaction:
+# same amount, same currency, and paid to our Swish number.
 def _swish_amount_matches(txn, sw: dict) -> bool:
     try:
         return (
@@ -2198,6 +2264,10 @@ def _swish_amount_matches(txn, sw: dict) -> bool:
         return False
  
  
+# Applies a Swish payment status to our transaction (pending -> completed/failed/cancelled).
+# Safe to call repeatedly: transactions that are already final are skipped.
+# On PAID it also records paid_at and Swish's paymentReference, and links the ticket
+# to the transaction.
 def _apply_swish_status(txn, sw: dict) -> None:
     if txn.status != TransactionStatus.pending:
         return  # already final; callbacks can arrive more than once
@@ -2209,15 +2279,18 @@ def _apply_swish_status(txn, sw: dict) -> None:
             app.logger.error("Swish PAID but amount/currency/payee mismatch for %s: %s", txn.swish_reference, sw)
             return
         txn.status = TransactionStatus.completed
+        txn.paid_at = datetime.now(timezone.utc)                       # NEW
+        txn.swish_payment_reference = sw.get("paymentReference")       # NEW
+ 
         attendance = Attendance.query.filter_by(
             parent_id=txn.attendee_user_id, event_id=txn.event_id
         ).first()
         if attendance and attendance.ticket:
             t = attendance.ticket
+            t.transaction_id = txn.id            # CHANGED: was t.payment_ref = txn.swish_reference
             t.amount_paid = txn.amount
             t.currency = txn.currency
-            t.payment_ref = txn.swish_reference
-            t.paid_at = datetime.now(timezone.utc)
+            t.paid_at = txn.paid_at              # CHANGED: same timestamp as the transaction
  
     elif status in ("DECLINED", "ERROR"):
         app.logger.info("Swish %s for %s (%s)", status, txn.swish_reference, sw.get("errorCode"))
@@ -2228,6 +2301,8 @@ def _apply_swish_status(txn, sw: dict) -> None:
     # CREATED: still waiting
  
  
+# Fetches the payment from Swish and applies its status to the transaction.
+# Use from the callback route and from any "check payment" polling. Safe to call repeatedly.
 def _reconcile(txn) -> None:
     """Fetch the payment from Swish and apply its status. Safe to call repeatedly."""
     try:
@@ -2239,16 +2314,19 @@ def _reconcile(txn) -> None:
         app.logger.warning("Swish GET %s -> %s %s", txn.swish_reference, resp.status_code, resp.text)
         return
     _apply_swish_status(txn, resp.json())
-    
-    
-# ── Payout signing ───────────────────────────────────────────────────────────
  
+ 
+# ══ 9. Payouts (signing + creating a payout) ══════════════════════════════════
+ 
+# Reads the serial number of the payout signing certificate (hex), needed in the payout request.
 def _signing_serial() -> str:
     with open(SWISH_SIGNING_CERT_PATH, "rb") as f:
         cert = x509.load_pem_x509_certificate(f.read())
     return format(cert.serial_number, "X")
  
  
+# Signs the payout payload JSON with our private key (RSA + SHA-512), base64 encoded.
+# Must be given the exact JSON string that is sent to Swish.
 def _sign(payload_json: str) -> str:
     """RSA + SHA-512 over the exact bytes of the payload JSON. Do not hash first."""
     with open(SWISH_SIGNING_KEY_PATH, "rb") as f:
@@ -2257,6 +2335,8 @@ def _sign(payload_json: str) -> str:
     return base64.b64encode(sig).decode()
  
  
+# Placeholder for the recipient's personnummer (payeeSSN), which the Payout API requires.
+# We only store an HMAC of it, so this needs a decision before payouts can be sent to Swish.
 def _get_payee_ssn(organizer) -> str:
     """
     The Payout API requires the recipient's personnummer (payeeSSN). Your models only keep an
@@ -2264,6 +2344,62 @@ def _get_payee_ssn(organizer) -> str:
     store it encrypted, ...). Left unimplemented on purpose.
     """
     raise NotImplementedError("payeeSSN source not decided")
+ 
+ 
+# NEW: Creates a payout record for an event in our database. It pays out every completed
+# transaction that has not been paid out yet, calculates the platform fee, snapshots the
+# organizer's Swish number, and links the transactions to the payout (payout_id) so they
+# can never be paid twice. Rows are locked so two requests can't claim the same transactions.
+# Only creates the record: call the Swish payout API AFTER this commits, using
+# payout.swish_reference. Raises ValueError if the organizer isn't approved, the event
+# hasn't ended, there is no verified Swish number, or there is nothing to pay out.
+def create_payout_for_event(event: Event, fee_rate: Decimal = PLATFORM_FEE_RATE) -> EventPayout:
+    """
+    Pays out every completed, not-yet-paid-out transaction for the event.
+    Call the Swish payout API only AFTER this commits, using payout.swish_reference.
+    """
+    organizer = event.event_organizer
+    if not organizer.is_approved:
+        raise ValueError("Organizer is not approved")
+    if not event.is_past:
+        raise ValueError("Event has not ended yet")   # open-ended events (no duration) never qualify
+ 
+    details = organizer.payment_details
+    if details is None or not details.swish_verified:
+        raise ValueError("Organizer has no verified Swish number")
+ 
+    # Row locks stop two concurrent requests from claiming the same transactions
+    txns = (
+        EventTransaction.query
+        .filter_by(event_id=event.id, status=TransactionStatus.completed, payout_id=None)
+        .with_for_update()
+        .all()
+    )
+    if not txns:
+        raise ValueError("Nothing to pay out")
+ 
+    gross = sum((t.amount for t in txns), Decimal("0.00"))
+    fee = (gross * fee_rate).quantize(CENTS, rounding=ROUND_HALF_UP)
+ 
+    payout = EventPayout(
+        event_id=event.id,
+        event_organizer_id=event.event_organizer_id,   # always taken from the event, so they match
+        gross_amount=gross,
+        platform_fee=fee,
+        payout_amount=gross - fee,
+        currency=event.currency,
+        payee_swish_number=details.swish_number,
+        swish_reference=_make_ref(),
+        status=PayoutStatus.processing,
+    )
+    db.session.add(payout)
+    db.session.flush()                                 # get payout.id
+ 
+    for t in txns:
+        t.payout_id = payout.id
+ 
+    db.session.commit()
+    return payout
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5043,8 +5179,6 @@ def toggle_follow(following_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': 'Toggle failed'}), 500
- 
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Event Likes ✅
@@ -5155,7 +5289,6 @@ def toggle_event_like():
 # ─────────────────────────────────────────────────────────────────────────────
 # FAVOURITE EVENTS (WITH FULL DETAILS) ✅
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 @app.route('/favourites', methods=['GET'])
 def get_favourite_events():
@@ -5288,7 +5421,6 @@ def get_favourite_events():
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
  
  
- 
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORTS ✅
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5409,7 +5541,6 @@ def get_payout_status(event_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 # MESSAGES
 # ─────────────────────────────────────────────────────────────────────────────
- 
  
 @app.route('/conversations', methods=['GET'])
 def get_conversations():
@@ -6020,7 +6151,6 @@ def start_conversation():
             'error': str(e)
         }), 500
 
-
   
 @app.route('/conversations/<int:conversation_id>/messages', methods=['GET'])
 def get_messages(conversation_id):
@@ -6321,7 +6451,6 @@ def handle_send_message(data):
         })
 
 
-
 def build_conversation_response(conv, target_user_id):
     """
     Build the response DTO for a conversation.
@@ -6383,7 +6512,6 @@ def build_conversation_response(conv, target_user_id):
     }
     
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6422,29 +6550,6 @@ def get_active_users_count():
         return jsonify({'error': 'Failed to reinstate host'}), 500
 
     return jsonify(_admin_detail(o)), 200
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FAKE BANKID (for development only) - NEEDS TO BE REMOVED IN PRODUCTION!!!
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─── DEV ONLY: remove before production ───────────────────────────────────────
-def _dev_fake_bankid(user, data):
-    """Returns a fake BankID result if ALLOW_FAKE_BANKID=1 and the body asks for it."""
-    if os.environ.get('ALLOW_FAKE_BANKID') != '1' or not data.get('fake_bankid'):
-        return None
-
-    pnr = str(data.get('fake_personnummer') or f'19900101{user.id % 10000:04d}')
-    if len(pnr) != 12 or not pnr.isdigit():
-        raise ValueError('fake_personnummer must be 12 digits')
-
-    return SimpleNamespace(
-        personnummer_hmac=hmac_personnummer(pnr),
-        given_name=data.get('fake_given_name', 'Test'),
-        surname=data.get('fake_surname', 'Testsson'),
-        date_of_birth=date(int(pnr[:4]), int(pnr[4:6]), int(pnr[6:8])),
-        verified_at=datetime.now(timezone.utc),
-    )
 
 # ══ Host: status ══════════════════════════════════════════════════════════════
  
@@ -6947,6 +7052,10 @@ def admin_reinstate(organizer_id: int, admin):
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BANKID & SWISH 
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ══ SWISH ENDPOINTS ═════════════════════════════════════════════════════════════════════
 
 @app.route("/ticket/pay", methods=["POST"])
@@ -7232,6 +7341,29 @@ def swish_payout_callback():
         db.session.commit()
     return "", 200
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAKE BANKID (for development only) - NEEDS TO BE REMOVED IN PRODUCTION!!!
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── DEV ONLY: remove before production ───────────────────────────────────────
+def _dev_fake_bankid(user, data):
+    """Returns a fake BankID result if ALLOW_FAKE_BANKID=1 and the body asks for it."""
+    if os.environ.get('ALLOW_FAKE_BANKID') != '1' or not data.get('fake_bankid'):
+        return None
+
+    pnr = str(data.get('fake_personnummer') or f'19900101{user.id % 10000:04d}')
+    if len(pnr) != 12 or not pnr.isdigit():
+        raise ValueError('fake_personnummer must be 12 digits')
+
+    return SimpleNamespace(
+        personnummer_hmac=hmac_personnummer(pnr),
+        given_name=data.get('fake_given_name', 'Test'),
+        surname=data.get('fake_surname', 'Testsson'),
+        date_of_birth=date(int(pnr[:4]), int(pnr[4:6]), int(pnr[6:8])),
+        verified_at=datetime.now(timezone.utc),
+    )   
+    
     
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5000, debug=True)
