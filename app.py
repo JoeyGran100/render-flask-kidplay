@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, logging, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit, leave_room, join_room
-from psycopg2 import IntegrityError
 from werkzeug.utils import secure_filename
 from flask import request, jsonify
 import traceback
