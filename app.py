@@ -1,5 +1,6 @@
 from pickle import GET
 import re, os
+import sys
 from threading import Thread
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -155,6 +156,20 @@ TIMEOUT = (5, 20)  # connect, read
 CENTS = Decimal("0.01")
 STALE_PENDING_AFTER = timedelta(minutes=15)   # pending som Swish inte känner till efter detta -> failed
 PLATFORM_FEE_RATE = Decimal(os.environ.get("PLATFORM_FEE_RATE", "0.10"))
+
+# TEST SWISH CREDENTIALS (from Swish test portal) - can be deleted after testing. Use your own in production.!!!!
+
+# Swishs egna exempel använder 4671234768. Byt via kommandoraden om MSS nekar.
+PAYER = sys.argv[1] if len(sys.argv) > 1 else "4671234768"
+BASE = os.environ.get("SWISH_BASE_URL", "https://mss.cpc.getswish.net/swish-cpcapi").rstrip("/")
+CERT = os.environ.get("SWISH_CERT_PATH")
+KEY = os.environ.get("SWISH_KEY_PATH")
+CA = os.environ.get("SWISH_CA_PATH")
+PAYEE = os.environ.get("SWISH_PLATFORM_NUMBER")
+# Callbacken når inte din dator förrän ngrok körs (steg 3), men det gör inget här:
+# vi hämtar status själva med GET.
+CALLBACK = (os.environ.get("SWISH_CALLBACK_URL") or "https://example.com").rstrip("/") + "/swish/callback"
+
 
 class GenderEnum(enum.Enum):
     Male = "Male"
@@ -2316,7 +2331,11 @@ def _money(value) -> Decimal:
     return Decimal(str(value)).quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
-# ── Avstämning: Swish är sanningen, aldrig callback-bodyn ────────────────────
+# ── TESTING ONLY - REMOVE IN PRODUCTION ────────────────────
+
+def fail(msg: str) -> None:
+    print(f"\n❌ {msg}")
+    sys.exit(1)
 
 def _swish_amount_matches(txn, sw: dict) -> bool:
     try:
@@ -2387,6 +2406,85 @@ def _reconcile(txn) -> None:
         return
 
     _apply_swish_status(txn, resp.json())
+
+
+# ── 1. Kontrollera konfigurationen ───────────────────────────────────────────
+print("1) Kontrollerar konfiguration")
+for name, value in (
+    ("SWISH_CERT_PATH", CERT),
+    ("SWISH_KEY_PATH", KEY),
+    ("SWISH_CA_PATH", CA),
+    ("SWISH_PLATFORM_NUMBER", PAYEE),
+):
+    if not value:
+        fail(f"{name} är inte satt")
+    if name.endswith("_PATH") and not os.path.exists(value):
+        fail(f"{name} pekar på en fil som inte finns: {value}")
+print("   OK")
+
+# ── 2. Skapa betalningsförfrågan (PUT, v2) ───────────────────────────────────
+ref = uuid.uuid4().hex.upper()
+payload = {
+    "payeePaymentReference": ref,
+    "callbackUrl": CALLBACK,
+    "payeeAlias": PAYEE,
+    "payerAlias": PAYER,
+    "currency": "SEK",
+    "amount": "100.00",
+    "message": "Swish smoke test",
+}
+
+print(f"\n2) PUT {BASE}/api/v2/paymentrequests/{ref}")
+print(f"   payeeAlias={PAYEE}  payerAlias={PAYER}  amount=100.00 SEK")
+try:
+    resp = requests.put(
+        f"{BASE}/api/v2/paymentrequests/{ref}",
+        json=payload,
+        cert=(CERT, KEY),
+        verify=CA,
+        timeout=(5, 20),
+    )
+except requests.exceptions.SSLError as e:
+    fail(f"SSL-fel (kolla cert/key/CA-sökvägar): {e}")
+except requests.RequestException as e:
+    fail(f"Kunde inte nå Swish: {e}")
+
+print(f"   HTTP {resp.status_code}")
+if resp.status_code != 201:
+    print(f"   Svar: {resp.text}")
+    fail("Förväntade 201 Created. Swishs felkod (t.ex. RP03, AM02) står i svaret ovan.")
+print(f"   Location: {resp.headers.get('Location')}")
+
+# ── 3. Hämta status (GET, v1) ────────────────────────────────────────────────
+print("\n3) Hämtar status i upp till 30 sekunder")
+final = None
+for i in range(15):
+    time.sleep(2)
+    r = requests.get(
+        f"{BASE}/api/v1/paymentrequests/{ref}",
+        cert=(CERT, KEY),
+        verify=CA,
+        timeout=(5, 20),
+    )
+    if r.status_code != 200:
+        print(f"   [{i * 2 + 2:>2}s] HTTP {r.status_code}: {r.text}")
+        continue
+    body = r.json()
+    status = body.get("status")
+    print(f"   [{i * 2 + 2:>2}s] status={status}")
+    if status in ("PAID", "DECLINED", "ERROR", "CANCELLED"):
+        final = body
+        break
+
+print("\n── Slutresultat ──")
+if final:
+    for k in ("status", "amount", "currency", "payeeAlias", "payerAlias",
+              "paymentReference", "errorCode", "errorMessage"):
+        if k in final:
+            print(f"   {k}: {final[k]}")
+else:
+    print("   Inget slutstatus inom 30 s (CREATED är ändå ett bra tecken: certifikaten fungerar).")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SOCKET.IO EVENT HANDLERS - CONNECTION
