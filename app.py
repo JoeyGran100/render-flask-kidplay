@@ -137,38 +137,24 @@ MAX_ORGANIZER_CATEGORIES = 5   # keep equal to MAX_TAGS in the app
 # It must produce exactly the old hash from the raw value. Set to None afterwards.
 LEGACY_HASH_FN = None
 
+SWISH_BASE = os.environ.get("SWISH_BASE_URL", "https://mss.cpc.getswish.net/swish-cpcapi").rstrip("/")
+SWISH_CERT_PATH = os.environ.get("SWISH_CERT_PATH")   # ...TestCertificate_1234679304.pem
+SWISH_KEY_PATH = os.environ.get("SWISH_KEY_PATH")     # ...TestCertificate_1234679304.key
+SWISH_CA = os.environ.get("SWISH_CA_PATH")            # Swish_TLS_RootCA.pem
+YOUR_SWISH_NUMBER = os.environ.get("SWISH_PLATFORM_NUMBER")   # 1234679304
+# Bas-URL utan /swish/callback, den läggs på i pay_for_ticket
+SWISH_CALLBACK_URL = (os.environ.get("SWISH_CALLBACK_URL") or "").rstrip("/")
 
-# SWISH_CERT          = (os.environ["SWISH_CERT_PATH"], os.environ["SWISH_KEY_PATH"])
-# YOUR_SWISH_NUMBER   = os.environ["SWISH_PLATFORM_NUMBER"]   # e.g. "1231234567"
-# SWISH_CALLBACK_URL  = os.environ["SWISH_CALLBACK_URL"]       # public HTTPS URL Swish can reach
-# PLATFORM_FEE_RATE   = float(os.environ.get("PLATFORM_FEE_RATE", "0.10"))  # default 10 %
- 
-# SWISH_PAYMENT_URL   = "https://cpc.getswish.net/swish-cpcapi/api/v2/paymentrequests"
-# SWISH_PAYOUT_URL    = "https://cpc.getswish.net/swish-cpcapi/api/v1/payouts"
-
-SWISH_BASE = os.environ.get("SWISH_BASE_URL", "https://mss.cpc.getswish.net/swish-cpcapi")
-SWISH_CERT_PATH = os.environ.get("SWISH_CERT_PATH")
-SWISH_KEY_PATH = os.environ.get("SWISH_KEY_PATH")
-SWISH_CA = os.environ.get("SWISH_CA_PATH")
-YOUR_SWISH_NUMBER = os.environ.get("SWISH_PLATFORM_NUMBER")
-SWISH_CALLBACK_URL = os.environ.get("SWISH_CALLBACK_URL")
-PLATFORM_FEE_RATE = Decimal(os.environ.get("PLATFORM_FEE_RATE", "0.10"))
- 
 SWISH_CERT = (SWISH_CERT_PATH, SWISH_KEY_PATH) if SWISH_CERT_PATH and SWISH_KEY_PATH else None
 SWISH_CONFIGURED = bool(SWISH_CERT and SWISH_CA and YOUR_SWISH_NUMBER and SWISH_CALLBACK_URL)
 
-# Payouts use a separate signing certificate
-SWISH_SIGNING_KEY_PATH = os.environ.get("SWISH_SIGNING_KEY_PATH")
-SWISH_SIGNING_CERT_PATH = os.environ.get("SWISH_SIGNING_CERT_PATH")
-SWISH_SIGNING_KEY_PASSWORD = (os.environ.get("SWISH_SIGNING_KEY_PASSWORD") or "").encode() or None
- 
-PAYMENT_PUT_URL = f"{SWISH_BASE}/api/v2/paymentrequests"
-PAYMENT_GET_URL = f"{SWISH_BASE}/api/v1/paymentrequests"   # confirm path in the Swish docs
-PAYOUT_URL = f"{SWISH_BASE}/api/v1/payouts"
- 
+PAYMENT_PUT_URL = f"{SWISH_BASE}/api/v2/paymentrequests"   # skapa: v2
+PAYMENT_GET_URL = f"{SWISH_BASE}/api/v1/paymentrequests"   # hämta status: v1
+
 TIMEOUT = (5, 20)  # connect, read
 CENTS = Decimal("0.01")
-
+STALE_PENDING_AFTER = timedelta(minutes=15)   # pending som Swish inte känner till efter detta -> failed
+PLATFORM_FEE_RATE = Decimal(os.environ.get("PLATFORM_FEE_RATE", "0.10"))
 
 class GenderEnum(enum.Enum):
     Male = "Male"
@@ -2216,126 +2202,7 @@ def _set_swish_number(organizer, raw) -> bool:
     return True
  
  
-# ══ 7. Swish API helpers ══════════════════════════════════════════════════════
- 
-# Creates a new Swish instruction UUID: 32 uppercase hex characters.
-# Used as swish_reference for payments and payouts.
-def _make_ref() -> str:
-    """Swish instruction UUID: 32 hex chars, uppercase."""
-    return uuid.uuid4().hex.upper()
- 
- 
-# PUT request to Swish with our client certificate, Swish CA and timeout.
-def _swish_put(url, payload):
-    return requests.put(url, json=payload, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
- 
- 
-# GET request to Swish with our client certificate, Swish CA and timeout.
-def _swish_get(url):
-    return requests.get(url, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
- 
- 
-# Converts a Swedish mobile number to the 46XXXXXXXXX format the Swish API expects.
-# Returns None if it doesn't look like a Swedish mobile. Note: 123-numbers return None.
-def _normalize_msisdn(raw: str):
-    """'070-123 45 67' -> '46701234567'. Returns None if it does not look like a Swedish mobile."""
-    digits = re.sub(r"\D", "", raw or "")
-    if digits.startswith("00"):
-        digits = digits[2:]
-    if digits.startswith("0"):
-        digits = "46" + digits[1:]
-    return digits if re.fullmatch(r"46\d{8,10}", digits) else None
- 
- 
-# Converts any number-like value to a Decimal rounded to 2 decimals (öre).
-def _money(value) -> Decimal:
-    return Decimal(str(value)).quantize(CENTS, rounding=ROUND_HALF_UP)
- 
- 
-# ══ 8. Reconciliation: Swish is the source of truth, never the callback body ══
- 
-# Checks that what Swish says was paid matches our transaction:
-# same amount, same currency, and paid to our Swish number.
-def _swish_amount_matches(txn, sw: dict) -> bool:
-    try:
-        return (
-            _money(sw.get("amount")) == _money(txn.amount)
-            and sw.get("currency") == txn.currency
-            and sw.get("payeeAlias") == YOUR_SWISH_NUMBER
-        )
-    except Exception:
-        return False
- 
- 
-# Applies a Swish payment status to our transaction (pending -> completed/failed/cancelled).
-# Safe to call repeatedly: transactions that are already final are skipped.
-# On PAID it also records paid_at and Swish's paymentReference, and links the ticket
-# to the transaction.
-def _apply_swish_status(txn, sw: dict) -> None:
-    if txn.status != TransactionStatus.pending:
-        return  # already final; callbacks can arrive more than once
- 
-    status = (sw.get("status") or "").upper()
- 
-    if status == "PAID":
-        if not _swish_amount_matches(txn, sw):
-            app.logger.error("Swish PAID but amount/currency/payee mismatch for %s: %s", txn.swish_reference, sw)
-            return
-        txn.status = TransactionStatus.completed
-        txn.paid_at = datetime.now(timezone.utc)                       # NEW
-        txn.swish_payment_reference = sw.get("paymentReference")       # NEW
- 
-        attendance = Attendance.query.filter_by(
-            parent_id=txn.attendee_user_id, event_id=txn.event_id
-        ).first()
-        if attendance and attendance.ticket:
-            t = attendance.ticket
-            t.transaction_id = txn.id            # CHANGED: was t.payment_ref = txn.swish_reference
-            t.amount_paid = txn.amount
-            t.currency = txn.currency
-            t.paid_at = txn.paid_at              # CHANGED: same timestamp as the transaction
- 
-    elif status in ("DECLINED", "ERROR"):
-        app.logger.info("Swish %s for %s (%s)", status, txn.swish_reference, sw.get("errorCode"))
-        txn.status = TransactionStatus.failed
- 
-    elif status == "CANCELLED":
-        txn.status = TransactionStatus.cancelled
-    # CREATED: still waiting
- 
- 
-# Fetches the payment from Swish and applies its status to the transaction.
-# Use from the callback route and from any "check payment" polling. Safe to call repeatedly.
-def _reconcile(txn) -> None:
-    """Fetch the payment from Swish and apply its status. Safe to call repeatedly."""
-    try:
-        resp = _swish_get(f"{PAYMENT_GET_URL}/{txn.swish_reference}")
-    except requests.RequestException:
-        app.logger.exception("Swish GET failed for %s", txn.swish_reference)
-        return
-    if resp.status_code != 200:
-        app.logger.warning("Swish GET %s -> %s %s", txn.swish_reference, resp.status_code, resp.text)
-        return
-    _apply_swish_status(txn, resp.json())
- 
- 
-# ══ 9. Payouts (signing + creating a payout) ══════════════════════════════════
- 
-# Reads the serial number of the payout signing certificate (hex), needed in the payout request.
-def _signing_serial() -> str:
-    with open(SWISH_SIGNING_CERT_PATH, "rb") as f:
-        cert = x509.load_pem_x509_certificate(f.read())
-    return format(cert.serial_number, "X")
- 
- 
-# Signs the payout payload JSON with our private key (RSA + SHA-512), base64 encoded.
-# Must be given the exact JSON string that is sent to Swish.
-def _sign(payload_json: str) -> str:
-    """RSA + SHA-512 over the exact bytes of the payload JSON. Do not hash first."""
-    with open(SWISH_SIGNING_KEY_PATH, "rb") as f:
-        key = serialization.load_pem_private_key(f.read(), password=SWISH_SIGNING_KEY_PASSWORD)
-    sig = key.sign(payload_json.encode("utf-8"), padding.PKCS1v15(), hashes.SHA512())
-    return base64.b64encode(sig).decode()
+# ══ 7. Swish API helpers ══════════════════════════════════════════════════════ 
  
  
 # Placeholder for the recipient's personnummer (payeeSSN), which the Payout API requires.
@@ -2404,6 +2271,122 @@ def create_payout_for_event(event: Event, fee_rate: Decimal = PLATFORM_FEE_RATE)
     db.session.commit()
     return payout
 
+
+def _check_swish_setup() -> None:
+    """Loggar vid uppstart om något saknas, så du slipper kryptiska fel senare."""
+    if not SWISH_CONFIGURED:
+        app.logger.warning(
+            "Swish: saknar miljövariabler (SWISH_CERT_PATH, SWISH_KEY_PATH, SWISH_CA_PATH, "
+            "SWISH_PLATFORM_NUMBER, SWISH_CALLBACK_URL). /ticket/pay kommer svara 503."
+        )
+        return
+    for p in (SWISH_CERT_PATH, SWISH_KEY_PATH, SWISH_CA):
+        if not os.path.exists(p):
+            app.logger.warning("Swish: filen finns inte: %s", p)
+
+_check_swish_setup()
+
+
+# ── Hjälpfunktioner ──────────────────────────────────────────────────────────
+
+def _make_ref() -> str:
+    """Swish instruction UUID: 32 hex-tecken, versaler."""
+    return uuid.uuid4().hex.upper()
+
+
+def _swish_put(url, payload):
+    return requests.put(url, json=payload, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
+
+
+def _swish_get(url):
+    return requests.get(url, cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT)
+
+
+def _normalize_msisdn(raw: str):
+    """'070-123 45 67' -> '46701234567'. None om det inte ser ut som ett svenskt mobilnummer."""
+    digits = re.sub(r"\D", "", raw or "")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0"):
+        digits = "46" + digits[1:]
+    return digits if re.fullmatch(r"46\d{8,10}", digits) else None
+
+
+def _money(value) -> Decimal:
+    return Decimal(str(value)).quantize(CENTS, rounding=ROUND_HALF_UP)
+
+
+# ── Avstämning: Swish är sanningen, aldrig callback-bodyn ────────────────────
+
+def _swish_amount_matches(txn, sw: dict) -> bool:
+    try:
+        return (
+            _money(sw.get("amount")) == _money(txn.amount)
+            and sw.get("currency") == txn.currency
+            and sw.get("payeeAlias") == YOUR_SWISH_NUMBER
+        )
+    except Exception:
+        return False
+
+
+def _apply_swish_status(txn, sw: dict) -> None:
+    if txn.status != TransactionStatus.pending:
+        return  # redan slutgiltig; callbacks kan komma flera gånger
+
+    status = (sw.get("status") or "").upper()
+
+    if status == "PAID":
+        if not _swish_amount_matches(txn, sw):
+            app.logger.error("Swish PAID but amount/currency/payee mismatch for %s: %s", txn.swish_reference, sw)
+            return
+        txn.status = TransactionStatus.completed
+        txn.paid_at = datetime.now(timezone.utc)
+        txn.swish_payment_reference = sw.get("paymentReference")
+
+        attendance = Attendance.query.filter_by(
+            parent_id=txn.attendee_user_id, event_id=txn.event_id
+        ).first()
+        if attendance and attendance.ticket:
+            t = attendance.ticket
+            t.transaction_id = txn.id
+            t.amount_paid = txn.amount
+            t.currency = txn.currency
+            t.paid_at = txn.paid_at
+
+    elif status in ("DECLINED", "ERROR"):
+        app.logger.info("Swish %s for %s (%s)", status, txn.swish_reference, sw.get("errorCode"))
+        txn.status = TransactionStatus.failed
+
+    elif status == "CANCELLED":
+        txn.status = TransactionStatus.cancelled
+    # CREATED: väntar fortfarande
+
+
+def _reconcile(txn) -> None:
+    """Hämta betalningen från Swish och applicera status. Säker att anropa upprepat."""
+    try:
+        resp = _swish_get(f"{PAYMENT_GET_URL}/{txn.swish_reference}")
+    except requests.RequestException:
+        app.logger.exception("Swish GET failed for %s", txn.swish_reference)
+        return
+
+    if resp.status_code == 404:
+        # Swish känner inte till betalningen (t.ex. PUT nådde aldrig fram).
+        # Utan det här skulle transaktionen vara pending för alltid och blockera nya försök.
+        created = txn.created_at
+        if created is not None and txn.status == TransactionStatus.pending:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - created > STALE_PENDING_AFTER:
+                app.logger.warning("Swish has no record of %s, marking failed", txn.swish_reference)
+                txn.status = TransactionStatus.failed
+        return
+
+    if resp.status_code != 200:
+        app.logger.warning("Swish GET %s -> %s %s", txn.swish_reference, resp.status_code, resp.text)
+        return
+
+    _apply_swish_status(txn, resp.json())
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SOCKET.IO EVENT HANDLERS - CONNECTION
@@ -7064,21 +7047,24 @@ def admin_reinstate(organizer_id: int, admin):
 @app.route("/ticket/pay", methods=["POST"])
 def pay_for_ticket():
     """
-    Body: { "event_id": 1, "payer_phone": "070-123 45 67" (optional) }
- 
-    No payer_phone  -> m-commerce: response carries payment_request_token; the app opens
-                       swish://paymentrequest?token=...&callbackurl=<your app link>
-    With payer_phone -> e-commerce ("Swish on another device"): the payer approves in their
-                       own Swish app, the client then just polls the status route.
+    Body: { "event_id": 1, "payer_phone": "070-123 45 67" (valfritt) }
+
+    Utan payer_phone -> m-commerce: svaret har payment_request_token (kräver Swish-appen,
+                        alltså inte praktiskt att testa i MSS).
+    Med payer_phone  -> e-commerce: betalaren godkänner i sin egen Swish-app, klienten
+                        pollar sedan status-routen. Använd DENNA för MSS-testet.
     """
     user = get_current_user_from_token()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
- 
+
+    if not SWISH_CONFIGURED:
+        return jsonify({"error": "Swish is not configured"}), 503
+
     data = request.get_json(silent=True) or {}
     if "event_id" not in data:
         return jsonify({"error": "event_id is required"}), 400
- 
+
     event = db.session.get(Event, data["event_id"])
     if not event:
         return jsonify({"error": "Event not found"}), 404
@@ -7088,18 +7074,18 @@ def pay_for_ticket():
         return jsonify({"error": "Swish only supports SEK"}), 400
     if event.is_past:
         return jsonify({"error": "This event has ended"}), 400
- 
+
     payer_alias = None
     if data.get("payer_phone"):
         payer_alias = _normalize_msisdn(data["payer_phone"])
         if not payer_alias:
             return jsonify({"error": "Invalid phone number"}), 400
- 
+
     attendance = Attendance.query.filter_by(parent_id=user.id, event_id=event.id).first()
     if not attendance:
         return jsonify({"error": "You are not registered for this event"}), 403
- 
-    # An unfinished attempt may already be resolved on Swish's side, so ask before blocking
+
+    # Ett ofärdigt försök kan redan vara avgjort hos Swish, så fråga innan vi blockerar
     existing = EventTransaction.query.filter(
         EventTransaction.event_id == event.id,
         EventTransaction.attendee_user_id == user.id,
@@ -7116,12 +7102,12 @@ def pay_for_ticket():
                 "error": "A payment is already in progress",
                 "payment_reference": existing.swish_reference,
             }), 409
- 
+
     amount = _money(event.base_price)
     ref = _make_ref()
- 
-    # 1) Persist BEFORE calling Swish, so a callback can never arrive for an unknown reference.
-    #    The partial unique index (see bottom of file) stops double submits at the DB level.
+
+    # 1) Spara FÖRE anropet till Swish, så att en callback aldrig kan komma för en okänd referens.
+    #    Det partiella unika indexet stoppar dubbelklick på databasnivå.
     txn = EventTransaction(
         event_id=event.id,
         attendee_user_id=user.id,
@@ -7136,8 +7122,8 @@ def pay_for_ticket():
     except IntegrityError:
         db.session.rollback()
         return jsonify({"error": "A payment is already in progress"}), 409
- 
-    # 2) Call Swish
+
+    # 2) Anropa Swish
     payload = {
         "payeePaymentReference": ref,
         "callbackUrl": f"{SWISH_CALLBACK_URL}/swish/callback",
@@ -7148,41 +7134,52 @@ def pay_for_ticket():
     }
     if payer_alias:
         payload["payerAlias"] = payer_alias
- 
+
     try:
         resp = _swish_put(f"{PAYMENT_PUT_URL}/{ref}", payload)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectTimeout):
+        # Anropet nådde aldrig Swishs API (fel certifikat eller ingen anslutning),
+        # så det är säkert att markera som misslyckat och låta användaren försöka igen.
+        app.logger.exception("Swish PUT could not connect for %s", ref)
+        txn.status = TransactionStatus.failed
+        db.session.commit()
+        return jsonify({"error": "Could not connect to Swish"}), 502
     except requests.RequestException:
-        # Swish may or may not have accepted it. Leave it pending; reconcile will settle it.
+        # Swish kan ha tagit emot den. Lämna pending; _reconcile avgör.
         app.logger.exception("Swish PUT failed for %s", ref)
         return jsonify({"error": "Could not reach Swish. Check the payment status.",
                         "payment_reference": ref}), 502
- 
+
     if resp.status_code != 201:
         app.logger.error("Swish rejected %s: %s %s", ref, resp.status_code, resp.text)
         txn.status = TransactionStatus.failed
         db.session.commit()
-        return jsonify({"error": "Swish rejected the payment request"}), 400
- 
+        body = {"error": "Swish rejected the payment request"}
+        if app.debug:
+            body["swish_response"] = resp.text   # t.ex. [{"errorCode":"RP03",...}], bara i debug
+        return jsonify(body), 400
+
     return jsonify({
         "payment_reference": ref,
-        "payment_request_token": resp.headers.get("PaymentRequestToken"),  # None for e-commerce
-    }), 201
- 
+        "payment_request_token": resp.headers.get("PaymentRequestToken"),  # None för e-commerce
+    }), 200
+
  
 # ── POST /swish/callback ─────────────────────────────────────────────────────
- 
+
 @app.route("/swish/callback", methods=["POST"])
 def swish_callback():
     """
-    Treat the body only as a hint about WHICH payment changed, then confirm with a GET to Swish.
-    Anyone can POST to this URL, so trusting the body would let anyone mark a ticket as paid.
-    Also restrict this route to Swish's callback IPs at your proxy / firewall.
+    Behandla bodyn bara som en hint om VILKEN betalning som ändrats, och bekräfta sedan
+    med ett GET till Swish. Vem som helst kan POSTa hit, så att lita på bodyn skulle
+    låta vem som helst markera en biljett som betald.
     """
     data = request.get_json(silent=True) or {}
     ref = data.get("id") or data.get("payeePaymentReference")
+    app.logger.info("Swish callback received for %s", ref)
     if not ref:
         return "", 200
- 
+
     txn = EventTransaction.query.filter_by(swish_reference=ref).first()
     if txn:
         _reconcile(txn)
@@ -7201,17 +7198,17 @@ def get_payment_status(payment_ref: str):
     user = get_current_user_from_token()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
- 
+
     txn = EventTransaction.query.filter_by(
         swish_reference=payment_ref, attendee_user_id=user.id
     ).first()
     if not txn:
         return jsonify({"error": "Transaction not found"}), 404
- 
+
     if txn.status == TransactionStatus.pending:
-        _reconcile(txn)  # covers a missed callback
+        _reconcile(txn)  # täcker en missad callback
         db.session.commit()
- 
+
     return jsonify({
         "payment_reference": txn.swish_reference,
         "status": txn.status.value,
@@ -7222,127 +7219,127 @@ def get_payment_status(payment_ref: str):
 
 # ── POST /event/<id>/payout ──────────────────────────────────────────────────
  
-@app.route("/event/<int:event_id>/payout", methods=["POST"])
-def trigger_payout(event_id: int):
-    user = get_current_user_from_token()
-    if not user:
-        return jsonify({"error": "Unauthorized"}), 401
+# @app.route("/event/<int:event_id>/payout", methods=["POST"])
+# def trigger_payout(event_id: int):
+#     user = get_current_user_from_token()
+#     if not user:
+#         return jsonify({"error": "Unauthorized"}), 401
  
-    event = db.get_or_404(Event, event_id)
-    organizer = event.event_organizer
-    if not organizer or organizer.user_id != user.id:
-        return jsonify({"error": "Forbidden"}), 403
-    if not event.is_past:
-        return jsonify({"error": "Payout is only possible after the event has ended"}), 400
+#     event = db.get_or_404(Event, event_id)
+#     organizer = event.event_organizer
+#     if not organizer or organizer.user_id != user.id:
+#         return jsonify({"error": "Forbidden"}), 403
+#     if not event.is_past:
+#         return jsonify({"error": "Payout is only possible after the event has ended"}), 400
  
-    details = organizer.payment_details
-    if not details or not details.swish_verified:
-        return jsonify({"error": "Organizer has no verified Swish number"}), 400
+#     details = organizer.payment_details
+#     if not details or not details.swish_verified:
+#         return jsonify({"error": "Organizer has no verified Swish number"}), 400
  
-    txns = EventTransaction.query.filter_by(
-        event_id=event_id, status=TransactionStatus.completed
-    ).all()
-    if not txns:
-        return jsonify({"error": "No paid transactions for this event"}), 400
+#     txns = EventTransaction.query.filter_by(
+#         event_id=event_id, status=TransactionStatus.completed
+#     ).all()
+#     if not txns:
+#         return jsonify({"error": "No paid transactions for this event"}), 400
  
-    gross = sum((_money(t.amount) for t in txns), Decimal("0.00"))
-    fee = (gross * PLATFORM_FEE_RATE).quantize(CENTS, rounding=ROUND_HALF_UP)
-    payout_amount = gross - fee
-    if payout_amount <= 0:
-        return jsonify({"error": "Nothing to pay out"}), 400
+#     gross = sum((_money(t.amount) for t in txns), Decimal("0.00"))
+#     fee = (gross * PLATFORM_FEE_RATE).quantize(CENTS, rounding=ROUND_HALF_UP)
+#     payout_amount = gross - fee
+#     if payout_amount <= 0:
+#         return jsonify({"error": "Nothing to pay out"}), 400
  
-    ref = _make_ref()
+#     ref = _make_ref()
  
-    # Persist first. The partial unique index allows one active payout per event.
-    payout = EventPayout(
-        event_id=event_id,
-        event_organizer_id=organizer.id,
-        gross_amount=gross,
-        platform_fee=fee,
-        payout_amount=payout_amount,
-        currency="SEK",
-        swish_reference=ref,
-        status=PayoutStatus.processing,
-    )
-    db.session.add(payout)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({"error": "A payout already exists for this event"}), 409
+#     # Persist first. The partial unique index allows one active payout per event.
+#     payout = EventPayout(
+#         event_id=event_id,
+#         event_organizer_id=organizer.id,
+#         gross_amount=gross,
+#         platform_fee=fee,
+#         payout_amount=payout_amount,
+#         currency="SEK",
+#         swish_reference=ref,
+#         status=PayoutStatus.processing,
+#     )
+#     db.session.add(payout)
+#     try:
+#         db.session.commit()
+#     except IntegrityError:
+#         db.session.rollback()
+#         return jsonify({"error": "A payout already exists for this event"}), 409
  
-    payload = {
-        "payoutInstructionUUID": ref,
-        "payerPaymentReference": ref,
-        "payerAlias": YOUR_SWISH_NUMBER,
-        "payeeAlias": details.swish_number,   # digits only, e.g. 46701234567
-        "payeeSSN": _get_payee_ssn(organizer),
-        "amount": str(payout_amount),
-        "currency": "SEK",
-        "payoutType": "PAYOUT",
-        "message": f"Utbetalning event {event_id}"[:50],
-        "instructionDate": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "signingCertificateSerialNumber": _signing_serial(),
-    }
+#     payload = {
+#         "payoutInstructionUUID": ref,
+#         "payerPaymentReference": ref,
+#         "payerAlias": YOUR_SWISH_NUMBER,
+#         "payeeAlias": details.swish_number,   # digits only, e.g. 46701234567
+#         "payeeSSN": _get_payee_ssn(organizer),
+#         "amount": str(payout_amount),
+#         "currency": "SEK",
+#         "payoutType": "PAYOUT",
+#         "message": f"Utbetalning event {event_id}"[:50],
+#         "instructionDate": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+#         "signingCertificateSerialNumber": _signing_serial(),
+#     }
  
-    # Serialise once and embed the same string, so the signed bytes equal the sent bytes.
-    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    body = (
-        '{"payload":' + payload_json
-        + ',"callbackUrl":' + json.dumps(f"{SWISH_CALLBACK_URL}/swish/payout-callback")
-        + ',"signature":' + json.dumps(_sign(payload_json))
-        + "}"
-    )
+#     # Serialise once and embed the same string, so the signed bytes equal the sent bytes.
+#     payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+#     body = (
+#         '{"payload":' + payload_json
+#         + ',"callbackUrl":' + json.dumps(f"{SWISH_CALLBACK_URL}/swish/payout-callback")
+#         + ',"signature":' + json.dumps(_sign(payload_json))
+#         + "}"
+#     )
  
-    try:
-        resp = requests.post(
-            PAYOUT_URL,
-            data=body.encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT,
-        )
-    except requests.RequestException:
-        # Do NOT mark failed or retry blindly: Swish may have accepted it.
-        app.logger.exception("Swish payout POST failed for %s", ref)
-        return jsonify({"error": "Could not reach Swish. Payout status unknown.",
-                        "payout_reference": ref}), 502
+#     try:
+#         resp = requests.post(
+#             PAYOUT_URL,
+#             data=body.encode("utf-8"),
+#             headers={"Content-Type": "application/json"},
+#             cert=SWISH_CERT, verify=SWISH_CA, timeout=TIMEOUT,
+#         )
+#     except requests.RequestException:
+#         # Do NOT mark failed or retry blindly: Swish may have accepted it.
+#         app.logger.exception("Swish payout POST failed for %s", ref)
+#         return jsonify({"error": "Could not reach Swish. Payout status unknown.",
+#                         "payout_reference": ref}), 502
  
-    if resp.status_code not in (200, 201):
-        app.logger.error("Swish rejected payout %s: %s %s", ref, resp.status_code, resp.text)
-        payout.status = PayoutStatus.failed
-        db.session.commit()
-        return jsonify({"error": "Swish rejected the payout"}), 400
+#     if resp.status_code not in (200, 201):
+#         app.logger.error("Swish rejected payout %s: %s %s", ref, resp.status_code, resp.text)
+#         payout.status = PayoutStatus.failed
+#         db.session.commit()
+#         return jsonify({"error": "Swish rejected the payout"}), 400
  
-    return jsonify({
-        "payout_reference": ref,
-        "gross_amount": str(gross),
-        "platform_fee": str(fee),
-        "payout_amount": str(payout_amount),
-    }), 200
+#     return jsonify({
+#         "payout_reference": ref,
+#         "gross_amount": str(gross),
+#         "platform_fee": str(fee),
+#         "payout_amount": str(payout_amount),
+#     }), 200
  
  
-@app.route("/swish/payout-callback", methods=["POST"])
-def swish_payout_callback():
-    data = request.get_json(silent=True) or {}
-    ref = data.get("payoutInstructionUUID") or data.get("id")
-    payout = EventPayout.query.filter_by(swish_reference=ref).first() if ref else None
-    if not payout or payout.status != PayoutStatus.processing:
-        return "", 200
+# @app.route("/swish/payout-callback", methods=["POST"])
+# def swish_payout_callback():
+#     data = request.get_json(silent=True) or {}
+#     ref = data.get("payoutInstructionUUID") or data.get("id")
+#     payout = EventPayout.query.filter_by(swish_reference=ref).first() if ref else None
+#     if not payout or payout.status != PayoutStatus.processing:
+#         return "", 200
  
-    try:
-        resp = _swish_get(f"{PAYOUT_URL}/{ref}")
-    except requests.RequestException:
-        app.logger.exception("Swish payout GET failed for %s", ref)
-        return "", 200
-    if resp.status_code == 200:
-        status = (resp.json().get("status") or "").upper()   # confirm status names in the docs
-        if status == "PAID":
-            payout.status = PayoutStatus.completed
-            payout.completed_at = datetime.now(timezone.utc)
-        elif status == "ERROR":
-            payout.status = PayoutStatus.failed
-        db.session.commit()
-    return "", 200
+#     try:
+#         resp = _swish_get(f"{PAYOUT_URL}/{ref}")
+#     except requests.RequestException:
+#         app.logger.exception("Swish payout GET failed for %s", ref)
+#         return "", 200
+#     if resp.status_code == 200:
+#         status = (resp.json().get("status") or "").upper()   # confirm status names in the docs
+#         if status == "PAID":
+#             payout.status = PayoutStatus.completed
+#             payout.completed_at = datetime.now(timezone.utc)
+#         elif status == "ERROR":
+#             payout.status = PayoutStatus.failed
+#         db.session.commit()
+#     return "", 200
 
 
 # ─────────────────────────────────────────────────────────────────────────────
