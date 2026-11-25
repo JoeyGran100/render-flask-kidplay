@@ -3749,6 +3749,7 @@ def get_events_in_bounds():
             joinedload(Event.event_category),
             joinedload(Event.capacity),
             joinedload(Event.event_organizer),
+            joinedload(Event.cover_image),      # new
         ).join(Event.event_location).filter(
             EventLocation.latitude.between(lat_min, lat_max),
             EventLocation.longitude.between(lng_min, lng_max)
@@ -3798,6 +3799,7 @@ def get_events_in_bounds():
                 'base_price': float(event.base_price) if event.base_price else None,
                 'currency': event.currency,
                 'status': 'ongoing' if event.is_ongoing else ('past' if event.is_past else 'upcoming'),
+                'cover_image': event.cover_image.image_url if event.cover_image else None,   # new
             })
  
         return jsonify({'success': True, 'count': len(map_events), 'events': map_events}), 200
